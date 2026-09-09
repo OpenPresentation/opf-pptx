@@ -19,6 +19,9 @@ try {
         $slides = @()
         $titles = @()
         foreach ($slide in $presentation.Slides) {
+            $layout = $record.layouts[$slide.SlideIndex - 1]
+            $expectedLines = @($layout.parts | ForEach-Object { $part = $_; $part.fit.lines | ForEach-Object { if ($_ -ne '') { @{text=$_; role=$part.role; fontSize=$part.fit.fontSize} } } })
+            $lineIndex = 0
             $footerTop = $null
             $bodyBottom = 0.0
             $bodyLines = 0
@@ -28,14 +31,20 @@ try {
                 $text = $shape.TextFrame.TextRange.Text
                 if ($text -eq 'A quote and its source') { $titleShape = $shape; continue }
                 $range = $shape.TextFrame2.TextRange
-                if ($text -eq $generation.footer) { $footerTop = [double]$range.BoundTop }
+                $expected = $expectedLines[$lineIndex]
+                if ($null -eq $expected -or $text -cne $expected.text) { throw "Native quote line changed: $id slide $($slide.SlideIndex), line $lineIndex" }
+                if ([Math]::Abs($shape.TextFrame.TextRange.Font.Size - $expected.fontSize * .75) -gt .02) { throw 'Native quote readability floor or accepted size changed' }
+                $cell = $layout.cell
+                if ($range.BoundLeft -lt $cell.x * .75 - .1 -or $range.BoundTop -lt $cell.y * .75 - .1 -or $range.BoundLeft + $range.BoundWidth -gt ($cell.x + $cell.width) * .75 + .1 -or $range.BoundTop + $range.BoundHeight -gt ($cell.y + $cell.height) * .75 + .1) { throw "Native glyphs leave the quote cell: $id slide $($slide.SlideIndex)" }
+                if ($expected.role -eq 'footer') { if ($null -eq $footerTop) { $footerTop = [double]$range.BoundTop } else { $footerTop = [Math]::Min($footerTop, [double]$range.BoundTop) } }
                 else { $bodyBottom = [Math]::Max($bodyBottom, [double]$range.BoundTop + [double]$range.BoundHeight); $bodyLines++ }
+                $lineIndex++
             }
-            if ($null -eq $titleShape -or $null -eq $footerTop -or $bodyLines -lt 2 -or $bodyBottom -gt $footerTop) { throw "Native quote glyph overlap or missing content: $id slide $($slide.SlideIndex)" }
+            if ($lineIndex -ne $expectedLines.Count -or $null -eq $titleShape -or $null -eq $footerTop -or $bodyLines -lt 1 -or $bodyBottom -gt $footerTop) { throw "Native quote glyph overlap or missing content: $id slide $($slide.SlideIndex)" }
             $titles += $titleShape
             $rasterPath = Join-Path $evidenceRoot "$id-native-$($slide.SlideIndex).png"
             $slide.Export($rasterPath, 'PNG', [int]$record.width, [int]$record.height)
-            $slides += @{slide=$slide.SlideIndex; bodyLines=$bodyLines; bodyBottom=$bodyBottom; footerTop=$footerTop; units='points, PowerPoint TextRange2 bounds'; rasterSha256=(Get-FileHash -LiteralPath $rasterPath -Algorithm SHA256).Hash.ToLowerInvariant()}
+            $slides += @{slide=$slide.SlideIndex; bodyLines=$bodyLines; nativeLines=$lineIndex; glyphsInsideCell=$true; bodyBottom=$bodyBottom; footerTop=$footerTop; units='points, PowerPoint TextRange2 bounds'; rasterSha256=(Get-FileHash -LiteralPath $rasterPath -Algorithm SHA256).Hash.ToLowerInvariant()}
         }
         $savedPath = Join-Path $evidenceRoot "$id-native-saved.pptx"
         $presentation.SaveCopyAs($savedPath, 24)
