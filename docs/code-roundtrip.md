@@ -1,6 +1,6 @@
-# Code source round trips (unreleased)
+# Code source round trips — converter 0.7.0
 
-This feature needs the coordinated shared-code branches of core, renderer and converter. It is not available in the already published converter 0.6.0. No hosted service, font download or proprietary application is required at runtime.
+This feature requires core 0.9.0 and converter 0.7.0, with renderer 0.7.0 for coordinated preview/font measurement. Converter 0.6.0 does not include it. No hosted service, font download or proprietary application is required at runtime. Release candidate status and fresh registry/native verification gates are tracked in the core repository's `docs/plans/shared-code-release.md`.
 
 Export writes one editable native text shape per accepted display line, including blank lines, and consumes the same filename/language/body fits as SVG. Literal tabs use accepted explicit native tab stops. Source text is never trimmed, uppercased or independently re-fitted during export.
 

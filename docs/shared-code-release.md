@@ -1,0 +1,5 @@
+# Converter 0.7.0 preparation
+
+Branch `codex/shared-code-release-20260909` prepares converter 0.7.0 from tested integration `b4f4645cdaa2f5eff8a883f68533875d3b63f239`. Core 0.9.0 is published. Renderer 0.7.0 is still in review in renderer PR #11. The manifest and documentation are prepared; **the lockfile intentionally remains on the previous dependency set** until renderer publication and verification. This branch is not ready for release or final standalone CI.
+
+After renderer publication, refresh the lockfile from npm, perform clean Node 20/24 installations and full source, packed, browser and review gates. Extend installed-package and publication checks to execute the code/provenance fixtures. Repeat real PowerPoint source/edit/save/reopen/import checks against actual installed release candidates, then actual registry bytes after trusted publication. Native text recovery does not establish lossless styling, font/theme restoration or raster equivalence. The complete-set plan and public deployments advance only after every coordinated successor is verified.
