@@ -8,6 +8,25 @@ const bytes=await toPptx(deck,{textMeasurement:fonts.textMeasurement}),initial=(
 assert.ok(initial.title.includes('\n'));
 const subtitleOnly=await fromPptx(await toPptx({design:{fontScheme:'roboto'},slides:[{subtitle:'Keep the subtitle role'}]},{textMeasurement:fonts.textMeasurement}));
 assert.equal(subtitleOnly.slides[0].title,undefined);assert.equal(subtitleOnly.slides[0].subtitle,'Keep the subtitle role');
+// A portrait quote begins near the title, but proximity cannot invent a
+// subtitle when the deck already carries explicit OPF heading identities.
+const quoteDeck={design:{fontScheme:'roboto',dimensions:{widthInches:5.625,heightInches:10}},slides:[{title:'A quote and its source',quote:{text:'A shared layout keeps the evidence readable when the words change. '.repeat(12),attribution:'A reviewer',source:'Recorded interview'}}]};
+const quoteBytes=await toPptx(quoteDeck,{textMeasurement:fonts.textMeasurement}),quoteRestored=(await fromPptx(quoteBytes)).slides[0];
+assert.equal(quoteRestored.title,'A quote and its source');
+assert.equal(quoteRestored.subtitle,undefined,'The first quote line must remain body text');
+assert.ok(quoteRestored.blocks[0].text.startsWith('"A shared layout'));
+const placeholderEntries=unzipSync(quoteBytes);let marked=false;
+placeholderEntries['ppt/slides/slide1.xml']=enc.encode(dec.decode(placeholderEntries['ppt/slides/slide1.xml']).replace(/<p:sp>[\s\S]*?<\/p:sp>/g,shape=>{
+ if(marked||!shape.includes('A shared layout'))return shape;
+ const changed=shape.replace(/<p:nvPr(?:\/>|><\/p:nvPr>)/,'<p:nvPr><p:ph type="subTitle"/></p:nvPr>');assert.notEqual(changed,shape);marked=true;return changed;
+}));
+assert.ok(marked);
+const placeholder=(await fromPptx(zipSync(placeholderEntries))).slides[0];
+assert.ok(placeholder.subtitle.startsWith('"A shared layout'),'Explicit native subtitle placeholders still apply beside tagged titles');
+const legacyBytes=await toPptx({slides:[{title:'Legacy title',text:'Legacy body'}]});
+assert.ok(!Object.keys(unzipSync(legacyBytes)).some(file=>file.startsWith('ppt/tags/opfHeading')));
+const legacy=await fromPptx(legacyBytes);
+assert.equal(legacy.slides[0].title,'Legacy title','Ordinary untagged import still infers a title');
 const modify=mutate=>{const entries=unzipSync(bytes);mutate(entries);return zipSync(entries);};
 const slide=(entries,mutate)=>entries['ppt/slides/slide1.xml']=enc.encode(mutate(dec.decode(entries['ppt/slides/slide1.xml'])));
 const tags=entries=>Object.keys(entries).filter(file=>file.startsWith('ppt/tags/opfHeading'));

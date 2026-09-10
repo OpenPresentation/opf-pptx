@@ -58,7 +58,7 @@ const roundTripBytes = await toPptx(opf);
 await fs.promises.writeFile("round-trip.pptx", roundTripBytes);
 ```
 
-The importer reads core properties, slide order, text boxes, speaker notes, embedded images, tables, and basic cached chart data from the OOXML parts. Slides or objects that do not map cleanly fall back to editable `blocks[]` payloads; OOXML positions are used for deterministic ordering and title/subtitle detection while keeping the emitted OPF schema-valid.
+The importer reads core properties, slide order, text boxes, speaker notes, embedded images, tables, and basic cached chart data from the OOXML parts. Slides or objects that do not map cleanly fall back to editable `blocks[]` payloads; OOXML positions are used for deterministic ordering and title/subtitle detection while keeping the emitted OPF schema-valid. When validated OPF heading identities are present, nearby body text is not promoted into additional heading roles. Explicit native placeholders still apply; ordinary untagged decks retain position-based heading inference.
 
 ## v1 Placeholder and OOXML Mapping
 

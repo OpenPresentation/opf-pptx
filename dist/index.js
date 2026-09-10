@@ -392,12 +392,16 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
 
   const items = collectSlideItems(entries, slideRoot, slidePath, relationships, dimensions, options, slideIndex)
     .sort(comparePositionedItems);
+  // Validated heading identities describe roles deliberately. Do not invent
+  // another heading from nearby body text; explicit native placeholders still
+  // apply, and ordinary untagged decks retain their geometry-based fallback.
+  const inferHeadings = !items.some(item=>item.heading);
   const heading = field => {const index=items.findIndex(item=>item.heading===field);return index<0?null:items.splice(index,1)[0];};
   const tagItem=heading('tag');
   if(tagItem)slide.tag=tagItem.text;
-  const titleItem = heading('title')??takeTitleItem(items, dimensions);
+  const titleItem = heading('title')??takeTitleItem(items, dimensions, inferHeadings);
   if (titleItem) slide.title = titleItem.text;
-  const subtitleItem = heading('subtitle')??takeSubtitleItem(items, titleItem, dimensions);
+  const subtitleItem = heading('subtitle')??takeSubtitleItem(items, titleItem, dimensions, inferHeadings);
   if (subtitleItem) slide.subtitle = subtitleItem.text;
 
   const blocks = mergeAdjacentBulletShapes(items)
@@ -595,9 +599,11 @@ function shapeBounds(xfrm) {
   return { x, y, w, h };
 }
 
-function takeTitleItem(items, dimensions) {
+function takeTitleItem(items, dimensions, infer = true) {
   const explicitIndex = items.findIndex((item) => ["title", "ctrTitle"].includes(item.placeholder));
   if (explicitIndex >= 0) return items.splice(explicitIndex, 1)[0];
+
+  if (!infer) return null;
 
   const titleLimit = dimensions.heightInches * 0.28;
   const candidateIndex = items.findIndex((item) => {
@@ -609,10 +615,10 @@ function takeTitleItem(items, dimensions) {
   return null;
 }
 
-function takeSubtitleItem(items, titleItem, dimensions) {
+function takeSubtitleItem(items, titleItem, dimensions, infer = true) {
   const explicitIndex = items.findIndex((item) => item.placeholder === "subTitle");
   if (explicitIndex >= 0) return items.splice(explicitIndex, 1)[0];
-  if (!titleItem) return null;
+  if (!titleItem || !infer) return null;
 
   const titleBottom = (titleItem.bounds?.y ?? 0) + (titleItem.bounds?.h ?? 0);
   const subtitleLimit = Math.min(dimensions.heightInches * 0.34, 1.45);
