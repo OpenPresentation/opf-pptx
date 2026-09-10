@@ -45,7 +45,8 @@
     "test:browser": "npm run build:browser-check && node test/browser-check.mjs",
     "prepack": "npm run build",
     "build:browser-check": "node scripts/build-browser-check.mjs",
-    "test:styled-table": "node test/styled-table.mjs && node test/styled-table-import.mjs"
+    "test:styled-table": "node test/styled-table.mjs && node test/styled-table-import.mjs",
+    "test:code": "node test/shared-code.mjs && node test/code-provenance.mjs"
   },
   "dependencies": {
     "@openpresentation/opf": "^0.8.0",

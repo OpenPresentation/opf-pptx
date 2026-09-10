@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Export accepted code parts as editable native lines with explicit tab stops. Retain complete code source and metadata through guarded native shape tags, including soft-wrap boundaries and CR/LF/CRLF. Missing or ambiguous groups retain visible shapes with diagnostics. See [code round-trip scope](docs/code-roundtrip.md).
+- Preserve significant whitespace, empty paragraphs, interleaved native fields and explicit line breaks during text import. Keep complete multiline titles rather than silently taking their first line. Grouped text is retained with a transform/reflow diagnostic.
+- Add wide/portrait offline browser and actual Windows PowerPoint source/edit/save/reopen/import checks. Native geometry, styling, font theme and raster equivalence are not reconstructed by this source round-trip feature. Requires the unreleased coordinated core integration.
+
 ## 0.6.0
 
 - Export accepted core quote parts as editable native lines without another fit/style pass. Reject missing geometry or unusable boxes explicitly. Requires core 0.8.0 and renderer 0.6.0 for coordinated preview/font measurement.
