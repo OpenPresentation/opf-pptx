@@ -9,17 +9,19 @@ import {validatePresentation, paginateSlide} from '@openpresentation/opf';
 import {renderSvgDeck, svgToPng, resolvePresentation} from '@openpresentation/opf-render';
 import {createFontRegistry} from '@openpresentation/opf-render/fonts';
 import sharp from 'sharp';
-import {toPptx, fromPptx} from '../dist/index.js';
+import {toPptx, fromPptx} from '@openpresentation/opf-pptx';
 
 const [mode, directory = 'artifacts/native-quote'] = process.argv.slice(2);
 assert.ok(['generate','compare'].includes(mode));
-const output = path.resolve(directory), root = fileURLToPath(new URL('../',import.meta.url));
+const output = path.resolve(directory), root = path.dirname(fileURLToPath(import.meta.resolve('@openpresentation/opf-pptx/package.json')));
+const verificationRoot=fileURLToPath(new URL('../',import.meta.url));
 await mkdir(output,{recursive:true});
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = async file => JSON.parse((await readFile(file,'utf8')).replace(/^\uFEFF/,''));
 const write = (file,value) => writeFile(path.join(output,file),JSON.stringify(value,null,2)+'\n');
 const runtime = {};
-for(const file of ['dist/index.js','package.json','package-lock.json']) runtime[file]=hash(await readFile(path.join(root,file)));
+for(const file of ['package.json',...(await readdir(path.join(root,'dist'),{recursive:true})).filter(file=>file.endsWith('.js')).map(file=>'dist/'+file)]) runtime[file.split(path.sep).join('/')]=hash(await readFile(path.join(root,file)));
+runtime['verification-package-lock.json']=hash(await readFile(path.join(verificationRoot,'package-lock.json')));
 for (const name of ['@openpresentation/opf','@openpresentation/opf-render']) {
   const directory=path.dirname(fileURLToPath(import.meta.resolve(name+'/package.json')));
   const dist=path.join(directory,'dist'),seen=new Set();

@@ -1,5 +1,12 @@
 param([string]$EvidenceDirectory = 'artifacts/native-quote')
 $ErrorActionPreference = 'Stop'
+# Hash through .NET so a PowerShell 7 parent's PSModulePath cannot prevent
+# Windows PowerShell from autoloading the Get-FileHash module in a child process.
+function Get-FixtureSha256([string]$FixturePath) {
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($hasher.ComputeHash([System.IO.File]::ReadAllBytes($FixturePath)))).Replace('-', '').ToLowerInvariant() }
+    finally { $hasher.Dispose() }
+}
 $evidenceRoot = (Resolve-Path -LiteralPath $EvidenceDirectory).Path
 $generation = Get-Content -LiteralPath (Join-Path $evidenceRoot 'generation.json') -Raw | ConvertFrom-Json
 $powerpoint = New-Object -ComObject PowerPoint.Application
@@ -11,7 +18,7 @@ try {
         $id = $record.id
         if ($id -notmatch '^quote-\d+$') { throw 'Invalid fixture filename' }
         $sourcePath = Join-Path $evidenceRoot "$id.pptx"
-        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sourceHash = Get-FixtureSha256 $sourcePath
         if ($sourceHash -ne $record.hashes."$id.pptx") { throw "Changed fixture: $id" }
         $presentation = $powerpoint.Presentations.Open($sourcePath, 0, 0, 0)
         if ($presentation.Slides.Count -ne $record.slides) { throw 'Slide count mismatch' }
@@ -44,7 +51,7 @@ try {
             $titles += $titleShape
             $rasterPath = Join-Path $evidenceRoot "$id-native-$($slide.SlideIndex).png"
             $slide.Export($rasterPath, 'PNG', [int]$record.width, [int]$record.height)
-            $slides += @{slide=$slide.SlideIndex; bodyLines=$bodyLines; nativeLines=$lineIndex; glyphsInsideCell=$true; bodyBottom=$bodyBottom; footerTop=$footerTop; units='points, PowerPoint TextRange2 bounds'; rasterSha256=(Get-FileHash -LiteralPath $rasterPath -Algorithm SHA256).Hash.ToLowerInvariant()}
+            $slides += @{slide=$slide.SlideIndex; bodyLines=$bodyLines; nativeLines=$lineIndex; glyphsInsideCell=$true; bodyBottom=$bodyBottom; footerTop=$footerTop; units='points, PowerPoint TextRange2 bounds'; rasterSha256=(Get-FixtureSha256 $rasterPath)}
         }
         $savedPath = Join-Path $evidenceRoot "$id-native-saved.pptx"
         $presentation.SaveCopyAs($savedPath, 24)
@@ -64,7 +71,7 @@ try {
         }
         $reopened.Close()
         $reopened = $null
-        $reports += @{id=$id; sourceSha256=$sourceHash; slides=$slides; editsReopened=$editsReopened; savedSha256=(Get-FileHash -LiteralPath $savedPath -Algorithm SHA256).Hash.ToLowerInvariant(); editedSha256=(Get-FileHash -LiteralPath $editedPath -Algorithm SHA256).Hash.ToLowerInvariant()}
+        $reports += @{id=$id; sourceSha256=$sourceHash; slides=$slides; editsReopened=$editsReopened; savedSha256=(Get-FixtureSha256 $savedPath); editedSha256=(Get-FixtureSha256 $editedPath)}
         Write-Output "Native quote verified $id ($editsReopened slides)"
     }
     @{powerPointVersion=$powerpoint.Version; decks=$reports} | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'native.json') -Encoding UTF8
