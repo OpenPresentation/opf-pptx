@@ -17,6 +17,9 @@ jobs:
     defaults:
       run:
         working-directory: opf-pptx
+        # PowerShell reports only the final native command's exit code in a
+        # multiline step. Bash's Actions wrapper stops on the first failure.
+        shell: bash
     env:
       OPF_GOLDEN_BASELINE: ${{ github.workspace }}/opf-render/test/golden/opf-examples-png.furniture.sha256.json
     strategy:
@@ -34,7 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          ref: e9d42f54ff6d7a2c717faddb17594f72c8d1fa02
+          ref: 5ba06fe7cbcb0e6f213c03d32541439a99dc369c
           path: opf
           fetch-depth: 0
           persist-credentials: false
