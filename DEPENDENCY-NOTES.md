@@ -8,6 +8,14 @@ The inspected PptxGenJS 4.0.1 ESM/CommonJS distributions do not import `image-si
 
 Every build checks the vendored code and license against `UPSTREAM.json`. `node scripts/vendor-pptxgenjs.mjs` is an explicit maintainer command that fetches the pinned official npm archive, verifies its SHA-512 integrity and reads only the named distribution/license entries. It is never run by builds or installations. Review the upstream source, actual imports, license and audit before changing versions; retain tests and reassess [GHSA-w3rx-r6r6-pgpr](https://github.com/advisories/GHSA-w3rx-r6r6-pgpr) and [GHSA-5p2g-fcmc-qvqq](https://github.com/advisories/GHSA-5p2g-fcmc-qvqq). Do not accept npm's incompatible PptxGenJS downgrade suggestion.
 
+The furniture candidate's package normalization removes PptxGenJS 4.0.1
+content-type declarations for generated slide-master parts that do not exist.
+The vendor file remains byte-identical to upstream. Smoke and corpus checks
+require every override to target an actual part. The independent
+[`test/openxml` audit](test/openxml/README.md) reports a separate notes-master
+element-order disagreement with the Open XML SDK; changing that order remains a
+diagnostic comparison, pending native Office acceptance.
+
 ## Compatible raster decoding
 
 Sharp 0.35.4 (Apache-2.0) is pinned for Node-only WebP-to-PNG conversion and loads lazily only when conversion is needed. Its platform packages include libvips and codec licenses; retain the upstream license files distributed by npm. This package requires Node 24 and normal optional-platform dependency installation. Browser builds use the browser's decoder/canvas and a conditional package import; a bundling check rejects Sharp or the Node adapter in browser output. Ordinary/preserved image exports are tested with Sharp loading blocked.
