@@ -37,21 +37,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          ref: 8a322c13884f2f1634fd3a207d1e0a662e3ad460
+          ref: 4694815349170bcffd52efc4c99748c4c8079738
           path: opf
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-render
-          ref: d0ff86abe6e67436a5674778605bc8562314ad1c
+          ref: 3d4fa8ce8172c2a6b38bf217d5f8d0ce5a1b62af
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-editor
-          ref: 50384b8cd4d96a9db26bcab6304136440effed35
+          ref: 8d6e313b83bf5f17414013cde1b410cf629c753d
           path: opf-editor
           fetch-depth: 0
           persist-credentials: false
@@ -97,6 +97,7 @@ jobs:
           node scripts/test-readability-browser.mjs artifacts/readability-browser installed
           node scripts/test-timeline-workflow.mjs artifacts/timeline-workflow installed
           node scripts/test-furniture-workflow.mjs artifacts/furniture-workflow installed
+          node ../opf-editor/test/json-editor-browser.mjs artifacts/editor/json-editor-installed.json artifacts/npm/consumer
           node scripts/test-timeline-acceptance.mjs artifacts/timeline-acceptance.json
           node scripts/test-installed-code-guards.mjs
       - run: npm pack --dry-run
@@ -112,6 +113,7 @@ jobs:
             opf/artifacts/furniture-workflow/**
             opf/artifacts/timeline-acceptance.json
             opf/artifacts/editor/*report.json
+            opf/artifacts/editor/json-editor-installed.json
             opf/artifacts/editor/*failure.png
             opf/artifacts/editor/*installed-code*.json
             opf-render/artifacts/golden/**
