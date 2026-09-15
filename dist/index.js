@@ -977,10 +977,10 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
     } else if (item.field === "text" && item.text?.richLines) {
       const alignment=item.text.placement?.alignment??opfSlide.design?.contentAlignment??presentation.design?.contentAlignment??'left';
       for(const [index,line] of item.text.richLines.entries()){
-        const runs=richLineRuns(line,slideContext.colors.text);
+        const runs=line.fragments.map(fragment=>({text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:fragment.fontSize*.75,color:normalizeHex(fragment.run.color??slideContext.colors.text),underline:fragment.run.underline?{color:normalizeHex(fragment.run.color??slideContext.colors.text)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}}));
         const placed=item.text.placement?.lines[index],factor=alignment==='right'?1:alignment==='center'?.5:0;
         const area=placed?{...region,x:(placed.x+line.width*factor-item.box.width*factor)/96,y:placed.y/96,h:placed.height/96}:{...region,y:region.y+line.y/96,h:line.height/96};
-        if(runs.length)slide.addText(runs,{...textBoxOptions(area,slideContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1,tabStops:richTabStops(line)});
+        if(runs.length)slide.addText(runs,{...textBoxOptions(area,slideContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1});
       }
     } else if (item.field === "text" && typeof item.value === "string") {
       slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, slideContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle)});
@@ -1067,15 +1067,7 @@ function addTextPayload(slide, value, region, context) {
 }
 
 function richLineRuns(line,color) {
-  const tabStops=richTabStops(line);
-  return richSourceRuns(line).map(fragment=>({text:fragment.text,options:{...nativeFontOptions(fragment.style),...(tabStops?{tabStops}:{}),fontSize:fragment.fontSize*.75,color:normalizeHex(fragment.run.color??color),underline:fragment.run.underline?{color:normalizeHex(fragment.run.color??color)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}}));
-}
-function richSourceRuns(line){
-  return line.fragments.flatMap(fragment=>(fragment.sources??[fragment]).map(source=>({...source,fontSize:fragment.fontSize,baselineShift:fragment.baselineShift})));
-}
-function richTabStops(line){
-  const stops=line.fragments.filter(fragment=>fragment.kind==='tab').map(fragment=>({position:(fragment.x+fragment.width)/96,alignment:'l'}));
-  return stops.length?stops:undefined;
+  return line.fragments.map(fragment=>({text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:fragment.fontSize*.75,color:normalizeHex(fragment.run.color??color),underline:fragment.run.underline?{color:normalizeHex(fragment.run.color??color)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}}));
 }
 function addMeasuredList(slide,fit,context) {
   for(const entry of fit.listEntries){
@@ -1091,7 +1083,7 @@ function addMeasuredList(slide,fit,context) {
         // Keep paragraph intent identical across runs. ZIP normalization below
         // removes the duplicate paragraph-property nodes emitted by PptxGenJS.
         for(const run of runs)Object.assign(run.options,paragraph);
-        slide.addText(runs,{...textBoxOptions(region,context,text.fontSize*.75),fontFace:nativeFontOptions(entry.marker.style).fontFace,objectName,align:'left',fit:'none',wrap:false,lineSpacingMultiple:1,tabStops:richTabStops(line),...paragraph});
+        slide.addText(runs,{...textBoxOptions(region,context,text.fontSize*.75),fontFace:nativeFontOptions(entry.marker.style).fontFace,objectName,align:'left',fit:'none',wrap:false,lineSpacingMultiple:1,...paragraph});
       });
     };
     addLines(entry.text,entry.textBox,context.colors.text,true);
@@ -1222,7 +1214,7 @@ function addTablePayload(slide, table, region, context, options, path) {
     const baseColor = (cellStyle.color ?? textColorForFill('#' + baseFill, header ? '#FFFFFF' : '#' + context.colors.text)).replace(/^#/, '');
     const alpha = value => value.length === 8 ? (1 - parseInt(value.slice(6), 16) / 255) * 100 : 0;
     const text = stringifyText(cell.value), style = cell.textStyle;
-    const fragments = rich ? fit.richLines.flatMap(richSourceRuns) : [];
+    const fragments = rich ? fit.richLines.flatMap(line => line.fragments) : [];
     const runs = rich ? cell.value.flatMap((value, index) => {
       const run = typeof value === 'string' ? {text:value} : value;
       const fragment = fragments.find(item => item.runIndex === index);
