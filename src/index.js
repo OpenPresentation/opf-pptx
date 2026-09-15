@@ -1068,7 +1068,10 @@ function addTextPayload(slide, value, region, context) {
 
 function richLineRuns(line,color) {
   const tabStops=richTabStops(line);
-  return line.fragments.map(fragment=>({text:fragment.text,options:{...nativeFontOptions(fragment.style),...(tabStops?{tabStops}:{}),fontSize:fragment.fontSize*.75,color:normalizeHex(fragment.run.color??color),underline:fragment.run.underline?{color:normalizeHex(fragment.run.color??color)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}}));
+  return richSourceRuns(line).map(fragment=>({text:fragment.text,options:{...nativeFontOptions(fragment.style),...(tabStops?{tabStops}:{}),fontSize:fragment.fontSize*.75,color:normalizeHex(fragment.run.color??color),underline:fragment.run.underline?{color:normalizeHex(fragment.run.color??color)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}}));
+}
+function richSourceRuns(line){
+  return line.fragments.flatMap(fragment=>(fragment.sources??[fragment]).map(source=>({...source,fontSize:fragment.fontSize,baselineShift:fragment.baselineShift})));
 }
 function richTabStops(line){
   const stops=line.fragments.filter(fragment=>fragment.kind==='tab').map(fragment=>({position:(fragment.x+fragment.width)/96,alignment:'l'}));
@@ -1219,7 +1222,7 @@ function addTablePayload(slide, table, region, context, options, path) {
     const baseColor = (cellStyle.color ?? textColorForFill('#' + baseFill, header ? '#FFFFFF' : '#' + context.colors.text)).replace(/^#/, '');
     const alpha = value => value.length === 8 ? (1 - parseInt(value.slice(6), 16) / 255) * 100 : 0;
     const text = stringifyText(cell.value), style = cell.textStyle;
-    const fragments = rich ? fit.richLines.flatMap(line => line.fragments) : [];
+    const fragments = rich ? fit.richLines.flatMap(richSourceRuns) : [];
     const runs = rich ? cell.value.flatMap((value, index) => {
       const run = typeof value === 'string' ? {text:value} : value;
       const fragment = fragments.find(item => item.runIndex === index);
