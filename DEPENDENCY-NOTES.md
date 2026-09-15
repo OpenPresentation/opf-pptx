@@ -8,13 +8,7 @@ The inspected PptxGenJS 4.0.1 ESM/CommonJS distributions do not import `image-si
 
 Every build checks the vendored code and license against `UPSTREAM.json`. `node scripts/vendor-pptxgenjs.mjs` is an explicit maintainer command that fetches the pinned official npm archive, verifies its SHA-512 integrity and reads only the named distribution/license entries. It is never run by builds or installations. Review the upstream source, actual imports, license and audit before changing versions; retain tests and reassess [GHSA-w3rx-r6r6-pgpr](https://github.com/advisories/GHSA-w3rx-r6r6-pgpr) and [GHSA-5p2g-fcmc-qvqq](https://github.com/advisories/GHSA-5p2g-fcmc-qvqq). Do not accept npm's incompatible PptxGenJS downgrade suggestion.
 
-The furniture candidate's package normalization removes PptxGenJS 4.0.1
-content-type declarations for generated slide-master parts that do not exist.
-The vendor file remains byte-identical to upstream. Smoke and corpus checks
-require every override to target an actual part. The independent
-[`test/openxml` audit](test/openxml/README.md) reports a separate notes-master
-element-order disagreement with the Open XML SDK; changing that order remains a
-diagnostic comparison, pending native Office acceptance.
+Package normalization removes PptxGenJS 4.0.1 content-type declarations for generated slide-master parts that do not exist, without changing the vendor bytes or existing package parts. The smoke regression requires every override to target an actual part. This ports the independently audited correction from [commit 1363a65](https://github.com/OpenPresentation/opf-pptx/commit/1363a653c8b0e80c50d970bc30db3587bcf6f14e). Its notes-master SDK/native-order disagreement remains separate; the native ordering is unchanged.
 
 ## Compatible raster decoding
 
