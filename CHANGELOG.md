@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Consume core heading defaults from `composeSlide` for native shape origins. Title and subtitle share the padded width; cover and content heading placement follow the installed core. Native Header/Footer objects remain out of scope.
+
 ## 0.8.0
 
 - Remove content-type declarations for nonexistent generated slide masters, retaining every actual part and relationship. Add the audited package-integrity regression; notes-master ordering is unchanged.
