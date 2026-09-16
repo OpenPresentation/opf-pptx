@@ -22,8 +22,10 @@ and retained failure evidence. Merging this roadmap is not a feature release.
 
 Coordinated Linux and Windows checks pass at the archived head, but the geometry contract depends on the unreleased core/renderer stack. Native mixed-size table tab positions and Office edit/save/reopen acceptance remain in [core issue87](https://github.com/OpenPresentation/opf/issues/87). Do not introduce offsets or turn soft wraps into hard paragraphs.
 
+Published 0.8.1 furniture is ordinary slide shapes tagged `OPF_FURNITURE_V1` with vendor `p:hf` flags off. That is **not** the intended PowerPoint end state. OPF shared headers/footers **must** compile into native Header/Footer objects (Office Insert → Header & Footer, notes master, `p:hf` date/slide-number/footer). Track that converter on [core issue87](https://github.com/OpenPresentation/opf/issues/87); do not treat tagged-shape furniture as done for PowerPoint.
+
 Track coordinated font/measurement work in [renderer issue24](https://github.com/OpenPresentation/opf-render/issues/24).
-Follow the [central deferred-work plan](https://github.com/OpenPresentation/opf/blob/main/docs/plans/deferred-shaping-20260915.md)
+The Linux native-width residual stays at the unchanged 0.1px gate. Follow the [central deferred-work plan](https://github.com/OpenPresentation/opf/blob/main/docs/plans/deferred-shaping-20260915.md)
 and [project handoff](https://github.com/OpenPresentation/opf/blob/main/docs/handoff-2026-09-15.md).
 
 Resume from current main in a new branch and port a bounded supported subset.
