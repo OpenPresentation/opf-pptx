@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record that published 0.8.1 furniture export remains ordinary slide shapes tagged `OPF_FURNITURE_V1` with vendor `p:hf` off. Native Office Header/Footer objects (Insert → Header & Footer, notes master, `p:hf` date/slide-number/footer) stay in [core issue 87](https://github.com/OpenPresentation/opf/issues/87). Tagged-shape furniture is not the intended PowerPoint end state.
+
 ## 0.8.0
 
 - Remove content-type declarations for nonexistent generated slide masters, retaining every actual part and relationship. Add the audited package-integrity regression; notes-master ordering is unchanged.
