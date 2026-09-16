@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.1
+
+- Require core 0.10.1 and renderer 0.8.1 for the corrected layout and content contracts. PowerPoint export APIs are unchanged.
+- Include shared header/footer furniture provenance on export/import. Native PowerPoint visual fidelity remains a separate gate.
+
 ## 0.8.0
 
 - Remove content-type declarations for nonexistent generated slide masters, retaining every actual part and relationship. Add the audited package-integrity regression; notes-master ordering is unchanged.

@@ -4,7 +4,7 @@ Version 0.8.1 requires core 0.10.1, including metric, quote and timeline layout 
 
 Unfinished prepared shaping work is preserved in the [September 15 roadmap](docs/roadmap-shaping-20260915.md); it is not part of the published runtime.
 
-Version 0.8.0 and this checkout require Node 24 (`24.x`). Use `.nvmrc` for local development. Earlier published versions retain their original engine declarations. Browser entrypoints remain browser-safe; native application compatibility is verified separately.
+Version 0.8.1 and this checkout require Node 24 (`24.x`). Use `.nvmrc` for local development. Earlier published versions retain their original engine declarations. Browser entrypoints remain browser-safe; native application compatibility is verified separately.
 
 Version 0.8.0 consumes shared heading/scalar/rich line placement, including `textRasterPadding`, through editable native line boxes without autofit. Complete heading tags retain title/subtitle/tag roles, line ordering and current edited text during import. Source boundary metadata also records hard-line separators, so complete scalar/heading groups recover current native text with spaces, tabs and exact authored line endings. Incomplete, duplicate, ambiguous or bulleted groups fall back to ordinary import with diagnostics. Legacy heading tags retain their prior native-line behavior; arbitrary formatting, nesting and geometry are not reconstructed. See the [source contract and limits](https://github.com/OpenPresentation/opf/blob/f94125a1ff95bf0974a055fe1c081d348dad54f2/docs/plans/text-placement.md). Native raster certification remains separate.
 
