@@ -15,6 +15,11 @@ function Test-FontEmbedSaveAsPathArgument($Argument) {
     return ($Argument -is [System.Management.Automation.Language.VariableExpressionAst]) -and ($Argument.VariablePath.UserPath -ceq 'savedPath')
 }
 function Get-FontEmbedNumericLiteralValue($Argument) {
+    while($Argument -is [System.Management.Automation.Language.ParenExpressionAst]) {
+        $elements=@($Argument.Pipeline.PipelineElements)
+        if($elements.Count -ne 1) { return $null }
+        $Argument=$elements[0].Expression
+    }
     if($Argument -is [System.Management.Automation.Language.ConstantExpressionAst]) { return [int]$Argument.Value }
     if($Argument -is [System.Management.Automation.Language.UnaryExpressionAst]) {
         if($Argument.TokenKind -ne [System.Management.Automation.Language.TokenKind]::Minus) { return $null }
@@ -204,7 +209,7 @@ $root=(Resolve-Path -LiteralPath $OutputDirectory).Path
 $request=Get-Content -LiteralPath (Join-Path $root 'request.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $sourceSnapshot=(Resolve-Path -LiteralPath $request.source.snapshotPath).Path
 $savedPath=Join-Path $root 'native-font-embed.pptx'
-$stageFile=Join-Path $root 'stages.jsonl'; $progressFile=Join-Path $root 'progress.json'; $reportFile=Join-Path $root 'report.json'
+$script:stageFile=Join-Path $root 'stages.jsonl'; $script:progressFile=Join-Path $root 'progress.json'; $reportFile=Join-Path $root 'report.json'
 if(Test-Path -LiteralPath $savedPath) { throw 'Worker evidence already exists; preserve this attempt and do not retry in it' }
 if((Get-FontEmbedSha256 $PSCommandPath) -cne $request.verifier.sha256) { throw 'Verifier snapshot does not match the executing verifier' }
 
@@ -226,8 +231,8 @@ function Write-FontEmbedReport { $report.cleanupConfirmed=$script:cleanupConfirm
 function Write-FontEmbedStage([string]$StageName,[string]$Status,[string]$ErrorMessage=$null) {
     $script:sequence++; $script:lastStage=$StageName; $script:lastStatus=$Status
     $record=[ordered]@{sequence=$script:sequence;timestamp=(Get-Date).ToUniversalTime().ToString('o');stage=$StageName;status=$Status;error=$ErrorMessage;cleanupConfirmed=$script:cleanupConfirmed;officeOperationsStopped=$script:officeOperationsStopped;ownedPresentationPath=$script:ownedPresentationPath}
-    $record | ConvertTo-Json -Compress | Add-Content -LiteralPath $stageFile -Encoding UTF8
-    $record | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $progressFile -Encoding UTF8
+    $record | ConvertTo-Json -Compress | Add-Content -LiteralPath $script:stageFile -Encoding UTF8
+    $record | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:progressFile -Encoding UTF8
 }
 function Invoke-FontEmbedCom([string]$StageName,[scriptblock]$Operation) {
     if($script:officeOperationsStopped) { throw 'Office operations already stopped after a COM failure' }
