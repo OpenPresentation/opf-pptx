@@ -59,12 +59,24 @@ function Invoke-FontEmbedPureRegression {
     $ast=Assert-FontEmbedVerifierAst $PSCommandPath
     $definition=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object {$_.Name -ceq 'Invoke-FontEmbedCom'})
     if($definition.Count -ne 1) { throw 'Expected exactly one Invoke-FontEmbedCom definition' }
-    Invoke-Expression $definition[0].Extent.Text
-    $script:officeOperationsStopped=$false; $script:cleanupConfirmed=$true
-    $failureCaught=$false
-    try { Invoke-FontEmbedCom 'pure.failure' { throw 'Deliberate non-Office failure' } } catch { $failureCaught=$true }
-    if(-not $failureCaught -or -not $script:officeOperationsStopped) { throw 'COM failure latch did not engage' }
-    [ordered]@{passed=$true;officeOrComCalls=0;embedSaveArgument=-1;noEmbedFontsZero=$true} | ConvertTo-Json -Depth 4
+    $pureRoot=Join-Path ([IO.Path]::GetTempPath()) ('opf-font-embed-pure-' + [Guid]::NewGuid().ToString('n'))
+    [void](New-Item -ItemType Directory -Path $pureRoot)
+    try {
+        $script:stageFile=Join-Path $pureRoot 'stages.jsonl'
+        $script:progressFile=Join-Path $pureRoot 'progress.json'
+        $script:sequence=0
+        Invoke-Expression $definition[0].Extent.Text
+        $script:officeOperationsStopped=$false; $script:cleanupConfirmed=$true
+        $failureCaught=$false
+        try { Invoke-FontEmbedCom 'pure.failure' { throw 'Deliberate non-Office failure' } } catch { $failureCaught=$true }
+        if(-not $failureCaught -or -not $script:officeOperationsStopped) { throw 'COM failure latch did not engage' }
+        $script:unexpectedCall=$false
+        try { Invoke-FontEmbedCom 'pure.forbidden-followup' { $script:unexpectedCall=$true } } catch { }
+        if($script:unexpectedCall) { throw 'Operation ran after the failure latch' }
+        [ordered]@{passed=$true;officeOrComCalls=0;embedSaveArgument=(-1);noEmbedFontsZero=$true} | ConvertTo-Json -Depth 4
+    } finally {
+        if(Test-Path -LiteralPath $pureRoot) { Remove-Item -LiteralPath $pureRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 if($PureRegression) { Invoke-FontEmbedPureRegression; return }
