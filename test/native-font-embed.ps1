@@ -11,11 +11,20 @@ $ErrorActionPreference='Stop'
 function Get-FontEmbedSha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Read-FontEmbedRegistrations([string]$Path) { $parsed=Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json; return ,@($parsed) }
 
+function Assert-FontEmbedNoQuitInvocation([string]$Path) {
+    $tokens=$null; $parseErrors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$parseErrors)
+    foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
+        $member=$invoke.Member
+        if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ceq 'Quit') { throw 'Embed harness must not invoke .Quit() on an Office application' }
+    }
+}
 function Invoke-FontEmbedPureRegression {
     $source=Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8
-    if($source -match 'SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)') { throw 'Embed harness must not call SaveAs with EmbedFonts 0' }
-    if($source -notmatch 'SaveAs\(\$savedPath,\s*24\s*,\s*-1\s*\)') { throw 'Embed harness must call SaveAs with EmbedFonts -1 (msoTrue)' }
-    if($source -match 'Application\.Quit') { throw 'Embed harness must not call Application.Quit' }
+    $codeOnly=($source -replace "'(?:''|[^'])*'","''" -replace '"(?:`"|[^"])*"','""' -replace '#.*$','')
+    if($codeOnly -match 'SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)') { throw 'Embed harness must not call SaveAs with EmbedFonts 0' }
+    if($codeOnly -notmatch 'SaveAs\(\$savedPath,\s*24\s*,\s*-1\s*\)') { throw 'Embed harness must call SaveAs with EmbedFonts -1 (msoTrue)' }
+    Assert-FontEmbedNoQuitInvocation $PSCommandPath
     $tokens=$null; $parseErrors=$null
     $ast=[System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath,[ref]$tokens,[ref]$parseErrors)
     if($parseErrors.Count -ne 0) { throw "Verifier parse failed: $($parseErrors[0].Message)" }

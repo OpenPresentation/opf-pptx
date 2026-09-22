@@ -6,6 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {
   auditEmbedVerifierSource,
+  hasOfficeQuitInvocation,
   PERMITTED_CARLITO_FIXTURE_SHA256,
 } from './native-font-embed-audit.mjs';
 
@@ -48,9 +49,18 @@ if (process.platform === 'win32') {
   outcomes.push({name: 'embed-pure-regression', passed: true, skipped: 'non-Windows runner'});
 }
 
-const negative = auditEmbedVerifierSource('SaveAs($savedPath,24,0)', {label: 'negative'});
+const negative = auditEmbedVerifierSource('$script:presentation.SaveAs($savedPath,24,0)', {label: 'negative'});
 assert.ok(negative.some(item => item.code === 'embed-forced-off'));
 outcomes.push({name: 'audit-rejects-embed-off', passed: true});
+
+assert.equal(
+  auditEmbedVerifierSource("throw 'Embed harness must not call Application.Quit'").filter(item => item.code === 'application-quit').length,
+  0,
+  'Ban prose in strings must not trip application-quit',
+);
+assert.ok(hasOfficeQuitInvocation('$app.Quit()'), 'Real .Quit() invocations must be detected');
+assert.ok(auditEmbedVerifierSource('$app.Quit()').some(item => item.code === 'application-quit'));
+outcomes.push({name: 'audit-quit-ban-not-prose', passed: true});
 
 const suite = {
   passed: outcomes.every(item => item.passed),

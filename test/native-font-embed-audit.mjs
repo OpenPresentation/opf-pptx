@@ -24,16 +24,33 @@ export const PERMITTED_CARLITO_FIXTURE_SHA256 = new Set([
   '25f5672c1985d168d6bc2973864fc5a7e374bb95fe8d0f91cff47ae17fa67691',
 ]);
 
+/** Remove PS string literals so ban documentation in throw messages is not scanned as code. */
+export function stripPowerShellLiteralsForScan(sourceText) {
+  return sourceText
+    .replace(/'(?:''|[^'])*'/g, "''")
+    .replace(/"(?:`"|[^"])*"/g, '""')
+    .replace(/#.*$/gm, '');
+}
+
+/** Detect real Office quit invocations ($app.Quit(), .Application.Quit(), …), not prose. */
+export function hasOfficeQuitInvocation(sourceText) {
+  const code = stripPowerShellLiteralsForScan(sourceText);
+  return /(?:\$[\w]+\.Quit|\.Application\.Quit)\s*\(/i.test(code);
+}
+
+const OWNED_EMBED_SAVE_OFF = /\.SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/;
+const OWNED_EMBED_SAVE_ON = /\.SaveAs\(\$savedPath,\s*24\s*,\s*-1\s*\)/;
+
 export function auditEmbedVerifierSource(sourceText, {label = 'native-font-embed.ps1'} = {}) {
   const failures = [];
-  if (/SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/.test(sourceText)) {
+  if (OWNED_EMBED_SAVE_OFF.test(sourceText)) {
     failures.push({code: 'embed-forced-off', message: `${label} must not call SaveAs with EmbedFonts 0`});
   }
-  if (!/SaveAs\(\$savedPath,\s*24\s*,\s*-1\s*\)/.test(sourceText)) {
+  if (!OWNED_EMBED_SAVE_ON.test(sourceText)) {
     failures.push({code: 'embed-not-requested', message: `${label} must call SaveAs with EmbedFonts -1 on the owned presentation`});
   }
-  if (/Application\.Quit/.test(sourceText)) {
-    failures.push({code: 'application-quit', message: `${label} must not call Application.Quit`});
+  if (hasOfficeQuitInvocation(sourceText)) {
+    failures.push({code: 'application-quit', message: `${label} must not call Application.Quit or .Quit()`});
   }
   return failures;
 }
