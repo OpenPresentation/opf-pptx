@@ -39,7 +39,7 @@ export function hasOfficeQuitInvocation(sourceText) {
 }
 
 const OWNED_EMBED_SAVE_OFF = /\.SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/;
-const OWNED_EMBED_SAVE_ON = /\.SaveAs\(\$savedPath,\s*24\s*,\s*-1\s*\)/;
+const OWNED_EMBED_SAVE_ON = /\.SaveAs\(\$savedPath,\s*24\s*,\s*(?:\(-1\)|-1)\s*\)/;
 
 export function auditEmbedVerifierSource(sourceText, {label = 'native-font-embed.ps1'} = {}) {
   const failures = [];
