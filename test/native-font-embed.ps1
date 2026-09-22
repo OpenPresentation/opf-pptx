@@ -11,23 +11,41 @@ $ErrorActionPreference='Stop'
 function Get-FontEmbedSha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Read-FontEmbedRegistrations([string]$Path) { $parsed=Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json; return ,@($parsed) }
 
-function Assert-FontEmbedNoQuitInvocation([string]$Path) {
+function Test-FontEmbedSaveAsPathArgument($Argument) {
+    return ($Argument -is [System.Management.Automation.Language.VariableExpressionAst]) -and ($Argument.VariablePath.UserPath -ceq 'savedPath')
+}
+function Test-FontEmbedSaveAsConstantArgument($Argument,[int]$Expected) {
+    return ($Argument -is [System.Management.Automation.Language.ConstantExpressionAst]) -and ([int]$Argument.Value -eq $Expected)
+}
+function Get-FontEmbedOwnedSaveAsEmbedArgument($Invoke) {
+    if(-not ($Invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) -or $Invoke.Member.Value -cne 'SaveAs') { return $null }
+    $arguments=@($Invoke.Arguments)
+    if($arguments.Count -ne 3) { return $null }
+    if(-not (Test-FontEmbedSaveAsPathArgument $arguments[0])) { return $null }
+    if(-not (Test-FontEmbedSaveAsConstantArgument $arguments[1] 24)) { return $null }
+    if(-not (Test-FontEmbedSaveAsConstantArgument $arguments[2] 0) -and -not (Test-FontEmbedSaveAsConstantArgument $arguments[2] -1)) { return $null }
+    return [int]$arguments[2].Value
+}
+function Assert-FontEmbedVerifierAst([string]$Path) {
     $tokens=$null; $parseErrors=$null
     $ast=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$parseErrors)
+    if($parseErrors.Count -ne 0) { throw "Verifier parse failed: $($parseErrors[0].Message)" }
     foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
         $member=$invoke.Member
         if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ceq 'Quit') { throw 'Embed harness must not invoke .Quit() on an Office application' }
     }
+    $embedOn=0; $embedOff=0
+    foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
+        $embedArgument=Get-FontEmbedOwnedSaveAsEmbedArgument $invoke
+        if($null -eq $embedArgument) { continue }
+        if($embedArgument -eq -1) { $embedOn++ } elseif($embedArgument -eq 0) { $embedOff++ }
+    }
+    if($embedOff -gt 0) { throw 'Embed harness must not call SaveAs with EmbedFonts 0' }
+    if($embedOn -ne 1) { throw 'Embed harness must call SaveAs with EmbedFonts -1 (msoTrue) exactly once on $savedPath' }
+    return $ast
 }
 function Invoke-FontEmbedPureRegression {
-    $source=Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8
-    $codeOnly=($source -replace "'(?:''|[^'])*'","''" -replace '"(?:`"|[^"])*"','""' -replace '#.*$','')
-    if($codeOnly -match 'SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)') { throw 'Embed harness must not call SaveAs with EmbedFonts 0' }
-    if($codeOnly -notmatch 'SaveAs\(\$savedPath,\s*24\s*,\s*-1\s*\)') { throw 'Embed harness must call SaveAs with EmbedFonts -1 (msoTrue)' }
-    Assert-FontEmbedNoQuitInvocation $PSCommandPath
-    $tokens=$null; $parseErrors=$null
-    $ast=[System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath,[ref]$tokens,[ref]$parseErrors)
-    if($parseErrors.Count -ne 0) { throw "Verifier parse failed: $($parseErrors[0].Message)" }
+    $ast=Assert-FontEmbedVerifierAst $PSCommandPath
     $definition=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object {$_.Name -ceq 'Invoke-FontEmbedCom'})
     if($definition.Count -ne 1) { throw 'Expected exactly one Invoke-FontEmbedCom definition' }
     Invoke-Expression $definition[0].Extent.Text
