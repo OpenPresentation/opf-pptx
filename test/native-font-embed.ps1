@@ -62,15 +62,19 @@ function Assert-FontEmbedVerifierAst([string]$Path) {
 }
 function Invoke-FontEmbedPureRegression {
     $ast=Assert-FontEmbedVerifierAst $PSCommandPath
-    $definition=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object {$_.Name -ceq 'Invoke-FontEmbedCom'})
-    if($definition.Count -ne 1) { throw 'Expected exactly one Invoke-FontEmbedCom definition' }
+    $definitions=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true))
+    $stageDefinition=@($definitions | Where-Object {$_.Name -ceq 'Write-FontEmbedStage'})
+    $comDefinition=@($definitions | Where-Object {$_.Name -ceq 'Invoke-FontEmbedCom'})
+    if($stageDefinition.Count -ne 1) { throw 'Expected exactly one Write-FontEmbedStage definition' }
+    if($comDefinition.Count -ne 1) { throw 'Expected exactly one Invoke-FontEmbedCom definition' }
     $pureRoot=Join-Path ([IO.Path]::GetTempPath()) ('opf-font-embed-pure-' + [Guid]::NewGuid().ToString('n'))
     [void](New-Item -ItemType Directory -Path $pureRoot)
     try {
         $script:stageFile=Join-Path $pureRoot 'stages.jsonl'
         $script:progressFile=Join-Path $pureRoot 'progress.json'
         $script:sequence=0
-        Invoke-Expression $definition[0].Extent.Text
+        Invoke-Expression $stageDefinition[0].Extent.Text
+        Invoke-Expression $comDefinition[0].Extent.Text
         $script:officeOperationsStopped=$false; $script:cleanupConfirmed=$true
         $failureCaught=$false
         try { Invoke-FontEmbedCom 'pure.failure' { throw 'Deliberate non-Office failure' } } catch { $failureCaught=$true }
