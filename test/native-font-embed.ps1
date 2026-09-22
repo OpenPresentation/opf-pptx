@@ -14,17 +14,28 @@ function Read-FontEmbedRegistrations([string]$Path) { $parsed=Get-Content -Liter
 function Test-FontEmbedSaveAsPathArgument($Argument) {
     return ($Argument -is [System.Management.Automation.Language.VariableExpressionAst]) -and ($Argument.VariablePath.UserPath -ceq 'savedPath')
 }
-function Test-FontEmbedSaveAsConstantArgument($Argument,[int]$Expected) {
-    return ($Argument -is [System.Management.Automation.Language.ConstantExpressionAst]) -and ([int]$Argument.Value -eq $Expected)
+function Get-FontEmbedNumericLiteralValue($Argument) {
+    if($Argument -is [System.Management.Automation.Language.ConstantExpressionAst]) { return [int]$Argument.Value }
+    if($Argument -is [System.Management.Automation.Language.UnaryExpressionAst]) {
+        if($Argument.TokenKind -ne [System.Management.Automation.Language.TokenKind]::Minus) { return $null }
+        $child=$Argument.Child
+        if($child -is [System.Management.Automation.Language.ConstantExpressionAst]) { return -([int]$child.Value) }
+    }
+    return $null
+}
+function Test-FontEmbedSaveAsNumericArgument($Argument,[int]$Expected) {
+    $value=Get-FontEmbedNumericLiteralValue $Argument
+    return ($null -ne $value) -and ($value -eq $Expected)
 }
 function Get-FontEmbedOwnedSaveAsEmbedArgument($Invoke) {
     if(-not ($Invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) -or $Invoke.Member.Value -cne 'SaveAs') { return $null }
     $arguments=@($Invoke.Arguments)
     if($arguments.Count -ne 3) { return $null }
     if(-not (Test-FontEmbedSaveAsPathArgument $arguments[0])) { return $null }
-    if(-not (Test-FontEmbedSaveAsConstantArgument $arguments[1] 24)) { return $null }
-    if(-not (Test-FontEmbedSaveAsConstantArgument $arguments[2] 0) -and -not (Test-FontEmbedSaveAsConstantArgument $arguments[2] -1)) { return $null }
-    return [int]$arguments[2].Value
+    if(-not (Test-FontEmbedSaveAsNumericArgument $arguments[1] 24)) { return $null }
+    $embed=Get-FontEmbedNumericLiteralValue $arguments[2]
+    if($null -eq $embed -or ($embed -ne 0 -and $embed -ne (-1))) { return $null }
+    return $embed
 }
 function Assert-FontEmbedVerifierAst([string]$Path) {
     $tokens=$null; $parseErrors=$null
@@ -38,7 +49,7 @@ function Assert-FontEmbedVerifierAst([string]$Path) {
     foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
         $embedArgument=Get-FontEmbedOwnedSaveAsEmbedArgument $invoke
         if($null -eq $embedArgument) { continue }
-        if($embedArgument -eq -1) { $embedOn++ } elseif($embedArgument -eq 0) { $embedOff++ }
+        if($embedArgument -eq (-1)) { $embedOn++ } elseif($embedArgument -eq 0) { $embedOff++ }
     }
     if($embedOff -gt 0) { throw 'Embed harness must not call SaveAs with EmbedFonts 0' }
     if($embedOn -ne 1) { throw 'Embed harness must call SaveAs with EmbedFonts -1 (msoTrue) exactly once on $savedPath' }
@@ -135,7 +146,7 @@ if(-not $Worker) {
                 [ordered]@{start=36;length=13;text='BoldItalic 24';size=24;bold=$true;italic=$true}
             )
         }
-        embedFonts=[ordered]@{saveFormat=24;saveArgument=-1;meaning='Presentation.SaveAs third argument -1 (msoTrue) on the owned presentation only'}
+        embedFonts=[ordered]@{saveFormat=24;saveArgument=(-1);meaning='Presentation.SaveAs third argument -1 (msoTrue) on the owned presentation only'}
     }
     $request=[ordered]@{
         source=[ordered]@{path=$inputPath;sha256=(Get-FontEmbedSha256 $inputPath);snapshotPath=$sourceSnapshot;snapshotSha256=(Get-FontEmbedSha256 $sourceSnapshot)}
@@ -163,7 +174,7 @@ if(-not $Worker) {
     if(Test-Path -LiteralPath $workerReportPath) { try {$workerReport=Get-Content -LiteralPath $workerReportPath -Raw -Encoding UTF8 | ConvertFrom-Json} catch {$parentFailure="Unreadable worker report: $($_.Exception.Message)"} }
     $timedOut=($null -ne $result -and [bool]$result.timedOut)
     $officeLifecycleComplete=($null -ne $result -and -not $timedOut -and [int]$result.exitCode -eq 0 -and $null -ne $lastDurable -and $lastDurable.stage -ceq 'worker.complete' -and $lastDurable.status -ceq 'success' -and [bool]$lastDurable.cleanupConfirmed)
-    $embedSaveRecorded=($null -ne $workerReport -and $null -ne $workerReport.embedFonts -and [int]$workerReport.embedFonts.saveArgument -eq -1)
+    $embedSaveRecorded=($null -ne $workerReport -and $null -ne $workerReport.embedFonts -and [int]$workerReport.embedFonts.saveArgument -eq (-1))
     $terminal=[ordered]@{
         timestamp=(Get-Date).ToUniversalTime().ToString('o');timedOut=$timedOut;exitCode=$(if($null -eq $result){$null}else{$result.exitCode})
         officeLifecycleComplete=$officeLifecycleComplete;embedSaveRecorded=$embedSaveRecorded;fontCleanupConfirmed=$fontCleanupConfirmed
@@ -229,13 +240,13 @@ try {
     Assert-FontEmbedPresentationNotOpen $app $sourceSnapshot 'input.preflight'; Assert-FontEmbedPresentationNotOpen $app $savedPath 'output.preflight'
     $script:cleanupConfirmed=$false; $script:ownedPresentationPath=$sourceSnapshot; Write-FontEmbedReport
     $presentations=Invoke-FontEmbedCom 'input.presentations.get' {return ,$app.Presentations}
-    $script:presentation=Invoke-FontEmbedCom 'input.presentation.open' {return ,$presentations.Open($sourceSnapshot,0,0,-1)}
+    $script:presentation=Invoke-FontEmbedCom 'input.presentation.open' {return ,$presentations.Open($sourceSnapshot,0,0,(-1))}
     $slides=Invoke-FontEmbedCom 'edit.slides.get' {return ,$script:presentation.Slides}; $slide=Invoke-FontEmbedCom 'edit.slide-1.get' {return ,$slides.Item(1)}; $shapes=Invoke-FontEmbedCom 'edit.shapes.get' {return ,$slide.Shapes}
     $titleShape=Invoke-FontEmbedCom 'edit.title.get' {return ,$shapes.Item('OPF heading slides.0.title line 0')}; $titleRange=Invoke-FontEmbedCom 'edit.title.textRange2.get' {return ,$titleShape.TextFrame2.TextRange}
     Set-FontEmbedRange $titleRange $request.expectations.title.text $request.expectations.title.family ([double]$request.expectations.title.size) ([bool]$request.expectations.title.bold) ([bool]$request.expectations.title.italic) @() 'edit.title'
     $bodyShape=Invoke-FontEmbedCom 'edit.body.get' {return ,$shapes.Item('OPF text slides.0.text line 0')}; $bodyRange=Invoke-FontEmbedCom 'edit.body.textRange2.get' {return ,$bodyShape.TextFrame2.TextRange}
     Set-FontEmbedRange $bodyRange $request.expectations.body.text $request.expectations.body.family ([double]$request.expectations.body.defaultSize) $false $false $request.expectations.body.runs 'edit.body'
-    Invoke-FontEmbedCom 'edited.presentation.saveAs-owned-copy-embed-fonts' {$script:presentation.SaveAs($savedPath,24,-1)}; $script:ownedPresentationPath=$savedPath; $report.embedFonts.completed=$true; Write-FontEmbedReport
+    Invoke-FontEmbedCom 'edited.presentation.saveAs-owned-copy-embed-fonts' {$script:presentation.SaveAs($savedPath,24,(-1))}; $script:ownedPresentationPath=$savedPath; $report.embedFonts.completed=$true; Write-FontEmbedReport
     Close-OwnedFontEmbed 'edited.presentation' $savedPath; $report.saved.sha256=Get-FontEmbedSha256 $savedPath; Write-FontEmbedReport
     Write-FontEmbedStage 'worker.complete' 'success'; Write-FontEmbedReport
     Write-Output 'Native font embed completed; run native-font-embed-audit.mjs on this directory for OPC font-part hashes.'
