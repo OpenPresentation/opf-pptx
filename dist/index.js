@@ -8,6 +8,7 @@ import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
 import {attachFurnitureTags, furnitureManifest, importFurniture} from './furniture-provenance.js';
+import {attachDocumentProvenance, documentProvenance, restoreDocumentProvenance} from './document-provenance.js';
 import {importImageOrientation} from './image-import.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
@@ -198,6 +199,7 @@ export async function toPptx(input, options = {}) {
   context.imageFormat = options.imageFormat ?? "compatible";
   Object.assign(context, exportTheme(presentation, context));
   context.reportedFontSchemes = new Set();
+  context.documentProvenance = documentProvenance(presentation, diagnostic => options.onDiagnostic?.(diagnostic));
   const pptx = new PptxGenJS();
   configurePresentation(pptx, presentation, {...context,fonts:resolveSlideContext(presentation,presentation.slides[0],context,options).fonts});
 
@@ -240,7 +242,7 @@ export async function fromPptx(input, options = {}) {
 
   const core = readCoreProperties(entries);
   const dimensions = dimensionsFromPresentation(presentationRoot);
-  const imported = {
+  let imported = {
     $schema: options.schema ?? CANONICAL_SCHEMA,
     name: core.title || options.fallbackName || "Imported PPTX",
     slides: []
@@ -270,6 +272,24 @@ export async function fromPptx(input, options = {}) {
   }
   // Report after the slides so slide diagnostics keep their established order.
   for (const diagnostic of themeDesign.diagnostics) options.onDiagnostic?.(diagnostic);
+
+  // Catalog references, layout ids and authoring metadata recorded at export
+  // (FF-32). A candidate that fails validation leaves the ordinary import.
+  const provenanceDiagnostics = [], candidate = structuredClone(imported);
+  let provenanceValid = false;
+  try {
+    restoreDocumentProvenance(candidate, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true,
+      slides: slidePaths.map((path, index) => ({path, root: furnitureContexts[index].root, relationships: furnitureContexts[index].relationships}))},
+    diagnostic => provenanceDiagnostics.push(diagnostic));
+    provenanceValid = validatePresentation(candidate).valid;
+  } catch (error) {
+    provenanceDiagnostics.splice(0, provenanceDiagnostics.length, {code: "invalid-document-provenance", path: "", message: `${errorMessage(error)} Ordinary import keeps the values observed in the PPTX.`});
+  }
+  if (provenanceValid) imported = candidate;
+  else if (!provenanceDiagnostics.some(diagnostic => diagnostic.code === "invalid-document-provenance" && diagnostic.path === "")) {
+    provenanceDiagnostics.splice(0, provenanceDiagnostics.length, {code: "invalid-document-provenance", path: "", message: "Stored OPF references or metadata do not form a valid document with the imported content. Ordinary import keeps the values observed in the PPTX."});
+  }
+  for (const diagnostic of provenanceDiagnostics) options.onDiagnostic?.(diagnostic);
 
   const result = validatePresentation(imported);
   if (!result.valid) {
@@ -1976,6 +1996,17 @@ async function normalizePptxZip(raw, context) {
   }
 
   finalizeFontsUsed(output);
+  // Document references record evidence from the final normalized parts.
+  if (context.documentProvenance) {
+    const parts = Object.fromEntries(Object.entries(output).map(([path, [bytes]]) => [path, bytes]));
+    try {
+      attachDocumentProvenance(parts, context.documentProvenance);
+    } catch (error) {
+      throw new OPFPptxError("packaging-failed", "Document provenance tags could not be attached.", {cause: errorMessage(error)});
+    }
+    for (const [path, bytes] of Object.entries(parts)) output[path] = [bytes, {level: context.compressionLevel, mtime: context.zipDate}];
+  }
+
   // Sort after chart/worksheet renaming; source counters can cross digit widths.
   const sortedOutput = Object.fromEntries(Object.keys(output).sort().map(path => [path, output[path]]));
   return zipSync(sortedOutput, {
