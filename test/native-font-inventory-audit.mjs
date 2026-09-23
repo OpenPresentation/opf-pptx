@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {realpathSync} from 'node:fs';
 import {readdir, readFile, stat, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -19,9 +20,17 @@ const isInt = value => typeof value === 'number' && Number.isInteger(value);
 const isHash = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const isDate = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+// .NET GetFullPath expands Windows 8.3 short names (RUNNER~1) while Node keeps
+// them, so existing paths are compared by their native real path.
+const realPaths = new Map();
+const realPath = value => {
+  const resolved = path.resolve(value);
+  if (!realPaths.has(resolved)) { let actual = resolved; try { actual = realpathSync.native(resolved); } catch { /* missing path: compare lexically */ } realPaths.set(resolved, actual); }
+  return realPaths.get(resolved);
+};
 const samePath = (left, right) => {
   if (typeof left !== 'string' || typeof right !== 'string' || !left || !right) return false;
-  const a = path.resolve(left), b = path.resolve(right);
+  const a = realPath(left), b = realPath(right);
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 };
 const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : isObject(value) ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}` : JSON.stringify(value ?? null);
@@ -292,7 +301,7 @@ async function readRequired(root, relative, failures, rawHashes, parser = parse)
 }
 
 export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = path.dirname(__filename)} = {}) {
-  const root = path.resolve(evidenceDirectory), failures = [], rawHashes = {};
+  const root = realPath(evidenceDirectory), failures = [], rawHashes = {};
   const need = (condition, code, message) => { if (!condition) failures.push({code, message}); };
   const request = await readRequired(root, 'request.json', failures, rawHashes);
   const report = await readRequired(root, 'report.json', failures, rawHashes);
