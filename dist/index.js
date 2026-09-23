@@ -4,6 +4,7 @@ import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbo
 import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
 import {attachCardTags,importCardFrames} from './card-provenance.js';
+import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord} from './media-provenance.js';
 import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
@@ -194,6 +195,8 @@ export async function toPptx(input, options = {}) {
   context.slideImages = new Map();
   context.backgroundFills = new Map();
   context.cardTags = new Map();
+  context.mediaTags = new Map();
+  context.provenanceMode = options.provenance ?? "full";
   context.headingTags = new Map();
   context.plainTextTags = new Map();
   context.timelineTags = new Map();
@@ -291,6 +294,8 @@ export async function fromPptx(input, options = {}) {
   for (let index = 0; index < slidePaths.length; index += 1) {
     imported.slides.push(importSlide(entries, slidePaths[index], index, dimensions, options, furniture.slides[index], furnitureContexts[index]));
   }
+  // Asset entries recorded with restored video placeholders (FF-29); the first recorded value wins.
+  for (const context of furnitureContexts) for (const [id, asset] of Object.entries(context.mediaAssets ?? {})) if (!Object.hasOwn(imported.assets ?? {}, id)) imported.assets = {...imported.assets, [id]: asset};
   // Report after the slides so slide diagnostics keep their established order.
   // A theme name FF-24 could not verify is not reported when the stored reference restores the theme.
   for (const diagnostic of themeDesign.diagnostics) if (diagnostic.code !== "theme-unverified") options.onDiagnostic?.(diagnostic);
@@ -518,6 +523,8 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   const code = importCodeGroups(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.code`}));
   const metric = importMetricGroups(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.metric`}));
   const cards = importCardFrames(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
+  const media = importMediaGroups(shapes, paragraphs, relationships, entries, slideIndex, diagnostic => options.onDiagnostic?.(diagnostic));
+  nativeContext.mediaAssets = media.assets;
   const headings=importHeadingGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
   const plainText=importPlainTextGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
   const timelines=importTimelineGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
@@ -536,9 +543,10 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   }
   for (const item of code.items) items.push({kind:'code',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
   for (const item of metric.items) items.push({kind:'metric',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
+  for (const item of media.items) items.push({kind:'media',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
   for (const [index,shape] of shapes.entries()) {
     if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index)) continue;
-    if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)) continue;
+    if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)) continue;
     const item = importShape(shape, dimensions, paragraphs[index], furniture.taggedText.has(index));
     // A damaged/edited furniture group falls back to current native text,
     // including cleared text boxes, without inventing a title or shape label.
@@ -1202,7 +1210,7 @@ async function addPayload(slide, presentation, payload, region, path, context, o
       await addImagePayload(slide, presentation, payload.image, region, path, context, options);
       break;
     case "video":
-      addMediaPayload(slide, payload.video, region, path, context, options);
+      addMediaPayload(slide, presentation, payload.video, region, path, context, options);
       break;
     case "chart":
       addChartPayload(slide, payload.chart, region, context);
@@ -1536,6 +1544,7 @@ function addMeasuredPayloadText(slide, text, box, context, options, config) {
       context.furnitureTags.set(objectName,{v:1,role:'text',...config.furniture,line:index,count:fit.lines.length,...boundary});
       if(config.liveFields?.[index]?.length)context.furnitureFields.set(objectName,{text:line,fields:config.liveFields[index]});
     }
+    else if(config.media)context.mediaTags.set(objectName,{v:1,role:'caption',path:config.path,line:index,count:fit.lines.length});
     else if(config.sourceText)context.plainTextTags.set(objectName,{v:1,group:config.path,line:index,count:fit.lines.length,...boundary});
     const area=placed?{x:(placed.x+placed.width*factor-box.width*factor)/96,y:(placed.baseline-fit.fontSize)/96,w:box.width/96,h:placed.height/96}:{x:box.x/96,y:(box.y+index*fit.lineHeight)/96,w:box.width/96,h:fit.lineHeight/96};
     // A run-level link keeps the muted, non-underlined furniture look of the preview (hlinkClr=tx, u=none).
@@ -1671,15 +1680,22 @@ function addTimelinePayload(slide, value, layout, context, options, path) {
 // Mirror the renderer's media placeholder: a bordered surface, a centred 72px
 // play badge and a centred caption (title, then source). Native video embedding
 // is not attempted; the caption keeps the reference editable.
-function addMediaPayload(slide, value, region, path, context, options) {
+function addMediaPayload(slide, presentation, value, region, path, context, options) {
   const box = pixelBox(region);
-  const asset = typeof value === "string" ? {src: value} : value && typeof value === "object" && !Array.isArray(value) ? value : {src: ""};
   const icon = {x: box.x + (box.width - 72) / 2, y: box.y + (box.height - 72) / 2};
-  slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, pt: 0.75}, objectName: `OPF media ${path} frame`});
-  slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, objectName: `OPF media ${path} badge`});
-  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, objectName: `OPF media ${path} play`});
-  addMeasuredPayloadText(slide, asset.title || asset.src || "Media", {...box, y: icon.y + 72 + 20, height: 50}, context, options,
-    {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText});
+  // The frame links to a web source (after asset dereferencing), so the
+  // reference stays usable in PowerPoint; OPF_MEDIA_V1 keeps the OPF value.
+  const resolved = dereferenceAsset(value, presentation, path), source = typeof resolved === "string" ? resolved : resolved?.src;
+  const hyperlink = typeof source === "string" && /^https?:\/\//i.test(source) ? {url: source} : undefined;
+  const names = {frame: `OPF media ${path} frame`, badge: `OPF media ${path} badge`, play: `OPF media ${path} play`};
+  context.mediaTags.set(names.frame, mediaFrameRecord(value, path, presentation, context.provenanceMode));
+  context.mediaTags.set(names.badge, {v: 1, role: "badge", path});
+  context.mediaTags.set(names.play, {v: 1, role: "play", path});
+  slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, pt: 0.75}, hyperlink, objectName: names.frame});
+  slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, objectName: names.badge});
+  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, objectName: names.play});
+  addMeasuredPayloadText(slide, mediaCaption(value), {...box, y: icon.y + 72 + 20, height: 50}, context, options,
+    {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText, objectName: `OPF media ${path} caption`, media: true});
 }
 
 function addPlaceholderPayload(slide, label, value, region, context) {
@@ -2048,6 +2064,7 @@ async function normalizePptxZip(raw, context) {
   attachCodeTags(entries, context.codeTags);
   attachMetricTags(entries,context.metricTags);
   attachCardTags(entries,context.cardTags);
+  attachMediaTags(entries,context.mediaTags);
   attachHeadingTags(entries,context.headingTags);
   attachPlainTextTags(entries,context.plainTextTags);
   attachTimelineTags(entries,context.timelineTags);
