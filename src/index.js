@@ -13,6 +13,7 @@ import {importImageOrientation} from './image-import.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
+import {importLanguage, partScriptFonts, planScriptFonts} from './script-fonts.js';
 import { webpToPng } from '#image-fallback';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import { layoutTable, composeSlide, fitText, fitRichText, textWidthMeasurer, resolveCanvasDimensions, resolveFontFamilies, resolveTextStyle, textColorForFill, chartColorForFill } from "@openpresentation/opf/composition";
@@ -208,6 +209,7 @@ export async function toPptx(input, options = {}) {
     isCatalogId: (kind, id) => !!(findById(normalizeRecords(presentation.catalogs?.[kind]), id) ?? findById(defaultCatalog(kind), id)),
     report: diagnostic => options.onDiagnostic?.(diagnostic)
   });
+  context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic);
   const pptx = new PptxGenJS();
   configurePresentation(pptx, presentation, {...context,fonts:resolveSlideContext(presentation,presentation.slides[0],context,options).fonts});
 
@@ -256,6 +258,12 @@ export async function fromPptx(input, options = {}) {
     slides: []
   };
 
+  const language = importLanguage({
+    slides: slidePaths.map(path => decodeText(entries[path])),
+    theme: (path => path && entries[path] ? decodeText(entries[path]) : null)(presentationThemePath(presentationRoot, presentationRels, path => parseRelationships(entries, path), entries)),
+    catalogs: bundledCatalogs
+  }, diagnostic => options.onDiagnostic?.(diagnostic));
+  if (language !== undefined) imported.language = language;
   if (core.description) imported.description = core.description;
   if (core.author) imported.author = core.author;
   const themeDesign = importThemeDesign(entries, presentationRoot, presentationRels);
@@ -1984,6 +1992,16 @@ async function normalizePptxZip(raw, context) {
     }
     imageMetadata.set(part, metadata);
   }
+  // Charts and notes follow the language and fonts of the slide they belong to.
+  context.partSlides = new Map();
+  for (const part of Object.keys(entries)) {
+    const slide = /^ppt\/slides\/slide(\d+)\.xml$/.exec(part);
+    if (!slide) continue;
+    context.partSlides.set(part, Number(slide[1]) - 1);
+    for (const relationship of parseRelationships(entries, part).values()) {
+      if (/\/(?:chart|notesSlide)$/.test(relationship.type)) context.partSlides.set(relationship.path, Number(slide[1]) - 1);
+    }
+  }
   const output = {};
   const renameMaps = buildRenameMaps(Object.keys(entries));
   // The host may transform assets or supply a filename/MIME hint that no
@@ -2176,6 +2194,8 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
         return `<a:p>${properties}${content}</a:p>`;
       });
     }
+    // theme1.xml: FF-24 colors and names above, then FF-07 fonts here; they touch disjoint elements.
+    if (context.scriptFonts) xml = partScriptFonts(path, xml, context.scriptFonts, context.partSlides.get(path) ?? 0);
     return encodeText(normalizePartReferences(xml, renameMaps));
   }
   return bytes;
