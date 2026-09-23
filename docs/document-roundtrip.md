@@ -33,6 +33,7 @@ Only values the document states are stored; engine defaults are not. A document 
 | `organization`, `speaker`, `takeaway`, `duration`, `tags`, `variables` | yes | no | |
 | slide `id` | yes | no | |
 | slide `beat`, `layout`, `type`, `composition`, slide design references and hints | yes | yes (design values without image/file/URL sources) | |
+| slide `layoutRecord`: the inline `catalogs.layouts` record for the slide's `layout` (FF-29) | yes | yes | |
 | `assets` entries referenced by stored values | yes | no | |
 | inline `catalogs` records referenced by the document | yes | yes, referenced by stored values | |
 | native evidence (hashes and theme values, below) | yes | yes | |
@@ -86,19 +87,31 @@ Restores are applied as independent groups, one per OPF field. The deck backgrou
 
 ## Untrusted input
 
-Tags can be written by anyone who can edit the file. The hash is a change detector, not a signature. Tag values are size-limited and decoded as JSON. Only known fields are accepted, media references must name an existing `ppt/media/` part, and every restored field must validate with `validatePresentation`. Nothing in a tag is executed or fetched. A package whose tags were stripped imports as an ordinary foreign deck without a diagnostic.
+Tags can be written by anyone who can edit the file. The hash is a change detector, not a signature. Tag values are size-limited and decoded as JSON. Only known fields are accepted, media references must name an existing `ppt/media/` part, and every restored field must validate with `validatePresentation`. Nothing in a tag is executed or fetched. A package whose tags were all stripped imports as an ordinary foreign deck without a diagnostic. When only `OPF_DOCUMENT_V1` is missing or unreadable, the slide tags still restore their layout intent (below).
+
+## Layout intent (FF-29)
+
+Layout intent is part of each slide's `OPF_SLIDE_V1` record, not a separate tag: the slide's `layout` id, `type`, `composition` and composition hints (`design.titleAlignment`, `contentAlignment`, `contentBox`, `contentDirection`, `chartPrimary`, `imageFill`, `listBullet`), plus `layoutRecord`. `layoutRecord` is the document's inline `catalogs.layouts` record for that id, stored with the slide as well as in the document's `catalogs`. Bundled ids carry no record. Geometry, text and images are never stored; composition re-derives placement from the restored intent, and native shapes supply every word and payload.
+
+Import restores the intent while the slide's arrangement is unchanged (see the table above):
+
+- **With `OPF_DOCUMENT_V1`** (FF-32), a layout id resolves to the document's inline record. A slide record that disagrees with it, for example a slide pasted from another deck whose `gallery-hero` record differs, keeps its content and composition hints without the layout id and reports `layout-reference-changed` at `slides.N.layout`. A pasted slide whose id the document lacks brings its own `layoutRecord`, which is added to `catalogs.layouts`.
+- **Without `OPF_DOCUMENT_V1`**, or when it is unreadable (`invalid-document-provenance` at `''`), each slide record still restores its layout id, type, composition, hints and record. The first slide's record wins for an id; a later disagreeing slide reports `layout-reference-changed`. Deck references, deck composition defaults, metadata, slide ids and beats need the document record and are not restored.
+- A `layoutRecord` whose `id` differs from the slide's `layout` is ignored and reported as `invalid-document-provenance` at `slides.N.layoutRecord`; a malformed one rejects the slide record (`slides.N`).
+
+Importers from before FF-29 ignore the `layoutRecord` field, as `OPF_SLIDE_V1` readers ignore unknown top-level fields.
 
 ## Contract for layout-structure recovery (FF-29)
 
-`restoreDocumentProvenance()` in `src/document-provenance.js` reads the tags without modifying the document. `fromPptx` keeps its per-slide result as `slideProvenance`:
+`restoreDocumentProvenance()` in `src/document-provenance.js` reads the tags without modifying the document, with or without `OPF_DOCUMENT_V1`. `fromPptx` keeps its per-slide result as `slideProvenance`:
 
 ```js
 slideProvenance[i] = {
   layout,         // stored layout id (string) or undefined
   structure,      // 'match' | 'changed' | 'untagged'
   record,         // validated OPF_SLIDE_V1 value without native evidence:
-                  // {v, slide, id?, beat?, layout?, type?, composition?, design?, omitted?}
-  catalogRecord   // the stored inline catalogs.layouts record for `layout`, if any
+                  // {v, slide, id?, beat?, layout?, type?, composition?, design?, layoutRecord?, omitted?}
+  catalogRecord   // the inline catalogs.layouts record for `layout`, if any: the document's, else the slide's layoutRecord
 };
 ```
 
