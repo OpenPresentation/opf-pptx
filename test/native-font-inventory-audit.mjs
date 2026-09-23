@@ -40,8 +40,22 @@ export const FONT2_SLOTS = Object.freeze(['name', 'nameAscii', 'nameOther', 'nam
 const FONT2_PROPERTIES = Object.freeze([...FONT2_SLOTS, 'size', 'bold', 'italic']);
 const THEME_SLOTS = Object.freeze(['latin', 'complexScript', 'eastAsian']);
 const INPUT_MODES = Object.freeze({'carlito-fixture': ['temporary-session', 'none'], 'control-deck': ['none']});
-const FORBIDDEN_MEMBERS = /\.(?:SaveAs|Save|SaveCopyAs|Export|ExportAsFixedFormat|PrintOut|Quit|Kill|Delete|Cut|Copy|Paste|PasteSpecial|InsertAfter|InsertBefore|Duplicate|set_\w+|InvokeMember)\s*\(/i;
-const FORBIDDEN_STAGE = /saveas|\.save|export|quit|printout|kill|delete|paste|\.set$|\.set\./i;
+// Every invoked member must be on this allowlist, which mirrors the worker's
+// own AST policy: PowerPoint calls (Open, Close, Item, Paragraphs, Runs) plus
+// named .NET helpers. Add, ApplyTemplate, ApplyTheme, SaveAs, Quit and every
+// other member are rejected. COM property reads are not invocations.
+export const ALLOWED_COM_MEMBERS = Object.freeze(['Open', 'Close', 'Item', 'Paragraphs', 'Runs']);
+export const ALLOWED_INSTANCE_MEMBERS = Object.freeze(['Contains', 'ContainsKey', 'FindAll', 'GetCommandName', 'StartsWith', 'Substring', 'ToLowerInvariant', 'ToString', 'ToUniversalTime', 'TrimEnd']);
+export const ALLOWED_STATIC_MEMBERS = Object.freeze(['GetExtension', 'GetFullPath', 'GetTempPath', 'IsNullOrEmpty', 'IsNullOrWhiteSpace', 'Max', 'Min', 'NewGuid', 'ParseFile', 'Sort', 'WriteAllText']);
+const FORBIDDEN_STAGE = /saveas|\.save|export|quit|printout|kill|delete|paste|apply|\.add|\.set$|\.set\./i;
+
+export function invokedMembers(sourceText) {
+  const code = stripPowerShellLiteralsForScan(sourceText);
+  const instance = [...code.matchAll(/(?<!:)\.([A-Za-z_]\w*)\(/g)].map(match => match[1]);
+  // PowerShell method invocation has no space before the parenthesis; `.Path (x)` is a property read then an argument.
+  const statics = [...code.matchAll(/::([A-Za-z_]\w*)\(/g)].map(match => match[1]);
+  return {instance: [...new Set(instance)].sort(), statics: [...new Set(statics)].sort(), dynamic: /\.\$\w+\(/.test(code)};
+}
 
 // Static read-only policy for the verifier snapshot, applied to code with
 // string literals and comments removed.
@@ -49,7 +63,10 @@ export function auditInventoryVerifierSource(sourceText, {label = 'native-font-i
   const failures = [];
   const code = stripPowerShellLiteralsForScan(sourceText);
   const add = (code, message) => failures.push({code, message: `${label} ${message}`});
-  if (FORBIDDEN_MEMBERS.test(code)) add('forbidden-member', 'must not save, export, quit, kill, edit clipboard/text, call setters, or invoke members dynamically');
+  const members = invokedMembers(sourceText);
+  const instanceAllowed = [...ALLOWED_COM_MEMBERS, ...ALLOWED_INSTANCE_MEMBERS];
+  const rejected = [...members.instance.filter(name => !instanceAllowed.includes(name)), ...members.statics.filter(name => !ALLOWED_STATIC_MEMBERS.includes(name)).map(name => `::${name}`)];
+  if (rejected.length || members.dynamic) add('forbidden-member', `invokes members outside the read-only allowlist: ${[...rejected, ...(members.dynamic ? ['dynamic member'] : [])].join(', ')}`);
   if (hasOfficeQuitInvocation(sourceText)) add('application-quit', 'must not call Application.Quit or .Quit()');
   if (/\b(?:Stop-Process|taskkill|spps)\b/i.test(code)) add('process-kill', 'must not terminate processes');
   const opens = code.match(/\.Open\s*\(/g) ?? [], closes = code.match(/\.Close\s*\(/g) ?? [];
@@ -181,12 +198,51 @@ export function expectedInventoryStages(report, failures = []) {
   return stages;
 }
 
+// Diagnostic for failed attempts: after a failure the worker closes the owned
+// presentation once only when no COM call failed and FullName is still the
+// owned snapshot; otherwise it leaves it open with cleanupConfirmed=false.
+// A passing audit additionally requires failureCleanup to be null.
+const ERROR_CLOSE = 'owned.presentation.error';
+export function analyzeFailureCleanup(report, stages) {
+  const rows = Array.isArray(stages) ? stages : [], problems = [];
+  const need = (condition, message) => { if (!condition) problems.push(message); };
+  const final = rows.at(-1), outcome = report?.failureCleanup ?? null;
+  const failed = final?.stage === 'worker.failure' && final?.status === 'error';
+  const closeInvocations = rows.filter(row => typeof row?.stage === 'string' && row.stage.endsWith('.close') && row.status === 'begin').length;
+  const errorRows = rows.filter(row => typeof row?.stage === 'string' && row.stage.startsWith(`${ERROR_CLOSE}.`));
+  const errorSequence = errorRows.map(row => `${row.stage}/${row.status}`).join(',');
+  if (!failed) {
+    need(outcome === null && errorRows.length === 0, 'Only a terminal worker.failure may record failureCleanup or error-close stages');
+    return {applicable: false, outcome, closeInvocations, consistent: problems.length === 0, problems};
+  }
+  need(closeInvocations <= 1, 'Close was invoked more than once');
+  const fullNameCheck = `${ERROR_CLOSE}.fullName-before-close.get/begin,${ERROR_CLOSE}.fullName-before-close.get/success`;
+  const comFailure = rows.slice(0, -1).some(row => row?.status === 'error');
+  const opened = rows.some(row => row?.stage === 'input.presentation.open-readonly' && row?.status === 'success');
+  const closedNormally = rows.some(row => row?.stage === 'owned.presentation.close' && row?.status === 'success');
+  if (outcome === 'closed-owned-after-failure') {
+    need(errorSequence === `${fullNameCheck},${ERROR_CLOSE}.close/begin,${ERROR_CLOSE}.close/success,${ERROR_CLOSE}.cleanup/success`, 'Error close must be one FullName check, one close and one cleanup');
+    need(errorRows.length > 0 && rows.indexOf(errorRows.at(-1)) === rows.length - 2, 'Error cleanup must directly precede worker.failure');
+    need(!comFailure && report?.officeOperationsStopped === false, 'An error close must not follow a COM failure');
+    need(opened && !closedNormally, 'An error close requires an owned open and no earlier close');
+    need(report?.cleanupConfirmed === true && report?.ownedCloseCount === 1 && final?.cleanupConfirmed === true && final?.ownedPresentationPath === null, 'An error close must confirm cleanup with exactly one owned close');
+  } else if (outcome === 'left-open-com-latched') {
+    need(comFailure && report?.officeOperationsStopped === true, 'The latched outcome requires a recorded COM failure');
+    need(errorRows.length === 0 && report?.cleanupConfirmed === false, 'After a COM failure nothing is closed and cleanup stays unconfirmed');
+  } else if (typeof outcome === 'string' && outcome.startsWith('left-open-not-closed')) {
+    need(!errorSequence.includes(`${ERROR_CLOSE}.close/`) && report?.cleanupConfirmed === false, 'A presentation that is not proven owned must stay open with cleanup unconfirmed');
+  } else if (outcome === 'no-owned-presentation-open') {
+    need(errorRows.length === 0 && (!opened || closedNormally), 'No owned presentation may remain open when none is reported');
+  } else problems.push(`Unknown failureCleanup outcome: ${outcome}`);
+  return {applicable: true, outcome, closeInvocations, consistent: problems.length === 0, problems};
+}
+
 function auditLifecycle({request, report, supervisor, worker, progress, stages, registrations, registrationFilePresent}) {
   const failures = [];
   const need = (condition, code, message) => { if (!condition) failures.push({code, message}); };
   const mode = request?.fontRegistration?.mode;
   need(report?.kind === 'native-font-inventory' && report?.schemaVersion === 1, 'report-kind', 'report.json must be native-font-inventory schema 1');
-  need(report?.error === null && report?.cleanupConfirmed === true && report?.officeOperationsStopped === false && report?.ownedOpenCount === 1 && report?.ownedCloseCount === 1 && report?.lastStage === 'worker.complete' && report?.lastStatus === 'success', 'report-lifecycle', 'Worker report must end successfully with confirmed cleanup, one owned open and one owned close');
+  need(report?.error === null && report?.cleanupConfirmed === true && report?.officeOperationsStopped === false && report?.ownedOpenCount === 1 && report?.ownedCloseCount === 1 && report?.lastStage === 'worker.complete' && report?.lastStatus === 'success' && report?.failureCleanup === null, 'report-lifecycle', 'Worker report must end successfully with confirmed cleanup, one owned open and one owned close');
   need(report?.source?.openedPathMatches === true && samePath(report?.source?.fullName, report?.source?.snapshotPath) && report?.source?.readOnly === -1 && report?.source?.snapshotUnchangedAfterClose === true, 'report-read-only', 'The opened FullName must be the owned snapshot, ReadOnly must be -1, and the snapshot must be unchanged after close');
   need(Array.isArray(report?.boundsExceeded) && report.boundsExceeded.length === 0 && Array.isArray(report?.semanticFailures) && report.semanticFailures.length === 0, 'report-complete', 'The inventory must be complete with no exceeded bounds or semantic failures');
   need(canonical(report?.bounds) === canonical(INVENTORY_BOUNDS) && canonical(request?.bounds) === canonical(INVENTORY_BOUNDS), 'bounds', 'Request and report bounds must equal the reviewed inventory bounds');
@@ -354,6 +410,7 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
   const findings = {
     inputMode: inputMode ?? null, fontRegistrationMode: mode ?? null, powerPointVersion: report?.environment?.powerPointVersion ?? null,
     presentationFonts: report?.presentationFonts?.entries ?? null, theme: report?.theme ?? null, ledger,
+    failureCleanup: analyzeFailureCleanup(report, Array.isArray(stages) ? stages : []),
     note: 'Findings are evidence only when passed is true. Reported names do not prove physical font-file or per-glyph identity.',
   };
   return {schemaVersion: 1, kind: 'native-font-inventory-audit', evidenceDirectory: root, passed: failures.length === 0, failures, rawHashes, findings, scope: 'Offline input, lifecycle, read-only, stage-sequence and font-ledger audit of one native font inventory attempt. No Office, COM or font API is started.'};

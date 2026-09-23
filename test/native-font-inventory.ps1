@@ -20,7 +20,13 @@ $ErrorActionPreference='Stop'
 function Get-InventorySha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Assert-InventoryHash([string]$Value,[string]$Context) { if($Value -notmatch '^[0-9a-f]{64}$') { throw "$Context must be a lowercase SHA-256" } }
 function Test-InventoryInteger($Value) { return ($Value -is [int]) -or ($Value -is [long]) }
-function Test-InventoryPathEqual([string]$Left,[string]$Right) { return ([IO.Path]::GetFullPath($Left) -ieq [IO.Path]::GetFullPath($Right)) }
+# A cloud deck reports a URL FullName; GetFullPath throws on URLs. Anything that
+# is not a local filesystem path is treated as not owned, never as an error.
+function Test-InventoryFileSystemPath([string]$Path) { return (-not [string]::IsNullOrWhiteSpace($Path)) -and ($Path -notmatch '^[A-Za-z][A-Za-z0-9+.-]+:') }
+function Test-InventoryPathEqual([string]$Left,[string]$Right) {
+    if(-not (Test-InventoryFileSystemPath $Left) -or -not (Test-InventoryFileSystemPath $Right)) { return $false }
+    try { return ([IO.Path]::GetFullPath($Left) -ieq [IO.Path]::GetFullPath($Right)) } catch { return $false }
+}
 # Windows PowerShell 5.1 emits a root JSON array as one pipeline item. Decode
 # first, then wrap, so four registration rows never collapse into one element.
 function Read-InventoryRegistrations([string]$Path) { $parsed=Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json; return ,@($parsed) }
@@ -74,8 +80,8 @@ function Get-InventoryList($Object,[string]$Name) {
 }
 function Test-InventoryAptosName($Name) { return ($Name -is [string]) -and ($Name -match '^aptos') }
 function Get-InventorySortedDistinct($Values) {
-    $set=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-    foreach($value in @($Values)) { if(($value -is [string]) -and $value.Length -gt 0) { [void]$set.Add($value) } }
+    $strings=[string[]]@(@($Values) | Where-Object { ($_ -is [string]) -and $_.Length -gt 0 })
+    $set=New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList $strings,([StringComparer]::Ordinal)
     $sorted=[string[]]@($set)
     [Array]::Sort($sorted,[StringComparer]::Ordinal)
     return ,$sorted
@@ -139,11 +145,17 @@ function Get-InventoryParentDecision($Result,$LastDurable,$WorkerReport,[string]
     return ,([ordered]@{passed=$passed;timedOut=$timedOut;exitCode=$exitCode;officeLifecycleComplete=$lifecycle;readOnlyConfirmed=$readOnlyConfirmed;inventoryComplete=$inventoryComplete;fontRegistrationMode=$Mode;fontCleanupConfirmed=$fontCleanup;registrationFilePresent=$RegistrationFilePresent;inputsUnchanged=$InputsUnchanged})
 }
 
-# Static safety policy for this file. Allowed member-assignment roots are local
-# report/evidence dictionaries, never COM objects.
-$script:inventoryForbiddenMembers=@('Quit','SaveAs','Save','SaveCopyAs','Export','ExportAsFixedFormat','PrintOut','Kill','Delete','Cut','Copy','Paste','PasteSpecial','InsertAfter','InsertBefore','Replace','Duplicate','AddFontResourceExW','RemoveFontResourceExW','InvokeMember')
+# Static safety policy for this file. Every invoked member must be on an
+# allowlist: the PowerPoint calls the worker needs (Open, Close, Item,
+# Paragraphs, Runs) plus named .NET helpers. Anything else, such as Add,
+# ApplyTemplate, ApplyTheme, SaveAs or Quit, is rejected. COM property reads
+# are member expressions, not invocations. Allowed member-assignment roots are
+# local report/evidence dictionaries, never COM objects.
+$script:inventoryAllowedComMembers=@('Open','Close','Item','Paragraphs','Runs')
+$script:inventoryAllowedInstanceMembers=@('Contains','ContainsKey','FindAll','GetCommandName','StartsWith','Substring','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
+$script:inventoryAllowedStaticMembers=@('GetExtension','GetFullPath','GetTempPath','IsNullOrEmpty','IsNullOrWhiteSpace','Max','Min','NewGuid','ParseFile','Sort','WriteAllText')
 $script:inventoryForbiddenCommands=@('Stop-Process','taskkill','taskkill.exe','kill','spps')
-$script:inventoryAssignmentRoots=@('report','slideRecord','shapeRecord','seen','wrongGeneration','sample','sampleRows','policyRejected')
+$script:inventoryAssignmentRoots=@('report','slideRecord','shapeRecord','seen','wrongGeneration','sample','sampleRows','policyRejected','errorCloseOutcomes')
 function Get-InventoryAssignmentRoot($Expression) {
     while($Expression -is [System.Management.Automation.Language.MemberExpressionAst] -or $Expression -is [System.Management.Automation.Language.IndexExpressionAst]) {
         if($Expression -is [System.Management.Automation.Language.MemberExpressionAst]) { $Expression=$Expression.Expression } else { $Expression=$Expression.Target }
@@ -159,7 +171,8 @@ function Assert-InventoryWorkerAst([string]$Path) {
     foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
         if(-not ($invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { throw 'Inventory worker must not invoke a dynamically named member' }
         $name=$invoke.Member.Value
-        if($script:inventoryForbiddenMembers -contains $name -or $name -like 'set_*') { throw "Inventory worker must not invoke .$name()" }
+        $allowed=$(if($invoke.Static){$script:inventoryAllowedStaticMembers}else{$script:inventoryAllowedComMembers+$script:inventoryAllowedInstanceMembers})
+        if($allowed -cnotcontains $name) { throw "Inventory worker must not invoke .$name(); it is not on the read-only member allowlist" }
         if($name -ieq 'Open') { $openCount++ }
         if($name -ieq 'Close') { $closeCount++ }
     }
@@ -177,6 +190,12 @@ function Assert-InventoryWorkerAst([string]$Path) {
             if($null -eq $root -or $script:inventoryAssignmentRoots -cnotcontains $root) { throw "Inventory worker must not assign a member of $root" }
         }
     }
+    foreach($unary in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -contains [string]$node.TokenKind},$true)) {
+        if($unary.Child -is [System.Management.Automation.Language.MemberExpressionAst] -or $unary.Child -is [System.Management.Automation.Language.IndexExpressionAst]) {
+            $root=Get-InventoryAssignmentRoot $unary.Child
+            if($null -eq $root -or $script:inventoryAssignmentRoots -cnotcontains $root) { throw "Inventory worker must not increment a member of $root" }
+        }
+    }
     return $ast
 }
 
@@ -192,6 +211,26 @@ function Invoke-InventoryCom([string]$StageName,[scriptblock]$Operation) {
     Write-InventoryStage $StageName 'begin'
     try { $value=& $Operation; Write-InventoryStage $StageName 'success'; return ,$value }
     catch { $script:officeOperationsStopped=$true; $script:cleanupConfirmed=$false; Write-InventoryStage $StageName 'error' $_.Exception.Message; throw }
+}
+function Write-InventoryReport { $script:report.cleanupConfirmed=$script:cleanupConfirmed; $script:report.officeOperationsStopped=$script:officeOperationsStopped; $script:report.lastStage=$script:lastStage; $script:report.lastStatus=$script:lastStatus; $script:report | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $script:reportFile -Encoding UTF8 }
+# The only Close invocation in this file. It closes the presentation object this
+# worker opened, after its FullName is confirmed to be the owned snapshot.
+function Close-OwnedInventoryPresentation([string]$ExpectedPath,[string]$Prefix='owned.presentation') {
+    if($null -eq $script:presentation) { throw 'No owned presentation is available for close' }
+    $actual=[string](Invoke-InventoryCom "$Prefix.fullName-before-close.get" {$script:presentation.FullName})
+    if(-not (Test-InventoryPathEqual $actual $ExpectedPath)) { throw "Refusing to close a presentation whose exact path is not owned: $actual" }
+    Invoke-InventoryCom "$Prefix.close" {$script:presentation.Close()}
+    $script:presentation=$null; $script:ownedPresentationPath=$null; $script:cleanupConfirmed=$true; $script:report.ownedCloseCount=[int]$script:report.ownedCloseCount+1
+    Write-InventoryStage "$Prefix.cleanup" 'success'; Write-InventoryReport
+}
+# After a failure: close the owned presentation exactly once, but only when no
+# COM call has failed (the latch is not set) and its FullName is still the owned
+# snapshot. Otherwise leave it open and record cleanupConfirmed=false.
+function Close-InventoryAfterFailure([string]$ExpectedPath) {
+    if($null -eq $script:presentation) { return 'no-owned-presentation-open' }
+    if($script:officeOperationsStopped) { $script:cleanupConfirmed=$false; return 'left-open-com-latched' }
+    try { Close-OwnedInventoryPresentation $ExpectedPath 'owned.presentation.error'; return 'closed-owned-after-failure' }
+    catch { $script:cleanupConfirmed=$false; return "left-open-not-closed: $($_.Exception.Message)" }
 }
 
 function New-InventorySampleObservation([string[]]$FontNames,[string]$FarEast='',[string]$ThemeLatin='Carlito',[string]$MasterComplexScript='') {
@@ -229,6 +268,13 @@ function Invoke-InventoryPureRegression {
             stopProcess='$p=$a.Open($x,-1,0,0); $p.Close(); Stop-Process -Name POWERPNT'
             dynamicMember='$p=$a.Open($x,-1,0,0); $m=''Save''; $p.$m(); $p.Close()'
             setter='$p=$a.Open($x,-1,0,0); $p.set_Saved(-1); $p.Close()'
+            addSlide='$p=$a.Open($x,-1,0,0); $s=$p.Slides.Add(1,1); $p.Close()'
+            addShape='$p=$a.Open($x,-1,0,0); $s=$p.Slides.Item(1).Shapes.AddTextbox(1,0,0,9,9); $p.Close()'
+            applyTemplate='$p=$a.Open($x,-1,0,0); $p.ApplyTemplate($y); $p.Close()'
+            applyTheme='$p=$a.Open($x,-1,0,0); $p.ApplyTheme($y); $p.Close()'
+            replaceFont='$p=$a.Open($x,-1,0,0); $p.Fonts.Replace(''Aptos'',''Carlito''); $p.Close()'
+            staticCall='$p=$a.Open($x,-1,0,0); [IO.File]::Delete($y); $p.Close()'
+            memberIncrement='$p=$a.Open($x,-1,0,0); $shape.Top++; $p.Close()'
         }
         $policyRejected=[ordered]@{}
         foreach($key in $policyNegatives.Keys) {
@@ -254,6 +300,34 @@ function Invoke-InventoryPureRegression {
         if(($stageRecords | ForEach-Object { "$($_.stage)/$($_.status)" }) -join ',' -cne 'pure.success/begin,pure.success/success,pure.failure/begin,pure.failure/error') { throw 'Unexpected pure stage sequence' }
         if(@($stageLines[0..2] | Where-Object { $_ -notmatch '"error":null,' }).Count -ne 0) { throw 'Non-error stage records must serialize error as JSON null' }
         if($stageRecords[3].error -cne 'Deliberate non-Office failure') { throw 'Error stage record lost its message' }
+
+        # URL FullName values (cloud decks) are never owned and never throw.
+        $cloudUrl='https://contoso.sharepoint.com/sites/team/Shared%20Documents/deck.pptx'
+        $ownedPath=Join-Path $pureRoot 'inputs\source.pptx'
+        if((Test-InventoryPathEqual $cloudUrl $ownedPath) -or (Test-InventoryPathEqual $ownedPath $cloudUrl) -or (Test-InventoryPathEqual '' $ownedPath) -or -not (Test-InventoryPathEqual (Join-Path $pureRoot 'inputs\..\inputs\source.pptx') $ownedPath)) { throw 'Path ownership comparison mishandled a URL, empty or relative path' }
+
+        # Close-on-failure decisions against a non-COM stand-in presentation.
+        $script:reportFile=Join-Path $pureRoot 'report.json'
+        $errorCloseCases=@(
+            @('owned',$ownedPath,$false,'closed-owned-after-failure',$true,'owned.presentation.error.fullName-before-close.get/begin,owned.presentation.error.fullName-before-close.get/success,owned.presentation.error.close/begin,owned.presentation.error.close/success,owned.presentation.error.cleanup/success'),
+            @('comLatched',$ownedPath,$true,'left-open-com-latched',$false,''),
+            @('otherPath',(Join-Path $pureRoot 'other.pptx'),$false,'left-open-not-closed:*',$false,'owned.presentation.error.fullName-before-close.get/begin,owned.presentation.error.fullName-before-close.get/success'),
+            @('cloudUrl',$cloudUrl,$false,'left-open-not-closed:*',$false,'owned.presentation.error.fullName-before-close.get/begin,owned.presentation.error.fullName-before-close.get/success'),
+            @('noPresentation',$null,$false,'no-owned-presentation-open',$false,'')
+        )
+        $errorCloseOutcomes=[ordered]@{}
+        foreach($case in $errorCloseCases) {
+            $script:stageFile=Join-Path $pureRoot "error-close-$($case[0]).jsonl"; $script:progressFile=Join-Path $pureRoot "error-close-$($case[0]).progress.json"; $script:sequence=0
+            $script:report=[ordered]@{ownedCloseCount=0;cleanupConfirmed=$false;officeOperationsStopped=$false;lastStage=$null;lastStatus=$null}
+            $script:officeOperationsStopped=$case[2]; $script:cleanupConfirmed=$false; $script:ownedPresentationPath=$ownedPath; $script:presentation=$null
+            if($null -ne $case[1]) { $standIn=[pscustomobject]@{FullName=$case[1]}; $standIn | Add-Member -MemberType ScriptMethod -Name Close -Value { }; $script:presentation=$standIn }
+            $outcome=Close-InventoryAfterFailure $ownedPath
+            $observedStages=$(if(Test-Path -LiteralPath $script:stageFile){(@(Get-Content -LiteralPath $script:stageFile -Encoding UTF8 | ForEach-Object { $row=$_ | ConvertFrom-Json; "$($row.stage)/$($row.status)" })) -join ','}else{''})
+            $closed=($null -eq $script:presentation -and $null -ne $case[1])
+            if($outcome -notlike $case[3] -or $closed -ne $case[4] -or $script:cleanupConfirmed -ne $case[4] -or $script:report.ownedCloseCount -ne $(if($case[4]){1}else{0}) -or $observedStages -cne $case[5]) { throw "Close-on-failure control $($case[0]) failed: $outcome / $observedStages" }
+            $errorCloseOutcomes[$case[0]]=$outcome
+        }
+        $script:presentation=$null; $script:officeOperationsStopped=$false
 
         $canonicalFonts=@($script:inventoryCanonicalFaces.Keys | ForEach-Object {[pscustomobject]@{file=$_;sha256=$script:inventoryCanonicalFaces[$_]}})
         $validGeneration=[pscustomobject]@{kind='native-font-edit-fixture';source=[pscustomobject]@{file='source.pptx';sha256=('0'*64)};license=[pscustomobject]@{file='LICENSE_FONT';spdx='OFL-1.1';sha256=$script:inventoryLicenseSha256};registration=[pscustomobject]@{flags=0};fonts=$canonicalFonts}
@@ -313,7 +387,7 @@ function Invoke-InventoryPureRegression {
         if(-not $goodTemporary.passed -or -not $goodNone.passed -or $null -ne $goodNone.fontCleanupConfirmed) { throw 'Parent decision rejected a valid control' }
         $accepted=@($negativeDecisions.Keys | Where-Object {$negativeDecisions[$_].passed})
         if($accepted.Count -ne 0) { throw "Parent decision accepted negative controls: $($accepted -join ',')" }
-        [ordered]@{passed=$true;officeOrComCalls=0;fontApiCalls=0;readOnlyStaticPolicy=$true;policyNegativesRejected=$policyRejected;stopLatchPassed=$true;nonErrorStageErrorIsNull=$true;canonicalGenerationNegativesRejected=$true;registrationArrayDecodedRows=$decoded.Count;ledgerAptosControlsPassed=$true;parentDecisionNegativesRejected=@($negativeDecisions.Keys)} | ConvertTo-Json -Depth 6
+        [ordered]@{passed=$true;officeOrComCalls=0;fontApiCalls=0;readOnlyStaticPolicy=$true;policyNegativesRejected=$policyRejected;stopLatchPassed=$true;nonErrorStageErrorIsNull=$true;canonicalGenerationNegativesRejected=$true;registrationArrayDecodedRows=$decoded.Count;closeOnFailure=$errorCloseOutcomes;urlFullNameNotOwned=$true;ledgerAptosControlsPassed=$true;parentDecisionNegativesRejected=@($negativeDecisions.Keys)} | ConvertTo-Json -Depth 6
     } finally {
         if(Test-Path -LiteralPath $pureRoot) {
             $deleteRoot=(Resolve-Path -LiteralPath $pureRoot).Path
@@ -493,7 +567,7 @@ $script:report=[ordered]@{
     slides=[ordered]@{count=$null;entries=@()}
     slideMaster=[ordered]@{shapeCount=$null;shapes=@()}
     boundsExceeded=@();semanticFailures=@();fontLedger=$null
-    preflightPresentationCount=$null;ownedOpenCount=0;ownedCloseCount=0
+    preflightPresentationCount=$null;ownedOpenCount=0;ownedCloseCount=0;failureCleanup=$null
     environment=[ordered]@{hostVersion=$PSVersionTable.PSVersion.ToString();windowsProductName=$os.ProductName;windowsDisplayVersion=$os.DisplayVersion;windowsBuild="$($os.CurrentBuild).$($os.UBR)";powerPointVersion=$null}
     cleanupConfirmed=$script:cleanupConfirmed;officeOperationsStopped=$script:officeOperationsStopped;lastStage=$script:lastStage;lastStatus=$script:lastStatus;error=$null
     scope='Read-only native observation of one unedited input snapshot. Presentation.Fonts, theme font slots and Font2 slots are names reported by PowerPoint; they do not prove physical font-file or per-glyph identity.'
@@ -505,7 +579,6 @@ $script:report=[ordered]@{
         'This worker performs no edit, save, embedding, export or reopen.'
     )
 }
-function Write-InventoryReport { $script:report.cleanupConfirmed=$script:cleanupConfirmed; $script:report.officeOperationsStopped=$script:officeOperationsStopped; $script:report.lastStage=$script:lastStage; $script:report.lastStatus=$script:lastStatus; $script:report | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $script:reportFile -Encoding UTF8 }
 function Limit-InventoryText([string]$Text) { if($Text.Length -gt $bounds.maxTextCharacters) { return $Text.Substring(0,$bounds.maxTextCharacters) }; return $Text }
 function Assert-InventoryPresentationNotOpen($Application,[string]$Path) {
     $presentations=Invoke-InventoryCom 'input.preflight.presentations.get' {return ,$Application.Presentations}
@@ -632,14 +705,6 @@ function Read-InventoryMasterShapes($Master) {
     $observed=Read-InventoryShapes $masterShapes 'owned.slideMaster'
     $script:report.slideMaster.shapeCount=$observed.shapeCount; $script:report.slideMaster.shapes=$observed.shapes; Write-InventoryReport
 }
-function Close-OwnedInventoryPresentation([string]$ExpectedPath) {
-    $actual=Invoke-InventoryCom 'owned.presentation.fullName-before-close.get' {$script:presentation.FullName}
-    if(-not (Test-InventoryPathEqual ([string]$actual) $ExpectedPath)) { throw "Refusing to close a presentation whose exact path is not owned: $actual" }
-    Invoke-InventoryCom 'owned.presentation.close' {$script:presentation.Close()}
-    $script:presentation=$null; $script:ownedPresentationPath=$null; $script:cleanupConfirmed=$true; $script:report.ownedCloseCount=[int]$script:report.ownedCloseCount+1
-    Write-InventoryStage 'owned.presentation.cleanup' 'success'; Write-InventoryReport
-}
-
 Write-InventoryReport; Write-InventoryStage 'worker.initialize' 'success'
 try {
     $app=Invoke-InventoryCom 'application.create' {return ,(New-Object -ComObject PowerPoint.Application)}
@@ -670,5 +735,10 @@ try {
     Write-InventoryStage 'worker.complete' 'success'; Write-InventoryReport
     Write-Output 'Read-only native font inventory completed; run native-font-inventory-audit.mjs on this directory.'
 } catch {
-    $script:report.error=$_.Exception.Message; if($script:officeOperationsStopped -or $null -ne $script:presentation){$script:cleanupConfirmed=$false}; Write-InventoryStage 'worker.failure' 'error' $_.Exception.Message; Write-InventoryReport; throw
+    $caught=$_
+    $script:report.error=$caught.Exception.Message
+    $script:report.failureCleanup=Close-InventoryAfterFailure $sourceSnapshot
+    if($script:officeOperationsStopped -or $null -ne $script:presentation){$script:cleanupConfirmed=$false}
+    Write-InventoryStage 'worker.failure' 'error' $caught.Exception.Message; Write-InventoryReport
+    throw $caught
 }

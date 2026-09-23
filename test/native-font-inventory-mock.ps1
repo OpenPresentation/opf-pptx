@@ -3,7 +3,13 @@
 # temporary copy of the inventory worker whose single ComObject construction is
 # replaced by New-OpfInventoryMockApplication. Nothing here starts Office, COM,
 # or a font API. The optional OPF_INVENTORY_MOCK_VARIANT environment variable
-# selects the reported names: carlito (default) or aptos.
+# selects a scenario:
+#   carlito (default)  Carlito-only names
+#   aptos              Aptos in Presentation.Fonts and one master slot
+#   cloud              an unrelated cloud deck with a URL FullName is already open
+#   badcount           Fonts.Count is not numeric: non-COM failure while open
+#   comerror           Fonts.Item throws: COM failure while open (latched)
+#   wrongfullname      the opened object reports a different FullName
 function New-OpfInventoryMockCollection($Items) {
     $collection=[pscustomobject]@{Count=@($Items).Count;MockItems=@($Items)}
     $collection | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) return ,$this.MockItems[[int]$Index-1] }
@@ -35,9 +41,12 @@ function New-OpfInventoryMockEmptyShape([string]$Name,[string]$Family,[string]$C
     return ,([pscustomobject]@{Name=$Name;Type=14;HasTextFrame=-1;TextFrame2=[pscustomobject]@{HasText=0;TextRange=$range}})
 }
 function New-OpfInventoryMockApplication {
-    $aptos=($env:OPF_INVENTORY_MOCK_VARIANT -ceq 'aptos')
+    $variant=[string]$env:OPF_INVENTORY_MOCK_VARIANT
+    $aptos=($variant -ceq 'aptos')
     $fontNames=$(if($aptos){@('Carlito','Aptos')}else{@('Carlito')})
     $fonts=New-OpfInventoryMockCollection @($fontNames | ForEach-Object { [pscustomobject]@{Name=$_;Embedded=0;Embeddable=-1} })
+    if($variant -ceq 'badcount') { $fonts.Count='not-a-number' }
+    if($variant -ceq 'comerror') { $fonts | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) throw 'Mock COM failure reading Presentation.Fonts' } -Force }
     $themeFont={ param($Latin) New-OpfInventoryMockCollection @([pscustomobject]@{Name=$Latin},[pscustomobject]@{Name=''},[pscustomobject]@{Name=''}) }
     $scheme=[pscustomobject]@{MajorFont=(& $themeFont 'Carlito');MinorFont=(& $themeFont 'Carlito')}
     $masterShapes=New-OpfInventoryMockCollection @(
@@ -50,11 +59,13 @@ function New-OpfInventoryMockApplication {
         (New-OpfInventoryMockTextShape 'OPF text slides.0.text line 0' @(@('Regular ',18,0,0),@('Bold ',20,-1,0),@('Italic ',22,0,-1),@('BoldItalic',24,-1,-1)) 'Carlito' $(if($aptos){''}else{'Carlito'}))
     )
     $slides=New-OpfInventoryMockCollection @([pscustomobject]@{Shapes=$slideShapes})
-    $presentations=[pscustomobject]@{Count=0;MockFonts=$fonts;MockMaster=$master;MockSlides=$slides}
-    $presentations | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) throw 'The mock has no presentations open before the owned open' }
+    $already=@(if($variant -ceq 'cloud'){[pscustomobject]@{FullName='https://contoso.sharepoint.com/sites/team/Shared%20Documents/cloud-deck.pptx'}})
+    $presentations=[pscustomobject]@{Count=$already.Count;MockAlreadyOpen=$already;MockFonts=$fonts;MockMaster=$master;MockSlides=$slides;MockWrongFullName=($variant -ceq 'wrongfullname')}
+    $presentations | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) if([int]$Index -lt 1 -or [int]$Index -gt $this.MockAlreadyOpen.Count) { throw 'Mock presentation index out of range' }; return ,$this.MockAlreadyOpen[[int]$Index-1] }
     $presentations | Add-Member -MemberType ScriptMethod -Name Open -Value {
         param($FileName,$ReadOnly,$Untitled,$WithWindow)
-        $opened=[pscustomobject]@{FullName=[string]$FileName;ReadOnly=[int]$ReadOnly;Fonts=$this.MockFonts;SlideMaster=$this.MockMaster;Slides=$this.MockSlides;MockClosed=$false}
+        $fullName=$(if($this.MockWrongFullName){[string]$FileName + '.other.pptx'}else{[string]$FileName})
+        $opened=[pscustomobject]@{FullName=$fullName;ReadOnly=[int]$ReadOnly;Fonts=$this.MockFonts;SlideMaster=$this.MockMaster;Slides=$this.MockSlides;MockClosed=$false}
         $opened | Add-Member -MemberType ScriptMethod -Name Close -Value { $this.MockClosed=$true }
         return ,$opened
     }

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {PERMITTED_CARLITO_FIXTURE, PERMITTED_CARLITO_FIXTURE_FILES, PERMITTED_CARLITO_LICENSE_SHA256} from './native-font-embed-audit.mjs';
-import {auditEvidenceDirectory, auditInventoryVerifierSource, computeFontLedger, expectedInventoryStages, INVENTORY_BOUNDS} from './native-font-inventory-audit.mjs';
+import {ALLOWED_COM_MEMBERS, ALLOWED_INSTANCE_MEMBERS, ALLOWED_STATIC_MEMBERS, analyzeFailureCleanup, auditEvidenceDirectory, auditInventoryVerifierSource, computeFontLedger, expectedInventoryStages, INVENTORY_BOUNDS, invokedMembers} from './native-font-inventory-audit.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -38,6 +38,12 @@ const policyNegatives = [
   ['secondClose', verifierSource + '\n$script:presentation.Close()\n', 'close-count'],
   ['stopProcess', verifierSource + '\nStop-Process -Name POWERPNT\n', 'process-kill'],
   ['secondComObject', verifierSource + '\n$word=New-Object -ComObject Word.Application\n', 'com-construction'],
+  ['addSlide', verifierSource + '\n$null=$script:presentation.Slides.Add(1,1)\n', 'forbidden-member'],
+  ['applyTemplate', verifierSource + '\n$script:presentation.ApplyTemplate($x)\n', 'forbidden-member'],
+  ['applyTheme', verifierSource + '\n$script:presentation.ApplyTheme($x)\n', 'forbidden-member'],
+  ['replaceFont', verifierSource + '\n$script:presentation.Fonts.Replace($a,$b)\n', 'forbidden-member'],
+  ['staticDelete', verifierSource + '\n[IO.File]::Delete($x)\n', 'forbidden-member'],
+  ['dynamicInvoke', verifierSource + '\n$script:presentation.$member()\n', 'forbidden-member'],
 ];
 for (const [name, text, code] of policyNegatives) assert.ok(auditInventoryVerifierSource(text).some(item => item.code === code), name);
 assert.deepEqual(auditInventoryVerifierSource(verifierSource + "\n# $app.Quit() and .SaveAs( in a comment\n$note='SaveAs( and .Quit() in a string'\n"), []);
@@ -90,6 +96,45 @@ function observation({fonts = ['Carlito'], masterComplexScript = '', themeEastAs
   record('font-ledger-controls');
 }
 
+// The Node audit and the worker's own AST policy must use the same allowlist.
+{
+  const listed = name => JSON.parse(`[${verifierSource.match(new RegExp(`\\$script:${name}=@\\(([^)]*)\\)`))[1].replaceAll("'", '"')}]`);
+  assert.deepEqual(listed('inventoryAllowedComMembers'), [...ALLOWED_COM_MEMBERS]);
+  assert.deepEqual(listed('inventoryAllowedInstanceMembers'), [...ALLOWED_INSTANCE_MEMBERS]);
+  assert.deepEqual(listed('inventoryAllowedStaticMembers'), [...ALLOWED_STATIC_MEMBERS]);
+  const used = invokedMembers(verifierSource);
+  assert.ok(ALLOWED_COM_MEMBERS.every(name => used.instance.includes(name)), 'Every allowlisted COM member should be used');
+  record('member-allowlist-parity');
+}
+
+// Close-on-failure consistency, on stage sequences derived from a real observation.
+{
+  const snapshot = path.join(os.tmpdir(), 'inputs', 'source.pptx');
+  const base = {...observation(), preflightPresentationCount: 0, source: {readOnly: -1}};
+  const rows = []; for (const [name, kind] of expectedInventoryStages(base)) { if (kind === 'pair') rows.push([name, 'begin'], [name, 'success']); else rows.push([name, 'success']); }
+  const openBegin = rows.findIndex(([name, status]) => name === 'input.presentation.open-readonly' && status === 'begin');
+  const cut = rows.findIndex(([name, status]) => name === 'owned.presentation.fonts.count.get' && status === 'success') + 1;
+  const row = (stage, status, owned, extra = {}) => ({stage, status, error: status === 'error' ? 'failure' : null, cleanupConfirmed: !owned, officeOperationsStopped: false, ownedPresentationPath: owned ? snapshot : null, ...extra});
+  const prefix = rows.slice(0, cut).map(([stage, status], index) => row(stage, status, index >= openBegin));
+  const errorClose = [row('owned.presentation.error.fullName-before-close.get', 'begin', true), row('owned.presentation.error.fullName-before-close.get', 'success', true), row('owned.presentation.error.close', 'begin', true), row('owned.presentation.error.close', 'success', true), row('owned.presentation.error.cleanup', 'success', false)];
+  const failure = owned => row('worker.failure', 'error', owned);
+  const closedReport = {failureCleanup: 'closed-owned-after-failure', cleanupConfirmed: true, ownedCloseCount: 1, officeOperationsStopped: false};
+  assert.equal(analyzeFailureCleanup(closedReport, [...prefix, ...errorClose, failure(false)]).consistent, true);
+  assert.equal(analyzeFailureCleanup(closedReport, [...prefix, failure(false)]).consistent, false, 'claimed error close without close stages');
+  assert.equal(analyzeFailureCleanup(closedReport, [...prefix, ...errorClose, ...errorClose.slice(2, 4), failure(false)]).consistent, false, 'second close invocation');
+  const comError = row('owned.presentation.fonts.item-1.get', 'error', true, {officeOperationsStopped: true, cleanupConfirmed: false});
+  const latchedReport = {failureCleanup: 'left-open-com-latched', cleanupConfirmed: false, ownedCloseCount: 0, officeOperationsStopped: true};
+  assert.equal(analyzeFailureCleanup(latchedReport, [...prefix, comError, failure(true)]).consistent, true);
+  assert.equal(analyzeFailureCleanup(latchedReport, [...prefix, comError, ...errorClose, failure(false)]).consistent, false, 'close after a COM failure');
+  assert.equal(analyzeFailureCleanup({...closedReport}, [...prefix, comError, ...errorClose, failure(false)]).consistent, false, 'error close after a COM failure');
+  const notOwnedReport = {failureCleanup: 'left-open-not-closed: Refusing to close', cleanupConfirmed: false, ownedCloseCount: 0, officeOperationsStopped: false};
+  assert.equal(analyzeFailureCleanup(notOwnedReport, [...prefix, ...errorClose.slice(0, 2), failure(true)]).consistent, true);
+  assert.equal(analyzeFailureCleanup(notOwnedReport, [...prefix, ...errorClose, failure(false)]).consistent, false, 'closed a presentation not proven owned');
+  assert.equal(analyzeFailureCleanup({failureCleanup: 'no-owned-presentation-open', cleanupConfirmed: true}, [...prefix, failure(true)]).consistent, false, 'opened presentation silently left open');
+  assert.equal(analyzeFailureCleanup({failureCleanup: 'closed-owned-after-failure'}, [...prefix, row('worker.complete', 'success', false)]).consistent, false, 'failureCleanup on a completed run');
+  record('close-on-failure-consistency');
+}
+
 const require = createRequire(path.join(packageRoot, 'package.json'));
 const carlitoRoot = path.dirname(require.resolve('@expo-google-fonts/carlito/package.json'));
 const installedFaces = {
@@ -136,7 +181,7 @@ async function buildEvidence({inputMode = 'carlito-fixture', mode = 'none', font
     schemaVersion: 1, kind: 'native-font-inventory', inputMode,
     source: {path: request.source.path, sha256: sourceHash, snapshotPath: snapshot, snapshotSha256: sourceHash, fullName: snapshot, openedPathMatches: true, readOnly: -1, snapshotUnchangedAfterClose: true},
     fontRegistration, bounds: {...INVENTORY_BOUNDS}, ...observed, boundsExceeded: [], semanticFailures: [], fontLedger: null,
-    preflightPresentationCount: 0, ownedOpenCount: 1, ownedCloseCount: 1, environment: {powerPointVersion: 'synthetic'},
+    preflightPresentationCount: 0, ownedOpenCount: 1, ownedCloseCount: 1, failureCleanup: null, environment: {powerPointVersion: 'synthetic'},
     cleanupConfirmed: true, officeOperationsStopped: false, lastStage: 'worker.complete', lastStatus: 'success', error: null,
   };
   report.fontLedger = {...computeFontLedger(report), scope: 'synthetic'};
@@ -274,19 +319,44 @@ try {
       ['fixture-without-fonts', ['-OutputDirectory', path.join(harness, 'run-fixture'), '-InputPresentation', path.join(fixtureDir, 'source.pptx'), '-FontFixtureDirectory', fixtureDir, '-WithoutTemporaryFonts'], 'carlito', false],
       ['control-deck', ['-ControlDeck', '-OutputDirectory', path.join(harness, 'run-control'), '-InputPresentation', path.join(harness, 'control.pptx')], 'carlito', false],
       ['fixture-aptos-variant', ['-OutputDirectory', path.join(harness, 'run-aptos'), '-InputPresentation', path.join(fixtureDir, 'source.pptx'), '-FontFixtureDirectory', fixtureDir, '-WithoutTemporaryFonts'], 'aptos', true],
+      ['cloud-url-already-open', ['-ControlDeck', '-OutputDirectory', path.join(harness, 'run-cloud'), '-InputPresentation', path.join(harness, 'control.pptx')], 'cloud', false],
     ];
+    const mockRun = (args, variant) => spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', path.join(harness, 'native-font-inventory.ps1'), ...args, '-TimeoutSeconds', '45'], {...spawnOptions, env: {...process.env, OPF_INVENTORY_MOCK_VARIANT: variant}});
     for (const [name, args, variant, expectAptos] of runs) {
-      const child = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', path.join(harness, 'native-font-inventory.ps1'), ...args, '-TimeoutSeconds', '45'], {...spawnOptions, env: {...process.env, OPF_INVENTORY_MOCK_VARIANT: variant}});
+      const child = mockRun(args, variant);
       assert.equal(child.status, 0, `${name}: ${child.stderr || child.stdout}`);
       const result = await auditEvidenceDirectory(args[args.indexOf('-OutputDirectory') + 1], {reviewedRoot: harness});
       assert.deepEqual([...codes(result)], ['com-construction'], `${name}: ${JSON.stringify(result.failures)}`);
       assert.equal(result.findings.ledger.aptosReported, expectAptos, name);
+      assert.equal(result.findings.failureCleanup.applicable, false, name);
+      if (variant === 'cloud') assert.equal(JSON.parse((await readFile(path.join(args[args.indexOf('-OutputDirectory') + 1], 'report.json'), 'utf8')).replace(/^﻿/, '')).preflightPresentationCount, 1);
+    }
+    // Failures while the owned presentation is open: exactly one error close
+    // only for a non-COM failure with the owned FullName; otherwise left open.
+    const failureRuns = [
+      ['non-com-failure-while-open', 'badcount', 'closed-owned-after-failure', true, 1],
+      ['com-failure-while-open', 'comerror', 'left-open-com-latched', false, 0],
+      ['opened-fullname-not-owned', 'wrongfullname', 'left-open-not-closed', false, 0],
+    ];
+    for (const [name, variant, outcome, cleanupConfirmed, closeInvocations] of failureRuns) {
+      const out = path.join(harness, `run-${variant}`);
+      const child = mockRun(['-ControlDeck', '-OutputDirectory', out, '-InputPresentation', path.join(harness, 'control.pptx')], variant);
+      assert.notEqual(child.status, 0, `${name} must fail`);
+      const result = await auditEvidenceDirectory(out, {reviewedRoot: harness});
+      assert.equal(result.passed, false, name);
+      const cleanup = result.findings.failureCleanup;
+      assert.equal(cleanup.applicable, true, name); assert.ok(cleanup.outcome.startsWith(outcome), `${name}: ${cleanup.outcome}`);
+      assert.equal(cleanup.consistent, true, `${name}: ${JSON.stringify(cleanup.problems)}`); assert.equal(cleanup.closeInvocations, closeInvocations, name);
+      const report = JSON.parse((await readFile(path.join(out, 'report.json'), 'utf8')).replace(/^﻿/, ''));
+      assert.equal(report.cleanupConfirmed, cleanupConfirmed, name); assert.equal(report.ownedCloseCount, closeInvocations, name);
+      const supervisor = JSON.parse((await readFile(path.join(out, 'supervisor.json'), 'utf8')).replace(/^﻿/, ''));
+      assert.equal(supervisor.passed, false, name);
     }
     const refused = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', path.join(harness, 'native-font-inventory.ps1'), ...runs[1][1]], spawnOptions);
     assert.notEqual(refused.status, 0); assert.match(refused.stderr + refused.stdout, /fresh output directory/);
     const controlWithFonts = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', path.join(harness, 'native-font-inventory.ps1'), '-ControlDeck', '-OutputDirectory', path.join(harness, 'run-control-2'), '-InputPresentation', path.join(harness, 'control.pptx'), '-FontFixtureDirectory', fixtureDir], spawnOptions);
     assert.notEqual(controlWithFonts.status, 0); assert.match(controlWithFonts.stderr + controlWithFonts.stdout, /control decks never register/);
-    record('mock-object-model-end-to-end', {runs: runs.map(run => run[0]), onlyExpectedFailure: 'com-construction (mock copy is never valid native evidence)'});
+    record('mock-object-model-end-to-end', {runs: [...runs.map(run => run[0]), ...failureRuns.map(run => run[0])], onlyExpectedFailure: 'com-construction (mock copy is never valid native evidence)'});
   } else record('mock-object-model-end-to-end', {skipped: 'non-Windows runner'});
 } finally {
   const resolved = path.resolve(scratch);
