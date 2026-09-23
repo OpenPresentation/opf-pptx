@@ -7,10 +7,14 @@
 // Core releases before the resolver (0.11.0 and earlier) export no
 // resolveScriptFonts. The exporter then writes exactly what it wrote before
 // FF-07 (lang="en-US", empty theme ea/cs, no rtl) and reports
-// `language-export-unavailable` for a document that names a language.
+// `language-export-unavailable` for a document that names a language. A core
+// with the resolver but without paragraphDirection() marks no paragraph
+// direction and reports `paragraph-direction-unavailable` for an RTL deck.
 import * as opfCore from "@openpresentation/opf";
 
 const resolver = typeof opfCore.resolveScriptFonts === "function" ? opfCore.resolveScriptFonts : null;
+// The one paragraph-direction rule shared with the renderer (core FF-07).
+const paragraphDirection = typeof opfCore.paragraphDirection === "function" ? opfCore.paragraphDirection : null;
 
 const SCRIPT_SLOTS = [["ea", "eastAsian"], ["cs", "complexScript"]];
 
@@ -44,16 +48,28 @@ export function planScriptFonts(presentation, report) {
     report?.({code: "language-unresolved", path: "language",
       message: `The presentation language could not be resolved locally (a URL, pkg: reference or unknown id), so the PPTX uses ${deck.lang}.`});
   }
-  return {deck, slides, lang: deck.lang, rtl: deck.rtl};
+  let rtl = deck.rtl;
+  if (rtl && !paragraphDirection) {
+    rtl = false;
+    report?.({code: "paragraph-direction-unavailable", path: "language",
+      message: "The installed @openpresentation/opf has no paragraphDirection, so right-to-left paragraphs are not marked; the preview and export must share that rule. Use a core release that exports it."});
+  }
+  return {deck, slides, lang: deck.lang, rtl};
 }
 
 const escapeAttribute = value => String(value).replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;"}[char]));
 
 /**
- * Theme major/minor ea/cs from the resolved heading/body slots, instead of the
- * vendored empty values, and the language's own per-script supplement. Only
- * the supplement's script entry changes; the rest of the vendored per-script
- * list is FF-08's call.
+ * Theme major/minor ea/cs from the resolved heading/body slots, and the
+ * language's own per-script supplement. Only the supplement's script entry
+ * changes; the rest of the vendored per-script list is FF-08's call.
+ *
+ * For a language written in the latin slot (Latin, Cyrillic, Greek and others) the
+ * vendored empty ea/cs stay empty unless the design font scheme sets that
+ * slot explicitly. Filling them with the latin family is gated on FF-05 (core
+ * script-font-model.md): it did not remove PowerPoint's nameless/Aptos font
+ * entries, and empty slots keep PowerPoint's per-script theme fallback for
+ * East Asian or complex-script text typed later. Other languages fill both.
  */
 export function themeScriptFonts(xml, plan) {
   const {heading, body, supplement} = plan.deck;
@@ -63,6 +79,7 @@ export function themeScriptFonts(xml, plan) {
       // face exactly as written, as the run slots do.
       const latin = /<a:latin typeface="([^"]*)"/.exec(block)?.[1];
       for (const [element, slot] of SCRIPT_SLOTS) {
+        if (plan.deck.scriptRole === "latin" && plan.deck.sources[slot] !== "fontScheme") continue;
         const face = plan.deck.sources[slot] === "latin" && latin ? latin : escapeAttribute(slots[slot]);
         block = block.replace(new RegExp(`<a:${element}\\b[^>]*/>`), `<a:${element} typeface="${face}"/>`);
       }
@@ -105,11 +122,22 @@ function runScriptFonts(xml, resolved, headingShape) {
 
 const RUN_LANGUAGE = /(<a:(?:rPr|endParaRPr|defRPr)\b[^>]*?\slang=")en-US(")/g;
 
-function paragraphRtl(xml) {
+const decodeText = value => value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos));/gi, (entity, decimal, hex, name) =>
+  decimal ? String.fromCodePoint(Number(decimal)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : {amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'"}[name.toLowerCase()]);
+
+/**
+ * In a right-to-left deck every paragraph states its direction from core's
+ * paragraphDirection() over its own text: rtl="1" when it is right-to-left,
+ * else an explicit rtl="0", because the master default levels start
+ * right-to-left. Alignment is left as composed.
+ */
+function paragraphRtl(xml, deckDirection) {
   return xml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (paragraph, body) => {
+    const text = [...body.matchAll(/<a:t>([^<]*)<\/a:t>|<a:br\b/g)].map(match => match[1] === undefined ? "\n" : decodeText(match[1])).join("");
+    const value = paragraphDirection(text, deckDirection) === "rtl" ? "1" : "0";
     const properties = /^(\s*)<a:pPr\b([^>]*?)(\/?)>/.exec(body);
-    if (!properties) return `<a:p><a:pPr rtl="1"/>${body}</a:p>`;
-    const attributes = / rtl="[^"]*"/.test(properties[2]) ? properties[2].replace(/ rtl="[^"]*"/, " rtl=\"1\"") : `${properties[2]} rtl="1"`;
+    if (!properties) return `<a:p><a:pPr rtl="${value}"/>${body}</a:p>`;
+    const attributes = / rtl="[^"]*"/.test(properties[2]) ? properties[2].replace(/ rtl="[^"]*"/, ` rtl="${value}"`) : `${properties[2]} rtl="${value}"`;
     return `<a:p>${properties[1]}<a:pPr${attributes}${properties[3]}>${body.slice(properties[0].length)}</a:p>`;
   });
 }
@@ -129,10 +157,10 @@ export function partScriptFonts(path, xml, plan, slideIndex) {
   if (/^ppt\/slides\/slide\d+\.xml$/.test(path)) {
     xml = xml.replace(/<p:(sp|graphicFrame)>[\s\S]*?<\/p:\1>/g, shape =>
       runScriptFonts(shape, resolved, /<p:cNvPr\b[^>]*\bname="OPF heading /.test(shape)));
-    if (plan.rtl) xml = paragraphRtl(xml);
+    if (plan.rtl) xml = paragraphRtl(xml, plan.deck.direction);
   } else if (/^ppt\/(?:charts\/chart|notesSlides\/notesSlide)\d+\.xml$/.test(path)) {
     xml = runScriptFonts(xml, resolved, false);
-    if (plan.rtl && path.startsWith("ppt/notesSlides/")) xml = paragraphRtl(xml);
+    if (plan.rtl && path.startsWith("ppt/notesSlides/")) xml = paragraphRtl(xml, plan.deck.direction);
   } else if (plan.rtl && /^ppt\/(?:slideMasters\/slideMaster\d+|slideLayouts\/slideLayout\d+|notesMasters\/notesMaster\d+|presentation)\.xml$/.test(path)) {
     xml = levelRtl(xml);
   }

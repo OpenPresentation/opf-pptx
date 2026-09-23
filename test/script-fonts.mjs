@@ -9,10 +9,12 @@ import {fromPptx, toPptx} from '../dist/index.js';
 // (FF-18). Expected families come from the resolver and the bundled catalogs;
 // PowerPoint-target names such as Meiryo are only compared as strings.
 
-const deck = (language, extra = {}) => ({name: 'Script fonts', ...(language === undefined ? {} : {language}), ...extra, slides: [
-  {title: 'Heading', subtitle: 'Subtitle', text: 'Body text'},
-  {title: 'List', items: ['One', {text: 'Two', level: 1}], notes: 'Speaker notes'},
-  {title: 'Table', table: {columns: ['Name', 'Value'], rows: [['A', '1']]}},
+// `text` is a native sample for right-to-left cases; its slides still carry
+// Latin table labels, digits and code, which keep their own direction.
+const deck = (language, extra = {}, text = 'Heading') => ({name: 'Script fonts', ...(language === undefined ? {} : {language}), ...extra, slides: [
+  {title: text, subtitle: 'Subtitle', text},
+  {title: 'List', items: [text, {text: 'Two', level: 1}], notes: text},
+  {title: 'Table', table: {columns: ['Name', text], rows: [['A', '1']]}},
   {title: 'Chart', chart: {type: 'column', data: {columns: ['Label', 'A', 'B'], rows: [['One', 1, 2], ['Two', 3, 4]]}}},
   {id: 'code', layout: 'code-1x', title: 'Code', code: {source: 'const x = 1;', language: 'ts'}},
 ]});
@@ -59,15 +61,15 @@ const cases = [
   {id: 'chinese-simplified', role: 'eastAsian', script: 'Hans', supplement: 'Hans'},
   {id: 'chinese-traditional', role: 'eastAsian', script: 'Hant', supplement: 'Hant'},
   {id: 'korean', role: 'eastAsian', script: 'Kore', supplement: 'Hang'},
-  {id: 'arabic', role: 'complexScript', script: 'Arab', supplement: 'Arab', rtl: true},
-  {id: 'hebrew', role: 'complexScript', script: 'Hebr', supplement: 'Hebr', rtl: true},
+  {id: 'arabic', role: 'complexScript', script: 'Arab', supplement: 'Arab', rtl: true, text: 'مرحبا بالعالم'},
+  {id: 'hebrew', role: 'complexScript', script: 'Hebr', supplement: 'Hebr', rtl: true, text: 'שלום עולם'},
   {id: 'hindi', role: 'complexScript', script: 'Deva', supplement: 'Deva'},
   {id: 'thai', role: 'complexScript', script: 'Thai', supplement: 'Thai'},
 ];
 
 const latin = resolveScriptFonts(deck(undefined));
 for (const expected of cases) {
-  const presentation = deck(expected.id), record = languageRecord(expected.id);
+  const presentation = deck(expected.id, {}, expected.text), record = languageRecord(expected.id);
   const resolved = resolveScriptFonts(presentation);
   assert.equal(resolved.script, expected.script, `${expected.id} script`);
   assert.equal(resolved.scriptRole, expected.role, `${expected.id} role`);
@@ -81,13 +83,15 @@ for (const expected of cases) {
   assert.deepEqual([...langs(xml)], [record.ooxmlLang], `${expected.id} lang`);
   assert.ok(!Object.values(xml).some(value => /\saltLang="/.test(value)), `${expected.id} writes no altLang`);
 
-  // Theme: latin is the chosen heading/body family; ea/cs are the resolved slots, never empty.
+  // Theme: latin is the chosen heading/body family. Languages written in the
+  // latin slot keep the vendored empty ea/cs (gated on FF-05); other languages
+  // fill both with the resolved slots.
   const major = themeFonts(xml, 'majorFont'), minor = themeFonts(xml, 'minorFont');
   assert.deepEqual([major.latin, minor.latin], [latin.heading.latin, latin.body.latin], `${expected.id} theme latin`);
-  assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], [resolved.heading.eastAsian, resolved.heading.complexScript, resolved.body.eastAsian, resolved.body.complexScript], `${expected.id} theme ea/cs`);
-  for (const face of [major.ea, major.cs, minor.ea, minor.cs]) assert.ok(face, `${expected.id} leaves no empty theme slot`);
   const own = expected.role === 'latin' ? null : schemeFamilies(record.fontScheme);
-  for (const [slot, key] of [['ea', 'eastAsian'], ['cs', 'complexScript']]) {
+  if (!own) assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], ['', '', '', ''], `${expected.id} keeps theme ea/cs empty`);
+  else assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], [resolved.heading.eastAsian, resolved.heading.complexScript, resolved.body.eastAsian, resolved.body.complexScript], `${expected.id} theme ea/cs`);
+  for (const [slot, key] of own ? [['ea', 'eastAsian'], ['cs', 'complexScript']] : []) {
     const want = key === expected.role ? own : {heading: latin.heading.latin, body: latin.body.latin};
     assert.deepEqual({heading: major[slot], body: minor[slot]}, want, `${expected.id} theme ${slot} follows ${key === expected.role ? 'the language font scheme' : 'the latin family'}`);
   }
@@ -116,16 +120,29 @@ for (const expected of cases) {
     for (const other of ['ea', 'cs']) assert.deepEqual(runFaces(xml, other), runFaces(xml, 'latin'), `${expected.id} run ${other} repeats latin`);
   }
 
-  // Direction: every slide and notes paragraph, plus master/layout defaults, for RTL only.
-  const paragraphs = slides(xml).match(/<a:p>/g).length;
-  const rtlParagraphs = slides(xml).match(/<a:pPr\b[^>]*\srtl="1"/g)?.length ?? 0;
-  assert.equal(rtlParagraphs, expected.rtl ? paragraphs : 0, `${expected.id} slide rtl`);
+  // Direction: core's paragraphDirection() decides every slide and notes
+  // paragraph of an RTL deck (rtl="1", else an explicit rtl="0" under the
+  // right-to-left master defaults). LTR decks write no paragraph direction.
+  const directions = value => [...value.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)].map(([, body]) => ({
+    text: [...body.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map(match => match[1]).join(''),
+    rtl: /^<a:pPr\b[^>]*\srtl="([01])"/.exec(body)?.[1],
+  }));
   const notes = partsMatching(xml, /^ppt\/notesSlides\/notesSlide\d+\.xml$/).join('');
-  assert.equal(notes.match(/<a:pPr\b[^>]*\srtl="1"/g)?.length ?? 0, expected.rtl ? notes.match(/<a:p>/g).length : 0, `${expected.id} notes rtl`);
+  for (const paragraph of [...directions(slides(xml)), ...directions(notes)]) {
+    const want = expected.rtl ? (opf.paragraphDirection(paragraph.text, 'rtl') === 'rtl' ? '1' : '0') : undefined;
+    assert.equal(paragraph.rtl, want, `${expected.id} paragraph "${paragraph.text}" direction`);
+  }
+  if (expected.rtl) {
+    const all = directions(slides(xml));
+    assert.ok(all.some(paragraph => paragraph.text === expected.text && paragraph.rtl === '1'), `${expected.id} native text is right-to-left`);
+    assert.ok(all.some(paragraph => paragraph.text === 'const x = 1;' && paragraph.rtl === '0'), `${expected.id} code stays left-to-right`);
+    assert.ok(all.some(paragraph => paragraph.text === 'Name' && paragraph.rtl === '0'), `${expected.id} Latin label stays left-to-right`);
+    assert.ok(all.some(paragraph => paragraph.text === '1' && paragraph.rtl === '1'), `${expected.id} digits take the deck direction`);
+  }
   const master = xml['ppt/slideMasters/slideMaster1.xml'];
   assert.equal(/<a:lvl1pPr\b[^>]*\srtl="1"/.test(master), !!expected.rtl, `${expected.id} master default direction`);
   // Alignment stays exactly as composed (absolute l/ctr/r), so native geometry keeps matching the renderer.
-  assert.deepEqual([...slides(xml).matchAll(/\salgn="(\w+)"/g)].map(match => match[1]), [...slides((await read(deck(undefined))).xml).matchAll(/\salgn="(\w+)"/g)].map(match => match[1]), `${expected.id} alignment unchanged`);
+  assert.deepEqual([...slides(xml).matchAll(/\salgn="(\w+)"/g)].map(match => match[1]), [...slides((await read(deck(undefined, {}, expected.text))).xml).matchAll(/\salgn="(\w+)"/g)].map(match => match[1]), `${expected.id} alignment unchanged`);
 
   // Import maps lang back to the catalog language without new diagnostics.
   const imported = [];
@@ -135,13 +152,12 @@ for (const expected of cases) {
   assert.equal(opf.validatePresentation(restored).valid, true);
 }
 
-// A document without a language is en-US: only the theme's ea/cs change from
-// the vendored empty values, to the chosen heading/body family.
+// A document without a language is en-US and keeps the vendored empty theme ea/cs.
 {
   const {xml} = await read(deck(undefined));
   assert.deepEqual([...langs(xml)], ['en-US']);
   const major = themeFonts(xml, 'majorFont'), minor = themeFonts(xml, 'minorFont');
-  assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], [major.latin, major.latin, minor.latin, minor.latin]);
+  assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], ['', '', '', '']);
   assert.equal((await fromPptx((await read(deck(undefined))).bytes)).language, 'english-us');
 }
 
@@ -151,6 +167,7 @@ for (const expected of cases) {
   const fontScheme = {id: 'aptos', eastAsian: {major: 'Noto Sans JP', minor: 'Noto Sans JP'}};
   const {xml, bytes} = await read(deck('english-us', {design: {fontScheme}}));
   assert.equal(themeFonts(xml, 'minorFont').ea, 'Noto Sans JP');
+  assert.equal(themeFonts(xml, 'minorFont').cs, '', 'only the explicit slot fills');
   assert.deepEqual(runFaces(xml, 'ea'), new Set(['Noto Sans JP']));
   assert.deepEqual([...langs(xml)], ['en-US']);
   const diagnostics = [];
@@ -192,7 +209,7 @@ for (const expected of cases) {
 // Import of mixed run languages keeps the dominant one and reports the rest;
 // RTL paragraphs under a left-to-right language are reported.
 {
-  const {bytes} = await read(deck('arabic'));
+  const {bytes} = await read(deck('arabic', {}, 'مرحبا'));
   const entries = unzipSync(new Uint8Array(bytes));
   const slide = strFromU8(entries['ppt/slides/slide1.xml']);
   let first = true;
