@@ -182,6 +182,30 @@ function Assert-InventoryWorkerAst([string]$Path) {
         $commandName=$command.GetCommandName()
         if($null -ne $commandName -and $script:inventoryForbiddenCommands -contains ($commandName -replace '^.*\\','')) { throw "Inventory worker must not run $commandName" }
     }
+    # Other dynamic code: [scriptblock]::Create, InvokeScript, NewScriptBlock, dynamic member names, $ExecutionContext,
+    # Invoke-Command, and any non-literal & or . invocation target outside these exact function|operator|variable sites.
+    $invocationSites=@('Invoke-InventoryCom|&|Operation','Invoke-InventoryPureRegression|&|decide','Invoke-InventoryPureRegression|&|mutate','|.|processSnapshot','|.|fontHelperSnapshot')
+    foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
+        if(-not ($invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { throw "Inventory worker must not use dynamic code (dynamic member name: $($invoke.Extent.Text))" }
+        $memberName=$invoke.Member.Value
+        if($memberName -in @('InvokeScript','NewScriptBlock')) { throw "Inventory worker must not use dynamic code (.$memberName)" }
+        if($invoke.Static -and $memberName -ieq 'Create' -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $invoke.Expression.TypeName.FullName -match '^(System\.Management\.Automation\.)?ScriptBlock$') { throw "Inventory worker must not use dynamic code ([scriptblock]::Create)" }
+    }
+    foreach($variable in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if(($variable.VariablePath.UserPath -replace '^(script|global|local|private):','') -ieq 'ExecutionContext') { throw "Inventory worker must not use dynamic code ($variable)" }
+    }
+    foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        $commandName=$command.GetCommandName()
+        if($null -ne $commandName -and ($commandName -replace '^.*\\','') -in @('Invoke-Command','icm')) { throw "Inventory worker must not use dynamic code ($commandName)" }
+        if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Unknown) { continue }
+        $target=$command.CommandElements[0]
+        if($target -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $target -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+        $owner=$command.Parent; while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
+        $ownerName=$(if($null -eq $owner){''}else{$owner.Name})
+        $operator=$(if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot){'.'}else{'&'})
+        $variableName=$(if($target -is [System.Management.Automation.Language.VariableExpressionAst]){$target.VariablePath.UserPath -replace '^(script|global|local|private):',''}else{$null})
+        if($null -eq $variableName -or $invocationSites -cnotcontains "$ownerName|$operator|$variableName") { throw "Inventory worker must not use dynamic code (non-literal $operator invocation in $(if($ownerName){$ownerName}else{'script scope'}): $($command.Extent.Text))" }
+    }
     foreach($assignment in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
         $left=$assignment.Left
         if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
@@ -280,6 +304,13 @@ function Invoke-InventoryPureRegression {
             qualifiedInvokeExpression='$p=$a.Open($x,-1,0,0); Microsoft.PowerShell.Utility\Invoke-Expression $y; $p.Close()'
             stringNamedIex='$p=$a.Open($x,-1,0,0); & ''iex'' $y; $p.Close()'
             addType='$p=$a.Open($x,-1,0,0); Add-Type -TypeDefinition $y; $p.Close()'
+            scriptBlockCreate='$p=$a.Open($x,-1,0,0); $null=[scriptblock]::Create($y); $p.Close()'
+            invokeScript='$p=$a.Open($x,-1,0,0); $null=$Host.Runspace.InvokeScript($y); $p.Close()'
+            executionContext='$p=$a.Open($x,-1,0,0); $null=$ExecutionContext.SessionState; $p.Close()'
+            invokeCommand='$p=$a.Open($x,-1,0,0); Invoke-Command -ScriptBlock $y; $p.Close()'
+            callVariable='$p=$a.Open($x,-1,0,0); & $y; $p.Close()'
+            dotSourceVariable='$p=$a.Open($x,-1,0,0); . $y; $p.Close()'
+            operationOutsideComWrapper='$p=$a.Open($x,-1,0,0); & $Operation; $p.Close()'
         }
         $policyRejected=[ordered]@{}
         foreach($key in $policyNegatives.Keys) {

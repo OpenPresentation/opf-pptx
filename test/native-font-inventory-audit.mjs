@@ -58,6 +58,9 @@ export const PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256 = Object.freeze({
   'ecbeb36ddc1913be7bd42f7e9dce07d20b734a7e64dc20cc60e1e58a44ea6cd2': 'ff-03-ef8a158-lf',
   '067e96dd14ed89bd98036569af0bf85593ca4fad1447bb8bce5802d00ac9a401': 'ff-03-ef8a158-crlf',
 });
+// Non-literal & / . invocations are allowed only for the COM wrapper's `& $Operation`, the pure regression's local
+// decision/mutation script blocks, and the script-level dot-sourcing of the two hash-checked helper snapshots.
+export const INVENTORY_INVOCATION_SITES = Object.freeze([{function: 'Invoke-InventoryCom', operator: '&', variable: 'Operation'}, {function: 'Invoke-InventoryPureRegression', operator: '&', variable: 'decide'}, {function: 'Invoke-InventoryPureRegression', operator: '&', variable: 'mutate'}, {function: null, operator: '.', variable: 'processSnapshot'}, {function: null, operator: '.', variable: 'fontHelperSnapshot'}]);
 export const AUDIT_SCHEMA_VERSION = 2;
 const FORBIDDEN_STAGE = /saveas|\.save|export|quit|printout|kill|delete|paste|apply|\.add|\.set$|\.set\./i;
 
@@ -79,7 +82,7 @@ export function auditInventoryVerifierSource(sourceText, {label = 'native-font-i
   const instanceAllowed = [...ALLOWED_COM_MEMBERS, ...ALLOWED_INSTANCE_MEMBERS];
   const rejected = [...members.instance.filter(name => !instanceAllowed.includes(name)), ...members.statics.filter(name => !ALLOWED_STATIC_MEMBERS.includes(name)).map(name => `::${name}`)];
   if (rejected.length || members.dynamic) add('forbidden-member', `invokes members outside the read-only allowlist: ${[...rejected, ...(members.dynamic ? ['dynamic member'] : [])].join(', ')}`);
-  failures.push(...auditHarnessSourcePolicy(sourceText, {label, localRoots: INVENTORY_ASSIGNMENT_ROOTS, comSetters: []}));
+  failures.push(...auditHarnessSourcePolicy(sourceText, {label, localRoots: INVENTORY_ASSIGNMENT_ROOTS, comSetters: [], invocationSites: INVENTORY_INVOCATION_SITES}));
   if (hasOfficeQuitInvocation(sourceText)) add('application-quit', 'must not call Application.Quit or .Quit()');
   if (/\b(?:Stop-Process|taskkill|spps)\b/i.test(code)) add('process-kill', 'must not terminate processes');
   const opens = code.match(/\.Open\s*\(/g) ?? [], closes = code.match(/\.Close\s*\(/g) ?? [];

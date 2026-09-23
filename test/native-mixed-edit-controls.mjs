@@ -167,15 +167,30 @@ const workerAnchor = 'function Get-MixedEditSha256(';
 const pureAnchor = '        Invoke-Expression $comDefinition[0].Extent.Text';
 const withWorker = line => verifierSource.replace(workerAnchor, `function Invoke-MixedEditForbiddenDynamic($Text) { ${line} }\r\n${workerAnchor}`);
 const withPure = line => verifierSource.replace(pureAnchor, `${pureAnchor}\r\n        ${line}`);
+const IEX_MESSAGE = /must not run Invoke-Expression, iex or Add-Type/, DYNAMIC_MESSAGE = /must not use dynamic code/;
 const dynamicCodeNegatives = [
-  ['worker-invoke-expression', withWorker('Invoke-Expression $Text')],
-  ['worker-iex', withWorker('iex $Text')],
-  ['worker-qualified-invoke-expression', withWorker('Microsoft.PowerShell.Utility\\Invoke-Expression $Text')],
-  ['worker-string-named-iex', withWorker("& 'iex' $Text")],
-  ['worker-add-type', withWorker('Add-Type -TypeDefinition $Text')],
-  ['pure-other-argument', withPure('Invoke-Expression $script:payload')],
-  ['pure-iex-alias', withPure('iex $stageDefinition[0].Extent.Text')],
-  ['pure-add-type', withPure('Add-Type -TypeDefinition $script:payload')],
+  ['worker-invoke-expression', withWorker('Invoke-Expression $Text'), IEX_MESSAGE],
+  ['worker-iex', withWorker('iex $Text'), IEX_MESSAGE],
+  ['worker-qualified-invoke-expression', withWorker('Microsoft.PowerShell.Utility\\Invoke-Expression $Text'), IEX_MESSAGE],
+  ['worker-string-named-iex', withWorker("& 'iex' $Text"), IEX_MESSAGE],
+  ['worker-add-type', withWorker('Add-Type -TypeDefinition $Text'), IEX_MESSAGE],
+  ['pure-other-argument', withPure('Invoke-Expression $script:payload'), IEX_MESSAGE],
+  ['pure-iex-alias', withPure('iex $stageDefinition[0].Extent.Text'), IEX_MESSAGE],
+  ['pure-add-type', withPure('Add-Type -TypeDefinition $script:payload'), IEX_MESSAGE],
+  // Other dynamic code, and non-literal & / . targets outside the exact COM-wrapper and helper dot-source sites.
+  ['worker-scriptblock-create', withWorker('$null=[scriptblock]::Create($Text)'), DYNAMIC_MESSAGE],
+  ['worker-qualified-scriptblock-create', withWorker('$null=[System.Management.Automation.ScriptBlock]::Create($Text)'), DYNAMIC_MESSAGE],
+  ['worker-invoke-script', withWorker('$null=$Host.Runspace.InvokeScript($Text)'), DYNAMIC_MESSAGE],
+  ['worker-execution-context', withWorker('$null=$ExecutionContext.SessionState'), DYNAMIC_MESSAGE],
+  ['worker-invoke-command', withWorker('Invoke-Command -ScriptBlock $Text'), DYNAMIC_MESSAGE],
+  ['worker-icm', withWorker('icm -ScriptBlock $Text'), DYNAMIC_MESSAGE],
+  ['worker-call-variable', withWorker('& $Text'), DYNAMIC_MESSAGE],
+  ['worker-dot-variable', withWorker('. $Text'), DYNAMIC_MESSAGE],
+  ['worker-call-expression', withWorker('& (Get-Command $Text)'), DYNAMIC_MESSAGE],
+  ['operation-outside-com-wrapper', withWorker('& $Operation'), DYNAMIC_MESSAGE],
+  ['helper-dot-source-inside-function', withWorker('. $processSnapshot'), DYNAMIC_MESSAGE],
+  ['helper-called-not-dot-sourced', withWorker('& $fontHelperSnapshot'), DYNAMIC_MESSAGE],
+  ['worker-dynamic-member', withWorker('$null=$Text.$Name()'), DYNAMIC_MESSAGE],
 ];
 check('verifier-node-source-policy', () => {
   assert.ok(verifierSource.includes(workerAnchor) && verifierSource.includes(pureAnchor));
@@ -204,11 +219,11 @@ if (process.platform === 'win32') {
   try {
     const positive = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', verifierPath, '-PureRegression'], psOptions);
     assert.equal(positive.status, 0, positive.error?.message ?? (positive.stderr || positive.stdout));
-    for (const [name, text] of dynamicCodeNegatives) {
+    for (const [name, text, message] of dynamicCodeNegatives) {
       const copy = path.join(astRoot, `${name}.ps1`); await writeFile(copy, text);
       const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], psOptions);
       assert.ok(!negative.error && negative.status !== null && negative.status !== 0, `${name}: ${negative.error?.message ?? negative.status}`);
-      assert.match(negative.stderr + negative.stdout, /must not run Invoke-Expression, iex or Add-Type/, name);
+      assert.match(negative.stderr + negative.stdout, message, name);
     }
   } finally { await rm(astRoot, {recursive: true, force: true}); }
   outcomes.push({name: 'verifier-ast-dynamic-code-negatives', passed: true});

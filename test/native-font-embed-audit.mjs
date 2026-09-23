@@ -39,7 +39,9 @@ export function hasOfficeQuitInvocation(sourceText) {
 export const EMBED_LOCAL_ASSIGNMENT_ROOTS = Object.freeze(['report', 'seen', 'inventory', 'wrongGeneration']);
 export const EMBED_COM_SETTERS = Object.freeze(['Range.Text', 'wholeFont.Name', 'wholeFont.Size', 'wholeFont.Bold', 'wholeFont.Italic', 'runFont.Name', 'runFont.Size', 'runFont.Bold', 'runFont.Italic', 'presentation.Saved']);
 // The only dynamic code allowed: the pure regression re-evaluating its own two extracted function definitions.
-export const EMBED_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-FontEmbedPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text'])});
+// Non-literal & / . invocations are allowed only at these sites: the COM wrapper's `& $Operation` and the script-level
+// dot-sourcing of the two hash-checked helper snapshots.
+export const EMBED_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-FontEmbedPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text']), invocationSites: Object.freeze([{function: 'Invoke-FontEmbedCom', operator: '&', variable: 'Operation'}, {function: null, operator: '.', variable: 'processSnapshot'}, {function: null, operator: '.', variable: 'fontHelperSnapshot'}])});
 
 const OWNED_EMBED_SAVE_OFF =/\.SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/;
 const OWNED_EMBED_SAVE_ON = /\.SaveAs\(\$savedPath,\s*24\s*,\s*(?:\(-1\)|-1)\s*\)/;

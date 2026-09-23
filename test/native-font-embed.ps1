@@ -191,6 +191,30 @@ function Assert-FontEmbedVerifierAst([string]$Path) {
             if(-not ($insidePure -and $commandName -ceq 'Invoke-Expression' -and $pureInvocations -ccontains $command.Extent.Text)) { throw "Embed harness must not run Invoke-Expression, iex or Add-Type ($commandName) outside the pure-regression helper re-evaluation" }
         }
     }
+    # Other dynamic code: [scriptblock]::Create, InvokeScript, NewScriptBlock, dynamic member names, $ExecutionContext,
+    # Invoke-Command, and any non-literal & or . invocation target outside these exact function|operator|variable sites.
+    $invocationSites=@('Invoke-FontEmbedCom|&|Operation','|.|processSnapshot','|.|fontHelperSnapshot')
+    foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
+        if(-not ($invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { throw "Embed harness must not use dynamic code (dynamic member name: $($invoke.Extent.Text))" }
+        $memberName=$invoke.Member.Value
+        if($memberName -in @('InvokeScript','NewScriptBlock')) { throw "Embed harness must not use dynamic code (.$memberName)" }
+        if($invoke.Static -and $memberName -ieq 'Create' -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $invoke.Expression.TypeName.FullName -match '^(System\.Management\.Automation\.)?ScriptBlock$') { throw "Embed harness must not use dynamic code ([scriptblock]::Create)" }
+    }
+    foreach($variable in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if(($variable.VariablePath.UserPath -replace '^(script|global|local|private):','') -ieq 'ExecutionContext') { throw "Embed harness must not use dynamic code ($variable)" }
+    }
+    foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        $commandName=$command.GetCommandName()
+        if($null -ne $commandName -and ($commandName -replace '^.*\\','') -in @('Invoke-Command','icm')) { throw "Embed harness must not use dynamic code ($commandName)" }
+        if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Unknown) { continue }
+        $target=$command.CommandElements[0]
+        if($target -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $target -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+        $owner=$command.Parent; while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
+        $ownerName=$(if($null -eq $owner){''}else{$owner.Name})
+        $operator=$(if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot){'.'}else{'&'})
+        $variableName=$(if($target -is [System.Management.Automation.Language.VariableExpressionAst]){$target.VariablePath.UserPath -replace '^(script|global|local|private):',''}else{$null})
+        if($null -eq $variableName -or $invocationSites -cnotcontains "$ownerName|$operator|$variableName") { throw "Embed harness must not use dynamic code (non-literal $operator invocation in $(if($ownerName){$ownerName}else{'script scope'}): $($command.Extent.Text))" }
+    }
     $gateCalls=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Get-FontEmbedNativeFontsGate'},$true) | Where-Object {$_.Extent.StartOffset -lt $pureStart -or $_.Extent.EndOffset -gt $pureEnd})
     if($gateCalls.Count -ne 1 -or $gateCalls[0].Extent.Text -cne 'Get-FontEmbedNativeFontsGate $report.nativeFontsObservation') { throw 'The only worker native Fonts gate must evaluate the post-edit $report.nativeFontsObservation' }
     $embedOn=0; $embedOff=0

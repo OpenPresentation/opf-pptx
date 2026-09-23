@@ -56,15 +56,30 @@ const workerAnchor = 'function Get-FontEmbedSha256(';
 const pureAnchor = '        Invoke-Expression $comDefinition[0].Extent.Text';
 const withWorker = line => embedSource.replace(workerAnchor, `function Invoke-FontEmbedForbiddenDynamic($Text) { ${line} }\r\n${workerAnchor}`);
 const withPure = line => embedSource.replace(pureAnchor, `${pureAnchor}\r\n        ${line}`);
+const IEX_MESSAGE = /must not run Invoke-Expression, iex or Add-Type/, DYNAMIC_MESSAGE = /must not use dynamic code/;
 const dynamicCodeNegatives = [
-  ['worker-invoke-expression', withWorker('Invoke-Expression $Text')],
-  ['worker-iex', withWorker('iex $Text')],
-  ['worker-qualified-invoke-expression', withWorker('Microsoft.PowerShell.Utility\\Invoke-Expression $Text')],
-  ['worker-string-named-iex', withWorker("& 'iex' $Text")],
-  ['worker-add-type', withWorker('Add-Type -TypeDefinition $Text')],
-  ['pure-other-argument', withPure('Invoke-Expression $script:payload')],
-  ['pure-iex-alias', withPure('iex $stageDefinition[0].Extent.Text')],
-  ['pure-add-type', withPure('Add-Type -TypeDefinition $script:payload')],
+  ['worker-invoke-expression', withWorker('Invoke-Expression $Text'), IEX_MESSAGE],
+  ['worker-iex', withWorker('iex $Text'), IEX_MESSAGE],
+  ['worker-qualified-invoke-expression', withWorker('Microsoft.PowerShell.Utility\\Invoke-Expression $Text'), IEX_MESSAGE],
+  ['worker-string-named-iex', withWorker("& 'iex' $Text"), IEX_MESSAGE],
+  ['worker-add-type', withWorker('Add-Type -TypeDefinition $Text'), IEX_MESSAGE],
+  ['pure-other-argument', withPure('Invoke-Expression $script:payload'), IEX_MESSAGE],
+  ['pure-iex-alias', withPure('iex $stageDefinition[0].Extent.Text'), IEX_MESSAGE],
+  ['pure-add-type', withPure('Add-Type -TypeDefinition $script:payload'), IEX_MESSAGE],
+  // Other dynamic code, and non-literal & / . targets outside the exact COM-wrapper and helper dot-source sites.
+  ['worker-scriptblock-create', withWorker('$null=[scriptblock]::Create($Text)'), DYNAMIC_MESSAGE],
+  ['worker-qualified-scriptblock-create', withWorker('$null=[System.Management.Automation.ScriptBlock]::Create($Text)'), DYNAMIC_MESSAGE],
+  ['worker-invoke-script', withWorker('$null=$Host.Runspace.InvokeScript($Text)'), DYNAMIC_MESSAGE],
+  ['worker-execution-context', withWorker('$null=$ExecutionContext.SessionState'), DYNAMIC_MESSAGE],
+  ['worker-invoke-command', withWorker('Invoke-Command -ScriptBlock $Text'), DYNAMIC_MESSAGE],
+  ['worker-icm', withWorker('icm -ScriptBlock $Text'), DYNAMIC_MESSAGE],
+  ['worker-call-variable', withWorker('& $Text'), DYNAMIC_MESSAGE],
+  ['worker-dot-variable', withWorker('. $Text'), DYNAMIC_MESSAGE],
+  ['worker-call-expression', withWorker('& (Get-Command $Text)'), DYNAMIC_MESSAGE],
+  ['operation-outside-com-wrapper', withWorker('& $Operation'), DYNAMIC_MESSAGE],
+  ['helper-dot-source-inside-function', withWorker('. $processSnapshot'), DYNAMIC_MESSAGE],
+  ['helper-called-not-dot-sourced', withWorker('& $fontHelperSnapshot'), DYNAMIC_MESSAGE],
+  ['worker-dynamic-member', withWorker('$null=$Text.$Name()'), DYNAMIC_MESSAGE],
 ];
 assert.ok(embedSource.includes(workerAnchor) && embedSource.includes(pureAnchor));
 
@@ -93,7 +108,7 @@ if (process.platform === 'win32') {
       ['gate-on-pre-edit', embedSource.replace('$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation', '$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.preEditFontsObservation'), /post-edit \$report\.nativeFontsObservation/],
       ['kill', embedSource.replace('function Get-FontEmbedSha256(', 'function Invoke-FontEmbedForbiddenKill($Target) { $Target.Kill() }\r\nfunction Get-FontEmbedSha256('), /must not invoke \.Kill/],
       ['stop-process', embedSource.replace('function Get-FontEmbedSha256(', 'function Invoke-FontEmbedForbiddenStop($Target) { Stop-Process -Id $Target }\r\nfunction Get-FontEmbedSha256('), /must not stop processes/],
-      ...dynamicCodeNegatives.map(([name, text]) => [`dynamic-${name}`, text, /must not run Invoke-Expression, iex or Add-Type/]),
+      ...dynamicCodeNegatives.map(([name, text, message]) => [`dynamic-${name}`, text, message]),
     ];
     for (const [name, text, message] of astNegatives) {
       assert.notEqual(text, embedSource, name);

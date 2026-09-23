@@ -9,7 +9,9 @@ export const GEOMETRY_TOLERANCE_PT = 0.02;
 // setter, the edited run's Text. Dynamic code is allowed only where the pure regression re-evaluates its own helpers.
 export const MIXED_EDIT_LOCAL_ASSIGNMENT_ROOTS = Object.freeze(['report', 'seen', 'copy', 'editedRuns', 'record', 'lineRecord']);
 export const MIXED_EDIT_COM_SETTERS = Object.freeze(['runRange.Text']);
-export const MIXED_EDIT_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-MixedEditPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text'])});
+// Non-literal & / . invocations are allowed only for the COM wrapper's `& $Operation` and the script-level dot-sourcing
+// of the two hash-checked helper snapshots.
+export const MIXED_EDIT_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-MixedEditPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text']), invocationSites: Object.freeze([{function: 'Invoke-MixedEditCom', operator: '&', variable: 'Operation'}, {function: null, operator: '.', variable: 'processSnapshot'}, {function: null, operator: '.', variable: 'fontHelperSnapshot'}])});
 
 // Static source policy for the verifier snapshot, applied to code with comments and string literals blanked.
 export function auditMixedEditVerifierSource(sourceText, {label = 'native-mixed-edit.ps1'} = {}) {

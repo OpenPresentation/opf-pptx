@@ -63,6 +63,9 @@ record('verifier-read-only-source-policy');
   for (const [name, line] of [
     ['invoke-expression', 'Invoke-Expression $x'], ['iex', 'iex $x'], ['qualified', 'Microsoft.PowerShell.Utility\\Invoke-Expression $x'],
     ['string-named', "& 'iex' $x"], ['add-type', 'Add-Type -TypeDefinition $x'], ['string-named-member', "$null=$app.'Quit'()"],
+    ['scriptblock-create', '$null=[scriptblock]::Create($x)'], ['invoke-script', '$null=$Host.Runspace.InvokeScript($x)'], ['execution-context', '$null=$ExecutionContext.SessionState'],
+    ['invoke-command', 'Invoke-Command -ScriptBlock $x'], ['call-variable', '& $x'], ['dot-source-variable', '. $x'], ['call-expression', '& (Get-Command $x)'],
+    ['operation-outside-com-wrapper', 'function Test-InventoryDynamic { & $Operation }'], ['decide-outside-pure', '& $decide 1'], ['helper-in-function', 'function Test-InventoryDynamic { . $processSnapshot }'], ['dynamic-member', '$null=$x.$name()'],
   ]) assert.ok(policyCodes(`${verifierSource}\n${line}\n`).has('dynamic-code'), name);
   for (const [name, line] of [['comment', "# $shape.Name='x'; iex $x"], ['string', "$note='Invoke-Expression and $font.Name=1'"], ['local-root', '$report.extra=1']]) {
     assert.deepEqual(auditInventoryVerifierSource(`${verifierSource}\n${line}\n`), [], name);

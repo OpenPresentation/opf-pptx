@@ -224,31 +224,75 @@ export function functionExtent(code, name) {
   return null;
 }
 
-// Dynamic-code commands (Invoke-Expression, iex, Add-Type, optionally module-qualified), string-named command calls
-// (& 'iex') and string-named member invocations ($app.'Quit'()). Only exact `exemptInvocations` inside the one
-// `exemptFunction` body are allowed, so a pure-regression helper may re-evaluate its own extracted definitions.
-export function dynamicCodeInvocations(sourceText, {exemptFunction = null, exemptInvocations = []} = {}) {
+// Every `function NAME {...}` extent in lexed code.
+function functionExtents(code) {
+  const extents = [];
+  for (const match of code.matchAll(/(?<![\w-])function\s+([\w-]+)[^{]*\{/gi)) {
+    let depth = 0;
+    for (let index = match.index + match[0].length - 1; index < code.length; index++) {
+      if (code[index] === '{') depth++;
+      else if (code[index] === '}' && --depth === 0) { extents.push({name: match[1], start: match.index, end: index + 1}); break; }
+    }
+  }
+  return extents;
+}
+
+// Name of the innermost function containing `index`, or null at script level.
+function enclosingFunction(extents, index) {
+  let owner = null;
+  for (const extent of extents) if (index > extent.start && index < extent.end && (owner === null || extent.start > owner.start)) owner = extent;
+  return owner?.name ?? null;
+}
+
+const SCOPE_PREFIX = String.raw`(?:(?:script|global|local|private):)?`;
+
+// Dynamic code, all forbidden except the listed exemptions:
+// - Invoke-Expression, iex, Add-Type, Invoke-Command, icm (optionally module-qualified). Only exact `exemptInvocations`
+//   inside the one `exemptFunction` body are allowed, so a pure-regression helper may re-evaluate its own definitions.
+// - `& 'name'` string-named commands and `$x.'Member'()` string-named member calls.
+// - [scriptblock]::Create, .InvokeScript(, .NewScriptBlock( and any $ExecutionContext reference.
+// - `& <expression>` and `. <expression>` whose target is not a literal: allowed only for an exact `invocationSites`
+//   entry {function (null = script level), operator ('&' or '.'), variable}, for example the COM wrapper's `& $Operation`.
+export function dynamicCodeInvocations(sourceText, {exemptFunction = null, exemptInvocations = [], invocationSites = []} = {}) {
   const code = stripPowerShellLiteralsForScan(sourceText);
   const extent = exemptFunction ? functionExtent(code, exemptFunction) : null;
+  const extents = functionExtents(code);
   const found = [];
-  for (const match of code.matchAll(/(?<![\w$.\\-])(?:[\w.]+\\)?(Invoke-Expression|iex|Add-Type)(?![\w-])/gi)) {
+  for (const match of code.matchAll(/(?<![\w$.\\-])(?:[\w.]+\\)?(Invoke-Expression|iex|Add-Type|Invoke-Command|icm)(?![\w-])/gi)) {
     const line = code.slice(match.index, code.indexOf('\n', match.index) === -1 ? code.length : code.indexOf('\n', match.index)).trimEnd();
     const exempt = extent !== null && match.index > extent.start && match.index < extent.end && match[0] === 'Invoke-Expression' && exemptInvocations.some(text => line === text);
     if (!exempt) found.push(match[0]);
   }
   for (const match of code.matchAll(new RegExp(String.raw`(?:^|[^\w$\])])&\s*${QUOTE_CLASS}`, 'gm'))) found.push(`string-named command at ${match.index}`);
   for (const match of code.matchAll(new RegExp(String.raw`\.\s*${QUOTE_CLASS}[^\r\n]*?${QUOTE_CLASS}\s*\(`, 'g'))) found.push(`string-named member at ${match.index}`);
+  for (const match of code.matchAll(/\[\s*(?:System\.Management\.Automation\.)?ScriptBlock\s*\]\s*::\s*Create\s*\(/gi)) found.push(`[scriptblock]::Create at ${match.index}`);
+  for (const match of code.matchAll(/\.\s*(InvokeScript|NewScriptBlock)\s*\(/gi)) found.push(`.${match[1]}() at ${match.index}`);
+  for (const match of code.matchAll(/\.\$(?:\{[^}]*\}|\w+|\()[^\s=]*?\(/g)) found.push(`dynamic member name at ${match.index}`);
+  for (const match of code.matchAll(new RegExp(String.raw`\$\{?${SCOPE_PREFIX}ExecutionContext(?![\w])`, 'gi'))) found.push(`$ExecutionContext at ${match.index}`);
+  // `&` not part of a word, `&&` or a redirection such as 2>&1; `.` dot-source at a statement boundary followed by space.
+  const invocations = [
+    ...[...code.matchAll(/(?<![\w$\])}>&])&(?!&)\s*(?=[$(])/g)].map(match => ({operator: '&', match})),
+    ...[...code.matchAll(/(?<=^|[\s;{(|])\.\s+(?=[$(])/gm)].map(match => ({operator: '.', match})),
+  ];
+  for (const {operator, match} of invocations) {
+    const rest = code.slice(match.index + match[0].length);
+    const variable = new RegExp(String.raw`^\$${SCOPE_PREFIX}(\w+)(?![\w.\[(:])`, 'i').exec(rest)?.[1] ?? null;
+    const owner = enclosingFunction(extents, match.index);
+    const allowed = variable !== null && invocationSites.some(site => (site.function ?? null) === owner && site.operator === operator && site.variable === variable);
+    if (!allowed) found.push(`dynamic ${operator} invocation${variable ? ` of $${variable}` : ''} in ${owner ?? 'script scope'} at ${match.index}`);
+  }
   return found;
 }
 
 // Shared static harness policy: unmodeled syntax fails closed, dynamic code is forbidden outside the exempt
-// pure-regression helper, and member assignments are limited to local report roots and the documented COM setters.
-export function auditHarnessSourcePolicy(sourceText, {label, localRoots = [], comSetters = [], exemptFunction = null, exemptInvocations = []} = {}) {
+// pure-regression helper and listed invocation sites, and member assignments are limited to local report roots and the
+// documented COM setters.
+export function auditHarnessSourcePolicy(sourceText, {label, localRoots = [], comSetters = [], exemptFunction = null, exemptInvocations = [], invocationSites = []} = {}) {
   const failures = [];
   const {issues} = scanPowerShellSource(sourceText);
   if (issues.length) failures.push({code: 'source-scan-unsupported', message: `${label} has PowerShell syntax the source-policy lexer does not model: ${issues.map(item => `${item.kind}@${item.index}`).join(', ')}`});
-  const dynamic = dynamicCodeInvocations(sourceText, {exemptFunction, exemptInvocations});
-  if (dynamic.length) failures.push({code: 'dynamic-code', message: `${label} must not run Invoke-Expression, iex, Add-Type or string-named commands/members outside the pure-regression helper: ${dynamic.join(', ')}`});
+  const dynamic = dynamicCodeInvocations(sourceText, {exemptFunction, exemptInvocations, invocationSites});
+  if (dynamic.length) failures.push({code: 'dynamic-code', message: `${label} must not use dynamic code (Invoke-Expression, iex, Add-Type, Invoke-Command, [scriptblock]::Create, InvokeScript, $ExecutionContext, string-named or non-literal & / . invocations) outside its listed exemptions: ${dynamic.join(', ')}`});
   const assignments = disallowedMemberAssignments(sourceText, {localRoots, comSetters});
   if (assignments.length) failures.push({code: 'com-property-assignment', message: `${label} assigns members outside its local report roots and documented COM setters: ${assignments.join(', ')}`});
   return failures;

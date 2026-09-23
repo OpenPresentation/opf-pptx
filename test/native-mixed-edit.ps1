@@ -72,6 +72,30 @@ function Assert-MixedEditVerifierAst([string]$Path) {
             if(-not ($insidePure -and $name -ceq 'Invoke-Expression' -and $pureInvocations -ccontains $command.Extent.Text)) { throw "Mixed-size edit harness must not run Invoke-Expression, iex or Add-Type ($name) outside the pure-regression helper re-evaluation" }
         }
     }
+    # Other dynamic code: [scriptblock]::Create, InvokeScript, NewScriptBlock, dynamic member names, $ExecutionContext,
+    # Invoke-Command, and any non-literal & or . invocation target outside these exact function|operator|variable sites.
+    $invocationSites=@('Invoke-MixedEditCom|&|Operation','|.|processSnapshot','|.|fontHelperSnapshot')
+    foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
+        if(-not ($invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { throw "Mixed-size edit harness must not use dynamic code (dynamic member name: $($invoke.Extent.Text))" }
+        $memberName=$invoke.Member.Value
+        if($memberName -in @('InvokeScript','NewScriptBlock')) { throw "Mixed-size edit harness must not use dynamic code (.$memberName)" }
+        if($invoke.Static -and $memberName -ieq 'Create' -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $invoke.Expression.TypeName.FullName -match '^(System\.Management\.Automation\.)?ScriptBlock$') { throw "Mixed-size edit harness must not use dynamic code ([scriptblock]::Create)" }
+    }
+    foreach($variable in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if(($variable.VariablePath.UserPath -replace '^(script|global|local|private):','') -ieq 'ExecutionContext') { throw "Mixed-size edit harness must not use dynamic code ($variable)" }
+    }
+    foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        $commandName=$command.GetCommandName()
+        if($null -ne $commandName -and ($commandName -replace '^.*\\','') -in @('Invoke-Command','icm')) { throw "Mixed-size edit harness must not use dynamic code ($commandName)" }
+        if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Unknown) { continue }
+        $target=$command.CommandElements[0]
+        if($target -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $target -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+        $owner=$command.Parent; while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
+        $ownerName=$(if($null -eq $owner){''}else{$owner.Name})
+        $operator=$(if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot){'.'}else{'&'})
+        $variableName=$(if($target -is [System.Management.Automation.Language.VariableExpressionAst]){$target.VariablePath.UserPath -replace '^(script|global|local|private):',''}else{$null})
+        if($null -eq $variableName -or $invocationSites -cnotcontains "$ownerName|$operator|$variableName") { throw "Mixed-size edit harness must not use dynamic code (non-literal $operator invocation in $(if($ownerName){$ownerName}else{'script scope'}): $($command.Extent.Text))" }
+    }
     $ownedSaves=@()
     foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
         $member=$invoke.Member
