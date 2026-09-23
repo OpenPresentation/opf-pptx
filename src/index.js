@@ -1108,6 +1108,9 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const titleAlignment=opfSlide.design?.titleAlignment??presentation.design?.titleAlignment;
   const contentAlignment=opfSlide.design?.contentAlignment??presentation.design?.contentAlignment;
   const fieldAlignment=field=>field==='title'?titleAlignment:contentAlignment;
+  // Core composition resolves one alignment per composed item for every engine
+  // (FF-29); the design fallback keeps cores published before item.alignment working.
+  const alignmentFor=item=>item.alignment??fieldAlignment(item.field);
   const geometry = composeSlide(opfSlide, { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) });
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   if (geometry.slideImage) await addSlideImage(slide, presentation, geometry.slideImage, slideIndex, slideContext, options);
@@ -1124,7 +1127,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         fill:paint(surface),line:{...paint(slideContext.colorScheme.accent5??`#${slideContext.colors.border}`),pt:.75},objectName:`OPF card ${item.path}`});
     }
     if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
-      addMeasuredPayloadText(slide,item.value,item.box,slideContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:fieldAlignment(item.field),diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?slideContext.colors.accent:slideContext.colors.text});
+      addMeasuredPayloadText(slide,item.value,item.box,slideContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:alignmentFor(item),diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?slideContext.colors.accent:slideContext.colors.text});
     } else if (["title", "subtitle", "tag"].includes(item.field)) {
       // Estimated-font headings use one native text box, which still needs a
       // role tag. Role recovery must not depend on outline measurement support.
@@ -1134,14 +1137,14 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         ...textBoxOptions(region, slideContext, item.text.fontSize * 0.75),
         ...nativeFontOptions(item.textStyle),
         color: item.field === "tag" ? slideContext.colors.accent : slideContext.colors.text,
-        align: fieldAlignment(item.field),
+        align: alignmentFor(item),
         objectName,
         breakLine: false
       });
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
       addMeasuredList(slide,item.text,slideContext);
     } else if (item.field === "text" && item.text?.richLines) {
-      const alignment=item.text.placement?.alignment??contentAlignment??'left';
+      const alignment=item.text.placement?.alignment??alignmentFor(item)??'left';
       for(const [index,line] of item.text.richLines.entries()){
         const runs=line.fragments.map(fragment=>{
           const runColor=exportColor(fragment.run.color,slideContext,slideContext.colors.text);
@@ -1153,9 +1156,9 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         if(runs.length)slide.addText(runs,{...textBoxOptions(area,slideContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1});
       }
     } else if (item.field === "text" && typeof item.value === "string") {
-      slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, slideContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle),align:contentAlignment});
+      slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, slideContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle),align:alignmentFor(item)});
     } else {
-      await addPayload(slide, presentation, item.payload, region, item.path, { ...slideContext, composition: item.composition, contentAlignment: contentAlignment ?? "left" }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
+      await addPayload(slide, presentation, item.payload, region, item.path, { ...slideContext, composition: item.composition, contentAlignment: alignmentFor(item) ?? "left" }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
     }
   }
 
@@ -1199,7 +1202,7 @@ async function addPayload(slide, presentation, payload, region, path, context, o
       await addImagePayload(slide, presentation, payload.image, region, path, context, options);
       break;
     case "video":
-      addPlaceholderPayload(slide, "Video", payload.video, region, context);
+      addMediaPayload(slide, payload.video, region, path, context, options);
       break;
     case "chart":
       addChartPayload(slide, payload.chart, region, context);
@@ -1663,6 +1666,20 @@ function addTimelinePayload(slide, value, layout, context, options, path) {
   for(const [index,part]of layout.parts.entries()){
     addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,timeline:{group,part:index,anchor}});
   }
+}
+
+// Mirror the renderer's media placeholder: a bordered surface, a centred 72px
+// play badge and a centred caption (title, then source). Native video embedding
+// is not attempted; the caption keeps the reference editable.
+function addMediaPayload(slide, value, region, path, context, options) {
+  const box = pixelBox(region);
+  const asset = typeof value === "string" ? {src: value} : value && typeof value === "object" && !Array.isArray(value) ? value : {src: ""};
+  const icon = {x: box.x + (box.width - 72) / 2, y: box.y + (box.height - 72) / 2};
+  slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, pt: 0.75}, objectName: `OPF media ${path} frame`});
+  slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, objectName: `OPF media ${path} badge`});
+  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, objectName: `OPF media ${path} play`});
+  addMeasuredPayloadText(slide, asset.title || asset.src || "Media", {...box, y: icon.y + 72 + 20, height: 50}, context, options,
+    {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText});
 }
 
 function addPlaceholderPayload(slide, label, value, region, context) {
