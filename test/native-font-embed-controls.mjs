@@ -35,6 +35,9 @@ const auditCli = path.join(root, 'native-font-embed-audit.mjs');
 const editVerifier = path.join(root, 'native-font-edit.ps1');
 const node = process.execPath;
 const spawnOptions = {cwd: packageRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 15_000, windowsHide: true};
+// Windows PowerShell 5.1 cold start on hosted runners can exceed 15 s; this bounds the test process only, not any gate.
+const psSpawnOptions = {...spawnOptions, timeout: 180_000};
+const psOutcome = child => child.error ? `spawn error: ${child.error.message}` : `status ${child.status} signal ${child.signal}\n${child.stderr || child.stdout}`;
 assert.equal(process.versions.node.split('.')[0], '24', 'Native font embed controls require Node 24.');
 const outcomes = [];
 const record = name => outcomes.push({name, passed: true});
@@ -52,8 +55,8 @@ record('gate-e-remains-no-embed');
 const ps = path.join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 let pureRegression = null;
 if (process.platform === 'win32') {
-  const child = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', embedVerifier, '-PureRegression'], spawnOptions);
-  assert.equal(child.status, 0, child.stderr || child.stdout);
+  const child = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', embedVerifier, '-PureRegression'], psSpawnOptions);
+  assert.equal(child.status, 0, psOutcome(child));
   const pure = JSON.parse(child.stdout.replace(/^\uFEFF/, ''));
   assert.equal(pure.officeOrComCalls, 0);
   assert.equal(pure.canonicalHashRejected, true); assert.equal(pure.wrongLicenseRejected, true);
@@ -72,8 +75,8 @@ if (process.platform === 'win32') {
     for (const [name, text, message] of astNegatives) {
       assert.notEqual(text, embedSource, name);
       const copy = path.join(astRoot, `${name}.ps1`); await writeFile(copy, text);
-      const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], spawnOptions);
-      assert.notEqual(negative.status, 0, `${name} unexpectedly passed`);
+      const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], psSpawnOptions);
+      assert.ok(!negative.error && negative.status !== null && negative.status !== 0, `${name}: ${psOutcome(negative)}`);
       assert.match(negative.stderr + negative.stdout, message, name);
     }
   } finally { await rm(astRoot, {recursive: true, force: true}); }
