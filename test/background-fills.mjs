@@ -72,6 +72,25 @@ for (const preset of ['pct5', 'ltHorz', 'openDmnd', 'wave', 'smGrid', 'zigZag'])
   cases += 2;
 }
 {
+  // FF-24 theme colors: a slot/role reference whose drawn color the deck theme holds exactly becomes a:schemeClr
+  // (with background opacity as alpha). Like the preview, a named color that does not resolve to that slot is drawn
+  // with the default color and stays literal. Import resolves the theme color back to RGB.
+  for (const opacity of [1, .5]) {
+    const alpha = opacity === 1 ? '' : '<a:alpha val="50000"/>';
+    const named = await roundTrip({design: {background: {type: 'pattern', pattern: {preset: 'pct5', foregroundColor: 'dark1', backgroundColor: 'light1'}, opacity}}, slides: [{}]});
+    assert.match(bg(named.bytes), new RegExp(`<a:fgClr><a:schemeClr val="tx1">${alpha}(?:</a:schemeClr>)?`));
+    assert.match(bg(named.bytes), new RegExp(`<a:bgClr><a:schemeClr val="bg1">${alpha}(?:</a:schemeClr>)?`));
+    assert.deepEqual(named.background, {type: 'pattern', pattern: {preset: 'pct5', foregroundColor: '#000000', backgroundColor: '#FFFFFF'}, ...(opacity === 1 ? {} : {opacity})});
+    cases++;
+  }
+  const mismatch = await roundTrip({design: {background: {type: 'pattern', pattern: {preset: 'pct5', foregroundColor: 'accent1', backgroundColor: '#FFFFFF'}}}, slides: [{}]});
+  assert.ok(!bg(mismatch.bytes).includes('schemeClr'), 'A name drawn as the default color and literal hex stay srgbClr');
+  const translucent = await roundTrip({design: {background: {type: 'pattern', pattern: {preset: 'pct5', foregroundColor: '#00000080', backgroundColor: 'light1'}}}, slides: [{}]});
+  assert.match(bg(translucent.bytes), /<a:fgClr><a:srgbClr val="000000"><a:alpha val="50196"\/>/);
+  assert.match(bg(translucent.bytes), /<a:bgClr><a:schemeClr val="bg1">/);
+  cases += 2;
+}
+{
   // The preview's engine id diagStripe is written as the closest preset; import reports the native name.
   const {bytes, exported, background} = await roundTrip({design: {background: {type: 'pattern', pattern: {preset: 'diagStripe', foregroundColor: '#000000', backgroundColor: '#FFFFFF'}}}, slides: [{}]});
   assert.equal(attrs(bg(bytes), 'pattFill').prst, 'wdUpDiag');

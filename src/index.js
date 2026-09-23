@@ -1000,7 +1000,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const backgroundPath = `${opfSlide.design?.background !== undefined ? `slides.${slideIndex}.` : ''}design.background`;
   const backgroundFill = schemeBackgroundFill(backgroundDefinition, slideContext) ?? nativeBackgroundFill(backgroundDefinition, {
     width: slideContext.dimensions.widthInches, height: slideContext.dimensions.heightInches
-  }, slideContext.colors.background, slideContext.colors.text);
+  }, slideContext.colors.background, slideContext.colors.text, (reference, hex) => schemeColorValue(reference, hex, slideContext));
   if (backgroundFill) context.backgroundFills.set(`ppt/slides/slide${slideIndex + 1}.xml`, backgroundFill);
   if (backgroundDefinition?.type === 'pattern' && !nativePatternPreset(backgroundDefinition.pattern?.preset)) {
     options.onDiagnostic?.({code: 'unsupported-pattern', path: `${backgroundPath}.pattern.preset`, message: `Pattern ${backgroundDefinition.pattern?.preset} has no DrawingML preset; only its background color was exported.`});

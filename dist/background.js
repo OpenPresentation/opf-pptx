@@ -33,16 +33,25 @@ export const nativePatternPreset = preset => presetPatterns.has(preset) ? preset
 // The SVG preview paints the pattern background color and foreground marks,
 // defaulting to white and the slide text color. Other engine-defined presets
 // have no DrawingML equivalent; like the preview, only their background color remains.
-export function nativeBackgroundFill(background, {width, height}, fallback = 'FFFFFF', foreground = '000000') {
+// `scheme(reference, hex)` names the theme color for an authored slot/role
+// reference whose drawn color the deck theme holds exactly (FF-24); pattern
+// colors then become a:schemeClr, keeping any background opacity as alpha.
+export function nativeBackgroundFill(background, {width, height}, fallback = 'FFFFFF', foreground = '000000', scheme = () => undefined) {
   if (typeof background === 'string' && /^#[\da-f]{3}(?:[\da-f]{3}(?:[\da-f]{2})?)?$/i.test(background)) background = {type: 'solid', color: background};
   if (!background || typeof background !== 'object') return null;
   const opacity = background.opacity ?? 1;
   if (background.type === 'solid' || background.type === 'theme') return `<a:solidFill>${colorXml(background.type === 'theme' ? fallback : background.color, opacity, fallback)}</a:solidFill>`;
   if (background.type === 'pattern') {
-    const pattern = background.pattern ?? {}, back = colorXml(pattern.backgroundColor, opacity, 'FFFFFF');
+    const paint = (value, base) => {
+      const c = color(value, base), themeValue = c.alpha === 1 ? scheme(value, c.hex) : undefined;
+      if (!themeValue) return colorXml(value, opacity, base);
+      const alpha = Math.round(clamp(opacity) * 100000);
+      return `<a:schemeClr val="${themeValue}">${alpha === 100000 ? '' : `<a:alpha val="${alpha}"/>`}</a:schemeClr>`;
+    };
+    const pattern = background.pattern ?? {}, back = paint(pattern.backgroundColor, 'FFFFFF');
     const preset = nativePatternPreset(pattern.preset);
     if (!preset) return `<a:solidFill>${back}</a:solidFill>`;
-    return `<a:pattFill prst="${preset}"><a:fgClr>${colorXml(pattern.foregroundColor, opacity, foreground)}</a:fgClr><a:bgClr>${back}</a:bgClr></a:pattFill>`;
+    return `<a:pattFill prst="${preset}"><a:fgClr>${paint(pattern.foregroundColor, foreground)}</a:fgClr><a:bgClr>${back}</a:bgClr></a:pattFill>`;
   }
   if (background.type !== 'gradient') return null;
   const stops = background.gradient?.stops ?? [];
