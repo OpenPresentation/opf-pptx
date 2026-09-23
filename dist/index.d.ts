@@ -64,6 +64,10 @@ export interface ToPptxOptions {
    * PowerPoint updates on open. Without it a current date is reported as unresolved content.
    */
   date?: string;
+  /** Host-supplied catalog records, as in opf-render. Currently consulted for socialPlatforms (generated socials furniture). */
+  catalogs?: Record<string, { records?: unknown[] } | unknown[]>;
+  /** Records for document `catalogs.<kind>.source` URLs, as in opf-render. Currently consulted for socialPlatforms. */
+  catalogSources?: Record<string, { records?: unknown[] } | unknown[]>;
 }
 
 export interface FromPptxOptions {
