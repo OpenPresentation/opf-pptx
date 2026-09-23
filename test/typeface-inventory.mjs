@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
-import {catalogs} from '@openpresentation/opf';
+import * as opfCore from '@openpresentation/opf';
 import {examples} from '@openpresentation/opf/examples';
 import {resolveFontFamilies} from '@openpresentation/opf/composition';
+import {writeWorkbookFonts} from '../src/package-fonts.js';
 import {toPptx, checkPptxTypefaces, inventoryPptxTypefaces, THEME_SCRIPT_SUPPLEMENTS} from '../src/index.js';
 
 // FF-08 (font-fidelity-everywhere): the exported package names only the fonts
@@ -63,6 +64,7 @@ const deck = {name: 'Charts', design: {fontScheme: 'consolas'}, slides: [
   {title: 'Table', table: {columns: ['Name', 'Value'], rows: [['A', '1'], ['B', '2']]}},
   {title: 'Serif override', design: {fontScheme: 'georgia'}, chart: {type: 'bar', data}},
 ]};
+const {catalogs} = opfCore;
 const consolas = resolveFontFamilies(catalogs.fontSchemes.find(record => record.id === 'consolas'));
 const georgia = resolveFontFamilies(catalogs.fontSchemes.find(record => record.id === 'georgia'));
 const chosen = [...new Set([...Object.values(consolas), ...Object.values(georgia)])];
@@ -123,6 +125,15 @@ assert.deepEqual(aptosCheck.violations, []);
 assert.ok(aptosCheck.inventory.typefaces.some(entry => entry.typeface === 'Aptos Display' && entry.pitchFamily === 34));
 assert.ok(aptosCheck.inventory.typefaces.some(entry => entry.typeface === 'Roboto Mono' && entry.pitchFamily === 49));
 
+// Workbook fonts outside <fonts> (differential formats, rich-text runs) are rewritten too.
+{
+  const styles = '<styleSheet><fonts count="1"><font><name val="Geneva"/></font></fonts><dxfs count="1"><dxf><font><b/><name val="Arial"/></font></dxf></dxfs></styleSheet>';
+  const strings = '<sst><si><r><rPr><rFont val="Calibri"/></rPr><t>x</t></r></si></sst>';
+  const rewritten = unzipSync(writeWorkbookFonts(zipSync({'xl/styles.xml': strToU8(styles), 'xl/sharedStrings.xml': strToU8(strings)}), {heading: 'Georgia', body: 'Georgia'}));
+  assert.equal(text(rewritten, 'xl/styles.xml'), styles.replace('Geneva', 'Georgia').replace('Arial', 'Georgia'));
+  assert.equal(text(rewritten, 'xl/sharedStrings.xml'), strings.replace('Calibri', 'Georgia'));
+}
+
 // Negative controls: each leak class is detected, including nested parts.
 const firstChart = charts[0], firstWorkbook = workbooks[0];
 const control = (edit, options = {}) => reasons(checkPptxTypefaces(repack(bytes, edit), {fonts: chosen, monospace, ...options}));
@@ -148,11 +159,23 @@ const designFonts = (presentation, design) => {
   const scheme = {...base, ...(reference && typeof reference === 'object' ? reference : {})};
   return {...resolveFontFamilies(scheme), mono: scheme.type === 'monospace' ? [scheme.major, scheme.minor] : []};
 };
+// FF-07 writes the language's script fonts (theme and run ea/cs and the language's
+// own theme supplement) through core resolveScriptFonts(). With a core that has
+// the resolver, those resolved families are chosen fonts too; published cores
+// without it export no script fonts, so nothing is added.
+const scriptFonts = presentation => {
+  if (typeof opfCore.resolveScriptFonts !== 'function') return [];
+  return [undefined, ...presentation.slides.keys()].flatMap(slideIndex => {
+    const resolved = opfCore.resolveScriptFonts(presentation, slideIndex === undefined ? {} : {slideIndex});
+    const slots = [resolved.heading, resolved.body].flatMap(slot => [slot.latin, slot.eastAsian, slot.complexScript]);
+    return [...slots, ...(resolved.supplement ? [resolved.supplement.heading, resolved.supplement.body] : [])].filter(Boolean);
+  });
+};
 const runFamilies = value => !value || typeof value !== 'object' ? [] : Object.entries(value).flatMap(([key, child]) => key === 'fontFamily' && typeof child === 'string' ? [child] : runFamilies(child));
 const corpus = {decks: 0, charts: 0, workbooks: 0, typefaces: 0, failures: []};
 for (const {file, deck: example} of examples) {
   const roles = [example.design ?? {}, ...example.slides.map(slide => ({...example.design, ...slide.design}))].map(design => designFonts(example, design));
-  const fonts = [...new Set([...roles.flatMap(role => [role.heading, role.body, role.code]), ...runFamilies(example.slides)])];
+  const fonts = [...new Set([...roles.flatMap(role => [role.heading, role.body, role.code]), ...runFamilies(example.slides), ...scriptFonts(example)])];
   // A scheme's type describes its major/minor, not inline heading/body overrides.
   const mono = roles.flatMap(role => [...role.mono, role.code]);
   const exported = await toPptx(example, {imageResolver: async () => new Uint8Array(await readFile(new URL('./fixtures/images/wide.png', import.meta.url)))});

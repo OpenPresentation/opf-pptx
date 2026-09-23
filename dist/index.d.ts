@@ -105,8 +105,22 @@ export interface CheckPptxTypefacesOptions {
   scriptSupplements?: Readonly<Record<"major" | "minor", Readonly<Record<string, string>>>>;
 }
 
+export type TypefaceViolationReason =
+  | "foreign-typeface"
+  | "foreign-theme-reference"
+  | "unresolved-theme-reference"
+  | "empty-theme-reference"
+  | "empty-typeface"
+  | "foreign-script-supplement"
+  | "monospace-not-fixed-pitch"
+  | "fixed-pitch-not-monospace"
+  | "inconsistent-pitch-family"
+  | "missing-fonts-used"
+  | "foreign-fonts-used"
+  | "fonts-used-mismatch";
+
 export interface TypefaceViolation {
-  reason: string;
+  reason: TypefaceViolationReason;
   part: string;
   element?: string;
   typeface?: string;

@@ -61,15 +61,23 @@ export function writeChartFonts(xml, family) {
   });
 }
 
-// Embedded chart workbook: styles fonts use the chart body font; the workbook
-// theme uses the chart heading/body fonts with empty ea/cs slots and no Office
-// script supplements. Every other workbook part is kept byte for byte.
+// Embedded chart workbook: every SpreadsheetML font uses the chart body font
+// (each <font> in styles.xml, whether under <fonts>, <dxfs> or elsewhere, and
+// any rich-text <rFont> in shared strings or sheets); the workbook theme uses
+// the chart heading/body fonts with empty ea/cs slots and no Office script
+// supplements. Parts without fonts are kept byte for byte.
 export function writeWorkbookFonts(bytes, fonts) {
   const entries = unzipSync(bytes);
   const styles = entries['xl/styles.xml'], theme = entries['xl/theme/theme1.xml'];
+  const setVal = node => node.replace(/\bval="[^"]*"/, `val="${escapeXml(fonts.body)}"`);
   if (styles) {
-    entries['xl/styles.xml'] = encoder.encode(text(styles).replace(/<fonts\b[\s\S]*?<\/fonts>/, list =>
-      list.replace(/<name val="[^"]*"\/>/g, `<name val="${escapeXml(fonts.body)}"/>`)));
+    entries['xl/styles.xml'] = encoder.encode(text(styles).replace(/<font\b[^>]*>[\s\S]*?<\/font>/g, font =>
+      font.replace(/<name\b[^>]*?\bval="[^"]*"/g, setVal)));
+  }
+  for (const path of Object.keys(entries)) {
+    if (!/^xl\/(?:sharedStrings|worksheets\/[^/]+)\.xml$/.test(path)) continue;
+    const xml = text(entries[path]);
+    if (xml.includes('<rFont')) entries[path] = encoder.encode(xml.replace(/<rFont\b[^>]*?\bval="[^"]*"/g, setVal));
   }
   if (theme) {
     const collection = (name, family) => `<a:${name}><a:latin typeface="${escapeXml(family)}"/><a:ea typeface=""/><a:cs typeface=""/></a:${name}>`;
