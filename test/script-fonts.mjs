@@ -116,6 +116,9 @@ for (const expected of cases) {
     // Headings take the heading slot; the chart keeps its body face.
     const title = xml['ppt/slides/slide1.xml'].match(/name="OPF heading slides\.0\.title line 0"[\s\S]*?<\/p:sp>/)[0];
     assert.match(title, new RegExp(`<a:${slot} typeface="${own.heading}"/>`), `${expected.id} title ${slot}`);
+    // Chart text (whose latin/ea/cs FF-08 sets to the body font) takes the body script font.
+    const chart = partsMatching(xml, /^ppt\/charts\/chart\d+\.xml$/).join('');
+    assert.match(chart, new RegExp(`<a:${slot} typeface="${own.body}"/>`), `${expected.id} chart ${slot}`);
   } else {
     for (const other of ['ea', 'cs']) assert.deepEqual(runFaces(xml, other), runFaces(xml, 'latin'), `${expected.id} run ${other} repeats latin`);
   }
