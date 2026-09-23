@@ -19,15 +19,18 @@
 The cross-repo program tracker lives in core at [docs/programs/font-fidelity-everywhere](https://github.com/OpenPresentation/opf/tree/main/docs/programs/font-fidelity-everywhere). `README.md` there holds the goal, done criteria and resume protocol; `burndown.md` holds item IDs and status. Before starting work:
 
 1. Read the tracker and pick or confirm a burndown ID (for example `FF-07`).
-2. Branch as `codex/ff-<id>-<slug>` from fresh `origin/main`.
-3. Reference the ID in the PR title and body.
+2. Branch as `codex/ff-<nn>-<slug>` (for example `codex/ff-07-script-slots`) from fresh `origin/main`.
+3. Start the PR title with the ID prefix (`FF-07: `) and reference the item in the PR body.
 4. When the item completes, update its burndown row and append to the progress log in core.
 
 ## Native PowerPoint rules
 
-- The native harnesses (`test/native-*.ps1`) drive desktop PowerPoint and temporary font registrations. Only the root session runs them, on the Windows host. Agents run only the offline controls above and the `-PureRegression` modes, for example:
-  `& "$env:WINDIR/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -File test/native-font-edit.ps1 -PureRegression`
-- Never kill Office, call `Application.Quit`, or close unrelated presentations. Never retry a native attempt in place; a new attempt uses a fresh output directory, and failed attempts are preserved as evidence.
+- Root-only (Windows host, root session): every `test/native-*.ps1` run that opens PowerPoint through COM or registers temporary fonts. That covers the harness entrypoints `native-chart-colors`, `native-code`, `native-font-advances`, `native-font-edit`, `native-font-embed`, `native-font-selection`, `native-furniture-control`, `native-metric`, `native-mixed-edit`, `native-picture-control`, `native-picture-edit`, `native-quote`, `native-tab-control`, `native-tab-control-v2`, `native-table-colors` and `native-text` (without `-PureRegression`), plus `native-text-fonts-check.ps1`, which exercises font registration. `native-process.ps1`, `native-deck.ps1`, `native-open-fonts.ps1` and `native-text-fonts.ps1` are helpers dot-sourced by those scripts.
+- Agents may run only these Office-free checks (the set Windows CI runs), plus the offline Node controls above:
+  - `native-process-check.ps1`, `native-picture-harness-check.ps1`, `native-picture-edit-harness-check.ps1` and `native-furniture-harness-check.ps1` (see `ci.yml` for their `-OutputDirectory`/`-ReportPath` arguments);
+  - `-PureRegression` on `native-tab-control-v2.ps1`, `native-font-edit.ps1`, `native-font-embed.ps1` and `native-mixed-edit.ps1`, for example
+    `& "$env:WINDIR/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive -File test/native-font-edit.ps1 -PureRegression`
+- Never kill Office, call `Application.Quit`, close unrelated presentations, or change Office security. Run one bounded native worker at a time (45 s default, 60 s max, via `native-process.ps1`). Never retry a native attempt in place; a new attempt uses a fresh output directory, and failed attempts are preserved as evidence.
 - Never relax the 0.02 pt tab/geometry gate, the 0.1 pt character-bound gate, or any other gate or tolerance to make a run pass.
 - Font programs (TTF/OTF, PDFs with embedded fonts) are test inputs and are never committed as evidence.
 - No package publish or version bump outside the release process.
