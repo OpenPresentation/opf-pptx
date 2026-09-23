@@ -1,5 +1,5 @@
 import {XMLParser} from 'fast-xml-parser';
-import {readNativeBackground, readBackgroundColor, colorTransforms} from './background.js';
+import {readNativeBackground, readBackgroundColor, colorTransforms, nativeTileScale, nativeTileAlignment} from './background.js';
 import {rasterMetadata} from './image-geometry.js';
 
 const orderedParser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', preserveOrder: true, parseAttributeValue: false, parseTagValue: false, trimValues: false});
@@ -120,8 +120,20 @@ function readImageBackground(fill, partPath, {relationships, bytes}, dimensions,
   const amount = blip['a:alphaModFix'] ? Number(blip['a:alphaModFix'].amt ?? 100000) / 100000 : 1;
   const opacity = Number.isFinite(amount) ? Math.max(0, Math.min(1, amount)) : 1;
   let fit = 'cover';
-  if (fill['a:tile']) fit = 'tile';
-  else {
+  if (fill['a:tile']) {
+    fit = 'tile';
+    // OPF tile has one geometry: top-left min(w,h)/4 cells holding the whole
+    // image (the default contain imageFill), at the raster's own resolution.
+    const tile = fill['a:tile'], crop = fill['a:srcRect'];
+    const expected = nativeTileScale(metadata, dimensions);
+    const x = (1 - expected.cell / (metadata.width * expected.scale)) / 2, y = (1 - expected.cell / (metadata.height * expected.scale)) / 2;
+    const value = (raw, fallback) => raw === undefined ? fallback : Number(raw);
+    const scaled = (raw, target) => Math.abs(value(raw, 100000) - target) <= Math.max(2, target * .005);
+    const matches = scaled(tile.sx, expected.sx) && scaled(tile.sy, expected.sy)
+      && Object.entries(nativeTileAlignment).every(([key, native]) => String(tile[key] ?? native) === native)
+      && near(inset(crop, 'l'), x) && near(inset(crop, 'r'), x) && near(inset(crop, 't'), y) && near(inset(crop, 'b'), y);
+    if (!matches) approximate('tiles with a scale, offset, alignment, flip or crop that the OPF tile fit does not express');
+  } else {
     const crop = fill['a:srcRect'], box = fill['a:stretch']?.['a:fillRect'];
     const [l, t, r, b] = ['l', 't', 'r', 'b'].map(key => inset(crop, key));
     const [fl, ft, fr, fb] = ['l', 't', 'r', 'b'].map(key => inset(box, key));

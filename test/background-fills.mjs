@@ -26,8 +26,8 @@ async function roundTrip(document) {
   assert.equal(validatePresentation(back).valid, true);
   return {bytes, exported, imported, background: back.slides[0].design?.background, back};
 }
-// A valid RGB PNG of the given pixel size (one flat color).
-function png(width, height) {
+// A valid RGB PNG of the given pixel size (one flat color), optionally with a pHYs resolution.
+function png(width, height, dpi) {
   const chunk = (type, data) => {
     const out = Buffer.alloc(12 + data.length);
     out.writeUInt32BE(data.length, 0); out.write(type, 4, 'latin1'); data.copy(out, 8);
@@ -37,7 +37,9 @@ function png(width, height) {
   const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2;
   const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x7f)]);
   const raw = Buffer.concat(Array.from({length: height}, () => row));
-  return 'data:image/png;base64,' + Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+  const physical = Buffer.alloc(9);
+  if (dpi) { physical.writeUInt32BE(Math.round(dpi / .0254), 0); physical.writeUInt32BE(Math.round(dpi / .0254), 4); physical[8] = 1; }
+  return 'data:image/png;base64,' + Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), ...(dpi ? [chunk('pHYs', physical)] : []), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
 }
 let cases = 0;
 
@@ -133,11 +135,61 @@ const wide = png(480, 270), square = png(100, 100), tall = png(90, 160);
   assert.deepEqual(attrs(bg(contain.bytes), 'tile'), {tx: '0', ty: '0', sx: '37500', sy: '37500', flip: 'none', algn: 'tl'});
   assert.deepEqual(attrs(bg(contain.bytes), 'srcRect'), {t: '-38889', b: '-38889'}, 'Transparent padding keeps the contained cell square');
   assert.equal(contain.background.image.fit, 'tile');
+  assert.deepEqual(contain.imported.filter(d => d.path.endsWith('design.background')), [], 'OPF tile geometry imports without a diagnostic');
   const cover = await roundTrip({design: {imageFill: 'crop', background: {type: 'image', image: {src: wide, fit: 'tile'}}}, slides: [{}]});
   assert.deepEqual(attrs(bg(cover.bytes), 'tile'), {tx: '0', ty: '0', sx: '66667', sy: '66667', flip: 'none', algn: 'tl'});
   assert.deepEqual(attrs(bg(cover.bytes), 'srcRect'), {l: '21875', r: '21875'});
   assert.equal(cover.background.image.fit, 'tile');
-  cases += 2;
+  // Import carries no imageFill, so covered cells are reported as approximate.
+  assert.deepEqual(cover.imported.filter(d => d.path.endsWith('design.background')).map(d => d.code), ['approximate-background-image']);
+  // Native tile geometry OPF cannot express is reported, not silently dropped.
+  for (const change of [xml => xml.replace('sx="37500"', 'sx="50000"'), xml => xml.replace('sy="37500"', 'sy="30000"'), xml => xml.replace('tx="0"', 'tx="91440"'),
+    xml => xml.replace('ty="0"', 'ty="-45720"'), xml => xml.replace('algn="tl"', 'algn="ctr"'), xml => xml.replace('flip="none"', 'flip="xy"'), xml => xml.replace('t="-38889" b="-38889"', 't="-10000" b="-10000"')]) {
+    const reports = [];
+    const result = await fromPptx(edit(contain.bytes, 'ppt/slides/slide1.xml', change), {onDiagnostic: d => reports.push(d)});
+    assert.equal(result.slides[0].design.background.image.fit, 'tile');
+    assert.deepEqual(reports.filter(d => d.path.endsWith('design.background')).map(d => [d.code, d.path]), [['approximate-background-image', 'slides.0.design.background']]);
+  }
+  cases += 9;
+}
+{
+  // dpi="0" sizes a tile from the raster's resolution; the scale matches the preview's CSS pixels at 72, 96 and 144 dpi.
+  for (const dpi of [72, 96, 144]) {
+    // pHYs stores whole pixels per metre, so 72 dpi is 2835 ppm (72.009 dpi).
+    const source = png(480, 270, dpi), expected = 37500 * Math.round(dpi / .0254) * .0254 / 96;
+    const {bytes, background, imported} = await roundTrip({design: {background: {type: 'image', image: {src: source, fit: 'tile'}}}, slides: [{}]});
+    const tile = attrs(bg(bytes), 'tile');
+    assert.ok(Math.abs(Number(tile.sx) - expected) <= 2 && tile.sx === tile.sy, `${dpi} dpi: ${tile.sx}`);
+    assert.deepEqual(background, {type: 'image', image: {src: source, fit: 'tile'}});
+    assert.deepEqual(imported.filter(d => d.path.endsWith('design.background')), [], `${dpi} dpi imports as exact tile`);
+  }
+  // Resolution metadata: PNG pHYs (metres only), JPEG JFIF (inch/cm, preferred) and EXIF X/YResolution.
+  const {rasterMetadata} = await import('../dist/image-geometry.js');
+  const bytes = uri => new Uint8Array(Buffer.from(uri.slice(uri.indexOf(',') + 1), 'base64'));
+  const close = (actual, x, y) => assert.ok(Math.abs(actual.dpiX - x) < .01 && Math.abs(actual.dpiY - y) < .01, JSON.stringify(actual));
+  close(rasterMetadata(bytes(png(10, 10, 144))), 144.0018, 144.0018);
+  assert.equal(rasterMetadata(bytes(png(10, 10))).dpiX, undefined, 'No pHYs: no resolution (96 dpi fallback)');
+  const segment = (marker, body) => Buffer.concat([Buffer.from([0xff, marker, (body.length + 2) >> 8, (body.length + 2) & 255]), body]);
+  const sof = segment(0xc0, Buffer.from([8, 0, 20, 0, 40, 3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]));
+  const jfif = (unit, x, y) => segment(0xe0, Buffer.concat([Buffer.from('JFIF\0', 'latin1'), Buffer.from([1, 2, unit, x >> 8, x & 255, y >> 8, y & 255, 0, 0])]));
+  const exif = (x, y, unit) => {
+    const tiff = Buffer.alloc(8 + 2 + 3 * 12 + 4 + 16);
+    tiff.write('MM', 0, 'latin1'); tiff.writeUInt16BE(42, 2); tiff.writeUInt32BE(8, 4); tiff.writeUInt16BE(3, 8);
+    const entry = (i, tag, type, value) => { const at = 10 + i * 12; tiff.writeUInt16BE(tag, at); tiff.writeUInt16BE(type, at + 2); tiff.writeUInt32BE(1, at + 4); type === 3 ? tiff.writeUInt16BE(value, at + 8) : tiff.writeUInt32BE(value, at + 8); };
+    entry(0, 0x11a, 5, 50); entry(1, 0x11b, 5, 58); entry(2, 0x128, 3, unit);
+    tiff.writeUInt32BE(x, 50); tiff.writeUInt32BE(1, 54); tiff.writeUInt32BE(y, 58); tiff.writeUInt32BE(1, 62);
+    return segment(0xe1, Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff]));
+  };
+  const jpeg = (...segments) => new Uint8Array(Buffer.concat([Buffer.from([0xff, 0xd8]), ...segments, sof, Buffer.from([0xff, 0xd9])]));
+  close(rasterMetadata(jpeg(jfif(1, 72, 144))), 72, 144);
+  close(rasterMetadata(jpeg(jfif(2, 100, 100))), 254, 254);
+  close(rasterMetadata(jpeg(exif(300, 150, 2))), 300, 150);
+  close(rasterMetadata(jpeg(exif(100, 100, 3))), 254, 254);
+  close(rasterMetadata(jpeg(jfif(1, 72, 72), exif(300, 300, 2))), 72, 72);
+  close(rasterMetadata(jpeg(jfif(0, 1, 1), exif(144, 144, 2))), 144, 144);
+  assert.equal(rasterMetadata(jpeg(jfif(0, 1, 1))).dpiX, undefined, 'An aspect-only JFIF density defines no resolution');
+  assert.equal(rasterMetadata(jpeg(jfif(1, 72, 72))).width, 40);
+  cases += 11;
 }
 {
   // Slide overrides, deck inheritance and a host imageResolver.

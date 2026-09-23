@@ -69,15 +69,23 @@ const percent = value => Math.round(value * 100000);
 // with fill-rectangle insets, and tile repeats square cells of min(w,h)/4
 // from the top-left corner. Each cell holds the image by the deck imageFill
 // (crop = cover, otherwise contain; negative source insets are transparent
-// padding). Tile scale assumes the 96 dpi CSS pixel size of the raster.
+// padding). With dpi="0", DrawingML sizes a tile from the raster's own
+// resolution (PNG pHYs, JPEG JFIF or EXIF; 96 dpi when absent), while the
+// preview draws CSS pixels, so the tile scale compensates on each axis.
+export const nativeTileAlignment = {tx: '0', ty: '0', flip: 'none', algn: 'tl'};
+export function nativeTileScale(image, {width, height, imageFill = 'fit'}) {
+  const cell = Math.min(width, height) / 4;
+  const scale = (imageFill === 'crop' ? Math.max : Math.min)(cell / image.width, cell / image.height);
+  return {cell, scale, sx: percent(scale * (image.dpiX ?? 96) / 96), sy: percent(scale * (image.dpiY ?? 96) / 96)};
+}
 export function nativeImageBackgroundFill(relationshipId, image, {fit = 'cover', opacity = 1, width, height, imageFill = 'fit'}) {
   const alpha = clamp(opacity);
   const blip = `<a:blip r:embed="${relationshipId}">${alpha === 1 ? '' : `<a:alphaModFix amt="${percent(alpha)}"/>`}</a:blip>`;
   if (fit === 'tile') {
-    const cell = Math.min(width, height) / 4;
-    const scale = (imageFill === 'crop' ? Math.max : Math.min)(cell / image.width, cell / image.height);
+    const {cell, scale, sx, sy} = nativeTileScale(image, {width, height, imageFill});
     const x = percent((1 - cell / (image.width * scale)) / 2), y = percent((1 - cell / (image.height * scale)) / 2);
-    return `<a:blipFill dpi="0" rotWithShape="1">${blip}${rectXml('srcRect', {l: x, t: y, r: x, b: y})}<a:tile tx="0" ty="0" sx="${percent(scale)}" sy="${percent(scale)}" flip="none" algn="tl"/></a:blipFill>`;
+    const {tx, ty, flip, algn} = nativeTileAlignment;
+    return `<a:blipFill dpi="0" rotWithShape="1">${blip}${rectXml('srcRect', {l: x, t: y, r: x, b: y})}<a:tile tx="${tx}" ty="${ty}" sx="${sx}" sy="${sy}" flip="${flip}" algn="${algn}"/></a:blipFill>`;
   }
   if (fit === 'contain') {
     const scale = Math.min(width / image.width, height / image.height);
