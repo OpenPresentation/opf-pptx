@@ -100,4 +100,31 @@ for (const provenance of ['references-only', false]) {
   checks++;
 }
 
-console.log(`Media placeholder passed: ${checks} groups; web-source hyperlinks, OPF_MEDIA_V1 tags, exact video and asset round trip, no registry copies outside 'full', and edited groups keep captions with invalid-media-provenance and no fallback blocks.`);
+// An unreadable or ambiguous media tag is not trusted, so its shape is never
+// removed by name: it goes through ordinary import. For the badge (a shape
+// without text) that is one fallback block, {type: 'text', text: 'PowerPoint
+// shape: OPF media <path> badge'}. The rest of the group is then incomplete:
+// its other decoration is dropped, the caption stays as text, and
+// invalid-media-provenance names the video. An ambiguous tag also reports the
+// unattributable shape at the slide path.
+{
+  const badgeTag = entries => tagParts(entries).find(path => { const record = tagValue(dec.decode(entries[path])); return record.role === 'badge' && record.path === 'slides.0.blocks.0.video'; });
+  const fallback = [{type: 'text', text: 'PowerPoint shape: OPF media slides.0.blocks.0.video badge'}, {type: 'text', text: 'Walkthrough'}];
+  const cases = {
+    // A second OPF_ identity on the same shape.
+    ambiguous: [entries => text(entries, badgeTag(entries), xml => xml.replace('</p:tagLst>', '<p:tag name="OPF_CARD_V1" val="7B7D"/></p:tagLst>')),
+      [['invalid-media-provenance', 'slides.0.blocks.0.video'], ['invalid-media-provenance', 'slides.0']]],
+    // A tag part that is not XML, and a tag relationship whose part is missing.
+    unreadable: [entries => { entries[badgeTag(entries)] = enc.encode('not xml <<<'); }, [['invalid-media-provenance', 'slides.0.blocks.0.video']]],
+    missing: [entries => { delete entries[badgeTag(entries)]; }, [['invalid-media-provenance', 'slides.0.blocks.0.video']]],
+  };
+  for (const [label, [mutate, diagnostics]] of Object.entries(cases)) {
+    const {doc, media} = await read(modify(exported, mutate));
+    assert.deepEqual(media, diagnostics, `${label}: diagnostics`);
+    assert.deepEqual(doc.slides[0].blocks, fallback, `${label}: one badge fallback block and the caption text`);
+    assert.deepEqual(videos(doc).slice(1), [[deck.slides[1].video], [deck.slides[2].video]], `${label}: other slides are unaffected`);
+  }
+  checks++;
+}
+
+console.log(`Media placeholder passed: ${checks} groups; web-source hyperlinks, OPF_MEDIA_V1 tags, exact video and asset round trip, no registry copies outside 'full', edited groups keep captions with invalid-media-provenance and no fallback blocks, and an untrusted (unreadable or ambiguous) tag leaves one documented fallback block with the diagnostic.`);
