@@ -5,19 +5,35 @@ import {fileURLToPath} from 'node:url';
 import {auditHarnessSourcePolicy, stripPowerShellLiteralsForScan} from './powershell-scan.mjs';
 
 export const GEOMETRY_TOLERANCE_PT = 0.02;
-// Member assignments the mixed-size edit worker may make: local report/evidence roots plus its one documented COM
-// setter, the edited run's Text. Dynamic code is allowed only where the pure regression re-evaluates its own helpers.
-export const MIXED_EDIT_LOCAL_ASSIGNMENT_ROOTS = Object.freeze(['report', 'seen', 'copy', 'editedRuns', 'record', 'lineRecord']);
-export const MIXED_EDIT_COM_SETTERS = Object.freeze(['runRange.Text']);
-// Non-literal & / . invocations are allowed only for the COM wrapper's `& $Operation` and the script-level dot-sourcing
-// of the two hash-checked helper snapshots.
-export const MIXED_EDIT_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-MixedEditPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text']), invocationSites: Object.freeze([{function: 'Invoke-MixedEditCom', operator: '&', variable: 'Operation'}, {function: null, operator: '.', variable: 'processSnapshot'}, {function: null, operator: '.', variable: 'fontHelperSnapshot'}])});
+// Reviewed allowlist policy for native-mixed-edit.ps1. The controls assert that every list below equals the matching
+// $script:MixedEditPolicy* list in that file, which its PowerShell AST check enforces.
+export const MIXED_EDIT_SOURCE_POLICY = Object.freeze({
+  commands: Object.freeze(['Add-Content', 'ConvertFrom-Json', 'ConvertTo-Json', 'Copy-Item', 'ForEach-Object', 'Get-Content', 'Get-Date', 'Get-FileHash', 'Get-Item', 'Get-ItemProperty', 'Invoke-OpfNativeWorker', 'Invoke-OpfWithTemporaryFonts', 'Join-Path', 'New-Item', 'New-Object', 'Remove-Item', 'Resolve-Path', 'Set-Content', 'Test-Path', 'Where-Object', 'Write-Host', 'Write-Output']),
+  scoped: Object.freeze(['Invoke-Expression|Invoke-MixedEditPureRegression']),
+  forms: Object.freeze(['New-Object|^New-Object -ComObject PowerPoint\\.Application$']),
+  instance: Object.freeze(['Cell', 'Characters', 'Close', 'ContainsKey', 'Export', 'FindAll', 'GetCommandName', 'Item', 'Lines', 'Open', 'Paragraphs', 'SaveAs', 'StartsWith', 'ToLowerInvariant', 'ToString', 'ToUniversalTime', 'TrimEnd']),
+  statics: Object.freeze(['Guid::NewGuid', 'IO.Path::GetExtension', 'IO.Path::GetFileName', 'IO.Path::GetFullPath', 'IO.Path::GetTempPath', 'Math::Min', 'string::IsNullOrEmpty', 'string::IsNullOrWhiteSpace', 'System.Management.Automation.Language.Parser::ParseFile']),
+  properties: Object.freeze(['IO.Path::AltDirectorySeparatorChar', 'IO.Path::DirectorySeparatorChar', 'StringComparison::Ordinal', 'StringComparison::OrdinalIgnoreCase', 'System.Management.Automation.Language.TokenKind::Dot', 'System.Management.Automation.Language.TokenKind::Minus', 'System.Management.Automation.Language.TokenKind::Unknown', 'System.Management.Automation.Language.StringConstantType::BareWord', 'System.Management.Automation.Language.TokenKind::Equals']),
+  types: Object.freeze(['bool', 'double', 'Guid', 'int', 'IO.Path', 'Math', 'ordered', 'pscustomobject', 'ref', 'scriptblock', 'string', 'StringComparison', 'switch', 'void', 'ValidateRange', 'System.Management.Automation.Language.AssignmentStatementAst', 'System.Management.Automation.Language.AttributeBaseAst', 'System.Management.Automation.Language.CommandAst', 'System.Management.Automation.Language.ConstantExpressionAst', 'System.Management.Automation.Language.ConvertExpressionAst', 'System.Management.Automation.Language.FunctionDefinitionAst', 'System.Management.Automation.Language.IndexExpressionAst', 'System.Management.Automation.Language.InvokeMemberExpressionAst', 'System.Management.Automation.Language.MemberExpressionAst', 'System.Management.Automation.Language.ParenExpressionAst', 'System.Management.Automation.Language.Parser', 'System.Management.Automation.Language.ScriptBlockExpressionAst', 'System.Management.Automation.Language.StringConstantExpressionAst', 'System.Management.Automation.Language.StringConstantType', 'System.Management.Automation.Language.TokenKind', 'System.Management.Automation.Language.TypeExpressionAst', 'System.Management.Automation.Language.UnaryExpressionAst', 'System.Management.Automation.Language.VariableExpressionAst', 'System.Management.Automation.Language.ArrayLiteralAst', 'System.Management.Automation.Language.CommandExpressionAst', 'System.Management.Automation.Language.CommandParameterAst', 'System.Management.Automation.Language.ForEachStatementAst', 'System.Management.Automation.Language.HashtableAst', 'System.Management.Automation.Language.ParameterAst']),
+  sites: Object.freeze(['Invoke-MixedEditCom|&|Operation', '|.|processSnapshot', '|.|fontHelperSnapshot']),
+  pipelines: Object.freeze([]),
+  roots: Object.freeze(['report', 'seen', 'copy', 'editedRuns', 'record', 'lineRecord']),
+  setters: Object.freeze(['runRange.Text']),
+  rootSources: Object.freeze(['editedRuns|@($originalRuns | ForEach-Object { $copy=[ordered]@{}; foreach($key in $_.Keys) { $copy[$key]=$_[$key] }; $copy })', 'record|Read-MixedEditRange $characterRange "$Phase.cell.character-$($probe.position)" $true', 'lineRecord|Read-MixedEditRange $lineRange "$Phase.cell.line-$lineIndex" $false']),
+  bareArguments: Object.freeze(['Directory', 'PowerPoint.Application', 'SHA256', 'UTF8']),
+  dynamicMemberSites: Object.freeze([]),
+  exemptFunction: 'Invoke-MixedEditPureRegression',
+  exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text']),
+});;
+// Member assignments: local report/evidence roots plus the one documented COM setter, the edited run's Text.
+export const MIXED_EDIT_LOCAL_ASSIGNMENT_ROOTS = MIXED_EDIT_SOURCE_POLICY.roots;
+export const MIXED_EDIT_COM_SETTERS = MIXED_EDIT_SOURCE_POLICY.setters;
 
 // Static source policy for the verifier snapshot, applied to code with comments and string literals blanked.
 export function auditMixedEditVerifierSource(sourceText, {label = 'native-mixed-edit.ps1'} = {}) {
-  const failures = auditHarnessSourcePolicy(sourceText, {label, localRoots: MIXED_EDIT_LOCAL_ASSIGNMENT_ROOTS, comSetters: MIXED_EDIT_COM_SETTERS, ...MIXED_EDIT_PURE_REGRESSION_EXEMPTION});
+  const failures = auditHarnessSourcePolicy(sourceText, {label, ...MIXED_EDIT_SOURCE_POLICY});
   const code = stripPowerShellLiteralsForScan(sourceText);
-  if (/\.\s*(?:Quit|Kill)\s*\(/i.test(code)) failures.push({code: 'application-quit', message: `${label} must not call .Quit() or .Kill()`});
+  if (/\.\s*(?:Quit|Kill)\b/i.test(code)) failures.push({code: 'application-quit', message: `${label} must not call .Quit() or .Kill()`});
   if (/(?<![\w-])(?:Stop-Process|taskkill|spps)(?![\w-])/i.test(code)) failures.push({code: 'process-kill', message: `${label} must not terminate processes`});
   if ((code.match(/\.SaveAs\(\$savedPath,24,0\)/g) ?? []).length !== 1 || (code.match(/\.SaveAs\s*\(/g) ?? []).length !== 1) failures.push({code: 'save-policy', message: `${label} must call SaveAs($savedPath,24,0) exactly once and no other SaveAs`});
   return failures;

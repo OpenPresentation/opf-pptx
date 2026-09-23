@@ -19,6 +19,7 @@ import {
   auditEvidenceDirectory,
   auditSavedEmbedPresentation,
   EMBED_COM_SETTERS,
+  EMBED_SOURCE_POLICY,
   EMBED_LOCAL_ASSIGNMENT_ROOTS,
   hasOfficeQuitInvocation,
   inspectFontEmbeddingPackage,
@@ -29,6 +30,8 @@ import {
   scanPowerShellSource,
   stripPowerShellLiteralsForScan,
 } from './native-font-embed-audit.mjs';
+import {assertSourcePolicyProbes, SOURCE_POLICY_PROBE_POSITIVES} from './powershell-scan-probes.mjs';
+import {readPowerShellPolicyLists} from './powershell-scan.mjs';
 import {applyMasterBulletFontTransform, carlitoOnlySource, carlitoOnlyTypefaceFailures, declaredFontsUsed, MASTER_BULLET_FONT_TRANSFORM, themeFontSlots, typefaceInventory} from './native-font-embed-fixture-source.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -56,7 +59,7 @@ const workerAnchor = 'function Get-FontEmbedSha256(';
 const pureAnchor = '        Invoke-Expression $comDefinition[0].Extent.Text';
 const withWorker = line => embedSource.replace(workerAnchor, `function Invoke-FontEmbedForbiddenDynamic($Text) { ${line} }\r\n${workerAnchor}`);
 const withPure = line => embedSource.replace(pureAnchor, `${pureAnchor}\r\n        ${line}`);
-const IEX_MESSAGE = /must not run Invoke-Expression, iex or Add-Type/, DYNAMIC_MESSAGE = /must not use dynamic code/;
+const IEX_MESSAGE = /must not run Invoke-Expression, iex or Add-Type/, DYNAMIC_MESSAGE = /harness must not (use dynamic code|use|run|invoke|reference|pass)/;
 const dynamicCodeNegatives = [
   ['worker-invoke-expression', withWorker('Invoke-Expression $Text'), IEX_MESSAGE],
   ['worker-iex', withWorker('iex $Text'), IEX_MESSAGE],
@@ -115,7 +118,8 @@ if (process.platform === 'win32') {
       const copy = path.join(astRoot, `${name}.ps1`); await writeFile(copy, text);
       const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], psSpawnOptions);
       assert.ok(!negative.error && negative.status !== null && negative.status !== 0, `${name}: ${psOutcome(negative)}`);
-      assert.match(negative.stderr + negative.stdout, message, name);
+      // PowerShell wraps error records at the console width, so compare with all whitespace removed.
+      assert.match((negative.stderr + negative.stdout).replace(/\s+/g, ''), new RegExp(message.source.replace(/ /g, '')), name);
     }
   } finally { await rm(astRoot, {recursive: true, force: true}); }
   record('embed-ast-policy-negatives');
@@ -156,6 +160,15 @@ record('source-policy-negatives');
 }
 record('source-policy-dynamic-code-and-com-assignments');
 
+// The Node allowlist policy and the harness's $script:FontEmbedPolicy* lists (enforced by its PowerShell AST check) are
+// one reviewed allowlist; every independent-review probe is rejected by both layers.
+{
+  const lists = readPowerShellPolicyLists(embedSource, 'FontEmbed');
+  for (const [key, value] of Object.entries(lists)) assert.deepEqual(value, [...EMBED_SOURCE_POLICY[key]], `FontEmbedPolicy ${key} parity`);
+  const probes = await assertSourcePolicyProbes({source: embedSource, audit: auditEmbedVerifierSource, harnessPath: embedVerifier, assertFunction: 'Assert-FontEmbedVerifierAst', positives: SOURCE_POLICY_PROBE_POSITIVES});
+  outcomes.push({name: 'source-policy-allowlist-parity-and-review-probes', passed: true, probes});
+}
+
 // Source-policy lexer: comments, every string form, and here-strings are blanked in one left-to-right pass, so an
 // apostrophe in a comment can neither hide a following Quit call (fail open) nor invent a gate-input mismatch (fail closed).
 {
@@ -173,7 +186,8 @@ record('source-policy-dynamic-code-and-com-assignments');
     ['backtick-escaped-quote-stays-literal', '$m = "`"; $app.Quit(); `""', false],
     ['doubled-double-quote', '$m = "a""b"; $app.Quit()', true],
     ['doubled-single-quote', "$m = 'it''s'; $app.Quit()", true],
-    ['backtick-escaped-quote-in-code', "Write-Output `'; $app.Quit()", true],
+    ['braced-variable-with-quote-in-string', '$probe = "${x"}"; $app.Quit() # "', true],
+    ['braced-variable-with-quote-in-here-string', '$probe = @"\n${x"}\n"@\n$app.Quit()', true],
     ['typographic-quotes', '$m = \u2018 # \u2019; $app.Quit()', true],
     ['subexpression-in-expandable-string', '$m = "$($app.Quit())"', true],
     ['expandable-string-member-text', '$m = "$app.Quit()"', false],
@@ -205,6 +219,10 @@ record('source-policy-dynamic-code-and-com-assignments');
     ['unterminated-block-comment', '<# open\n$app.Quit()', 'unterminated-block-comment'],
     ['unterminated-here-string', "$x = @'\n$app.Quit()\n '@", 'unterminated-here-string'],
     ['here-string-header-with-text', "$x = @'text'\n", 'here-string-header'],
+    ['backtick-escaped-quote-in-code', "Write-Output `'; $app.Quit()", 'backtick-escape-in-code'],
+    ['backtick-escaped-command-name', 'i`ex $y', 'backtick-escape-in-code'],
+    ['lone-cr-moves-here-string-terminator', "$x = @'\r\nfoo\r'@\r$app.Quit()\r\n'@\r\n", 'lone-carriage-return'],
+    ['glued-block-comment', 'Write-Output a<#; $app.Quit(); #>', 'ambiguous-comment-start'],
   ]) {
     assert.ok(scanPowerShellSource(text).issues.some(item => item.kind === kind), name);
     assert.ok(codes(text).has('source-scan-unsupported'), `${name}: audit fails closed`);

@@ -168,14 +168,137 @@ function Get-FontEmbedOwnedSaveAsEmbedArgument($Invoke) {
     if($null -eq $embed -or ($embed -ne 0 -and $embed -ne (-1))) { return $null }
     return $embed
 }
+# Reviewed allowlists for this file's static policy. Every command, invoked member, static access, type literal and
+# non-literal & or . invocation must appear here; anything else is rejected. test/native-font-embed-audit.mjs holds the same lists.
+$script:FontEmbedPolicyCommands=@('Add-Content','ConvertFrom-Json','ConvertTo-Json','Copy-Item','ForEach-Object','Get-Content','Get-Date','Get-FileHash','Get-ItemProperty','Invoke-OpfNativeWorker','Invoke-OpfWithTemporaryFonts','Join-Path','New-Item','New-Object','Remove-Item','Resolve-Path','Set-Content','Test-Path','Where-Object','Write-Host','Write-Output')
+$script:FontEmbedPolicyScopedCommands=@('Invoke-Expression|Invoke-FontEmbedPureRegression','Add-Member|New-FontEmbedFakeShape','Add-Member|Invoke-FontEmbedPureRegression')
+$script:FontEmbedPolicyCommandForms=@('New-Object|^New-Object -ComObject PowerPoint\.Application$')
+$script:FontEmbedPolicyInstanceMembers=@('Characters','Close','Contains','ContainsKey','FindAll','GetCommandName','Item','Open','SaveAs','StartsWith','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
+$script:FontEmbedPolicyStaticMembers=@('Guid::NewGuid','IO.File::WriteAllText','IO.Path::GetExtension','IO.Path::GetFullPath','IO.Path::GetTempPath','string::IsNullOrEmpty','string::IsNullOrWhiteSpace','System.Management.Automation.Language.Parser::ParseFile')
+$script:FontEmbedPolicyStaticProperties=@('IO.Path::AltDirectorySeparatorChar','IO.Path::DirectorySeparatorChar','StringComparison::OrdinalIgnoreCase','System.Management.Automation.Language.TokenKind::Dot','System.Management.Automation.Language.TokenKind::Minus','System.Management.Automation.Language.TokenKind::Unknown','System.Management.Automation.Language.StringConstantType::BareWord','System.Management.Automation.Language.TokenKind::Equals')
+$script:FontEmbedPolicyTypes=@('bool','double','Guid','int','IO.File','IO.Path','long','ordered','pscustomobject','ref','scriptblock','string','StringComparison','switch','void','ValidateRange','System.Collections.IDictionary','System.Management.Automation.Language.AssignmentStatementAst','System.Management.Automation.Language.AttributeBaseAst','System.Management.Automation.Language.CommandAst','System.Management.Automation.Language.ConstantExpressionAst','System.Management.Automation.Language.ConvertExpressionAst','System.Management.Automation.Language.FunctionDefinitionAst','System.Management.Automation.Language.IndexExpressionAst','System.Management.Automation.Language.InvokeMemberExpressionAst','System.Management.Automation.Language.MemberExpressionAst','System.Management.Automation.Language.ParenExpressionAst','System.Management.Automation.Language.Parser','System.Management.Automation.Language.ScriptBlockExpressionAst','System.Management.Automation.Language.StringConstantExpressionAst','System.Management.Automation.Language.StringConstantType','System.Management.Automation.Language.TokenKind','System.Management.Automation.Language.TypeExpressionAst','System.Management.Automation.Language.UnaryExpressionAst','System.Management.Automation.Language.VariableExpressionAst','System.Management.Automation.Language.ArrayLiteralAst','System.Management.Automation.Language.CommandExpressionAst','System.Management.Automation.Language.CommandParameterAst','System.Management.Automation.Language.ForEachStatementAst','System.Management.Automation.Language.HashtableAst','System.Management.Automation.Language.ParameterAst')
+$script:FontEmbedPolicyInvocationSites=@('Invoke-FontEmbedCom|&|Operation','|.|processSnapshot','|.|fontHelperSnapshot')
+$script:FontEmbedPolicyPipelineExceptions=@()
+$script:FontEmbedPolicyAssignmentRoots=@('report','seen','inventory','wrongGeneration')
+$script:FontEmbedPolicyComSetters=@('Range.Text','wholeFont.Name','wholeFont.Size','wholeFont.Bold','wholeFont.Italic','runFont.Name','runFont.Size','runFont.Bold','runFont.Italic','presentation.Saved')
+$script:FontEmbedPolicyRootSources=@()
+function Get-FontEmbedOwnerName($Node) {
+    $owner=$Node.Parent
+    while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
+    if($null -eq $owner) { return '' }
+    return $owner.Name
+}
+function Get-FontEmbedPairValues($Pairs,[string]$Key) {
+    $values=@()
+    foreach($pair in $Pairs) { $parts=$pair -split '\|',2; if($parts[0] -ieq $Key) { $values+=@($parts[1]) } }
+    return ,$values
+}
+function Get-FontEmbedAssignmentTarget($Expression) {
+    while($Expression -is [System.Management.Automation.Language.MemberExpressionAst] -or $Expression -is [System.Management.Automation.Language.IndexExpressionAst]) {
+        if($Expression -is [System.Management.Automation.Language.MemberExpressionAst]) { $Expression=$Expression.Expression } else { $Expression=$Expression.Target }
+    }
+    if($Expression -is [System.Management.Automation.Language.VariableExpressionAst]) { return ($Expression.VariablePath.UserPath -replace '^(script|global|local|private):','') }
+    return $null
+}
+function Assert-FontEmbedAllowlistAst($Ast,[string]$Label) {
+    $declared=@($Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | ForEach-Object { $_.Name })
+    foreach($command in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        $owner=Get-FontEmbedOwnerName $command
+        $first=$command.CommandElements[0]
+        if($command.InvocationOperator -ne [System.Management.Automation.Language.TokenKind]::Unknown) {
+            $operator=$(if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot){'.'}else{'&'})
+            if($operator -eq '&' -and $first -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+            $variableName=$(if($first -is [System.Management.Automation.Language.VariableExpressionAst]){$first.VariablePath.UserPath -replace '^(script|global|local|private):',''}else{$null})
+            if($null -eq $variableName -or $script:FontEmbedPolicyInvocationSites -cnotcontains "$owner|$operator|$variableName") { throw "$Label must not use dynamic code (non-literal $operator invocation in $(if($owner){$owner}else{'script scope'}): $($command.Extent.Text))" }
+            continue
+        }
+        if(-not ($first -is [System.Management.Automation.Language.StringConstantExpressionAst]) -or $first.StringConstantType -ne [System.Management.Automation.Language.StringConstantType]::BareWord) { throw "$Label must not use dynamic code (command name $($first.Extent.Text))" }
+        $name=$first.Value
+        $scopes=Get-FontEmbedPairValues $script:FontEmbedPolicyScopedCommands $name
+        if($scopes.Count -gt 0) {
+            if($scopes -cnotcontains $owner) { throw "$Label must not run $name in $(if($owner){$owner}else{'script scope'}); it is not on the reviewed allowlist there" }
+        } elseif(-not ($script:FontEmbedPolicyCommands -contains $name -or $declared -contains $name)) { throw "$Label must not run $name; it is not on the reviewed allowlist" }
+        $forms=Get-FontEmbedPairValues $script:FontEmbedPolicyCommandForms $name
+        if($forms.Count -gt 0 -and @($forms | Where-Object { $command.Extent.Text -cmatch $_ }).Count -eq 0) { throw "$Label must not run $name in a form that is not on the reviewed allowlist: $($command.Extent.Text)" }
+        if($name -in @('ForEach-Object','Where-Object')) {
+            $scriptBlockOnly=($command.CommandElements.Count -eq 2 -and $command.CommandElements[1] -is [System.Management.Automation.Language.ScriptBlockExpressionAst])
+            if(-not $scriptBlockOnly -and $script:FontEmbedPolicyPipelineExceptions -cnotcontains "$owner|$($command.Extent.Text)") { throw "$Label must pass $name exactly one script block; other forms are not on the reviewed allowlist" }
+        }
+    }
+    foreach($member in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.MemberExpressionAst]},$true)) {
+        if(-not ($member.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) {
+            if($member -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) { throw "$Label must not use dynamic code (dynamic member name: $($member.Extent.Text))" }
+            continue
+        }
+        $memberName=$member.Member.Value
+        if($memberName -in @('Quit','Kill')) { throw "$Label must not reference .$memberName on any object" }
+        if($member.Static) {
+            if(-not ($member.Expression -is [System.Management.Automation.Language.TypeExpressionAst])) { throw "$Label must not use dynamic code (static access on an expression: $($member.Extent.Text))" }
+            $pair="$($member.Expression.TypeName.FullName)::$memberName"
+            $list=$(if($member -is [System.Management.Automation.Language.InvokeMemberExpressionAst]){$script:FontEmbedPolicyStaticMembers}else{$script:FontEmbedPolicyStaticProperties})
+            if($list -notcontains $pair) { throw "$Label must not use $pair; it is not on the reviewed allowlist" }
+        } elseif($member -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $script:FontEmbedPolicyInstanceMembers -notcontains $memberName) { throw "$Label must not invoke .$memberName(); it is not on the reviewed allowlist" }
+    }
+    foreach($typeNode in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.TypeExpressionAst] -or $node -is [System.Management.Automation.Language.AttributeBaseAst]},$true)) {
+        $typeName=$typeNode.TypeName.FullName
+        if($script:FontEmbedPolicyTypes -notcontains $typeName) { throw "$Label must not use type [$typeName]; it is not on the reviewed allowlist" }
+    }
+    foreach($variable in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if(($variable.VariablePath.UserPath -replace '^(script|global|local|private):','') -ieq 'ExecutionContext') { throw "$Label must not use dynamic code ($variable)" }
+    }
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        if(-not ($left -is [System.Management.Automation.Language.MemberExpressionAst] -or $left -is [System.Management.Automation.Language.IndexExpressionAst])) { continue }
+        $root=Get-FontEmbedAssignmentTarget $left
+        if($null -ne $root -and $script:FontEmbedPolicyAssignmentRoots -ccontains $root) { continue }
+        $setter=$null
+        if($left -is [System.Management.Automation.Language.MemberExpressionAst] -and $left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and $left.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $setter="$($left.Expression.VariablePath.UserPath -replace '^(script|global|local|private):','').$($left.Member.Value)" }
+        if($null -eq $setter -or $script:FontEmbedPolicyComSetters -cnotcontains $setter) { throw "$Label must not assign $($left.Extent.Text); only local report roots and the documented COM setters are on the reviewed allowlist" }
+    }
+    foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -contains [string]$node.TokenKind},$true)) {
+        if($unary.Child -is [System.Management.Automation.Language.MemberExpressionAst] -or $unary.Child -is [System.Management.Automation.Language.IndexExpressionAst]) {
+            $root=Get-FontEmbedAssignmentTarget $unary.Child
+            if($null -eq $root -or $script:FontEmbedPolicyAssignmentRoots -cnotcontains $root) { throw "$Label must not increment $($unary.Child.Extent.Text); only local report roots are on the reviewed allowlist" }
+        }
+    }
+    # A local report root is bound only to a hashtable literal ([ordered] or [pscustomobject] casts included) or to one of
+    # the reviewed exact sources, never through a multiple assignment, a parameter, a foreach variable or a
+    # variable-binding common parameter, so it cannot alias a COM object whose members the roots may then assign.
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        $targets=@($(if($left -is [System.Management.Automation.Language.ArrayLiteralAst]){$left.Elements}else{$left}))
+        foreach($target in $targets) {
+            if($target -is [System.Management.Automation.Language.ConvertExpressionAst]) { $target=$target.Child }
+            if(-not ($target -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+            $name=$target.VariablePath.UserPath -replace '^(script|global|local|private):',''
+            if($script:FontEmbedPolicyAssignmentRoots -cnotcontains $name) { continue }
+            if($left -is [System.Management.Automation.Language.ArrayLiteralAst]) { throw "$Label must not bind local report root `$$name through a multiple assignment" }
+            $right=$assignment.Right
+            $expression=$(if($right -is [System.Management.Automation.Language.CommandExpressionAst]){$right.Expression}else{$null})
+            $literal=($assignment.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and ($expression -is [System.Management.Automation.Language.HashtableAst] -or ($expression -is [System.Management.Automation.Language.ConvertExpressionAst] -and $expression.Child -is [System.Management.Automation.Language.HashtableAst] -and @('ordered','pscustomobject') -contains $expression.Type.TypeName.FullName)))
+            if(-not $literal -and $script:FontEmbedPolicyRootSources -cnotcontains "$name|$($right.Extent.Text)") { throw "$Label must not bind local report root `$$name to $($right.Extent.Text); only literals and the reviewed sources are on the allowlist" }
+        }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ParameterAst]},$true)) {
+        if($script:FontEmbedPolicyAssignmentRoots -ccontains $parameter.Name.VariablePath.UserPath) { throw "$Label must not bind local report root $($parameter.Name) as a parameter" }
+    }
+    foreach($loop in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst]},$true)) {
+        if($script:FontEmbedPolicyAssignmentRoots -ccontains ($loop.Variable.VariablePath.UserPath -replace '^(script|global|local|private):','')) { throw "$Label must not bind local report root $($loop.Variable) as a foreach variable" }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandParameterAst]},$true)) {
+        if($parameter.ParameterName -match '^(ov|pv|ev|wv|iv|outv[a-z]*|errorv[a-z]*|warningv[a-z]*|informationv[a-z]*|pipelinev[a-z]*|pi|pip|pipe|pipel|pipeli|pipelin|pipeline)$') { throw "$Label must not use the variable-binding parameter -$($parameter.ParameterName)" }
+    }
+}
 function Assert-FontEmbedVerifierAst([string]$Path) {
     $tokens=$null; $parseErrors=$null
     $ast=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$parseErrors)
     if($parseErrors.Count -ne 0) { throw "Verifier parse failed: $($parseErrors[0].Message)" }
     foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
         $member=$invoke.Member
-        if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ceq 'Quit') { throw 'Embed harness must not invoke .Quit() on an Office application' }
-        if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ceq 'Kill') { throw 'Embed harness must not invoke .Kill(); only native-process.ps1 may stop its owned worker' }
+        if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ieq 'Quit') { throw 'Embed harness must not invoke .Quit() on an Office application' }
+        if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ieq 'Kill') { throw 'Embed harness must not invoke .Kill(); only native-process.ps1 may stop its owned worker' }
     }
     $pureDefinitions=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-FontEmbedPureRegression'},$true))
     if($pureDefinitions.Count -ne 1) { throw 'Expected exactly one Invoke-FontEmbedPureRegression definition' }
@@ -191,30 +314,7 @@ function Assert-FontEmbedVerifierAst([string]$Path) {
             if(-not ($insidePure -and $commandName -ceq 'Invoke-Expression' -and $pureInvocations -ccontains $command.Extent.Text)) { throw "Embed harness must not run Invoke-Expression, iex or Add-Type ($commandName) outside the pure-regression helper re-evaluation" }
         }
     }
-    # Other dynamic code: [scriptblock]::Create, InvokeScript, NewScriptBlock, dynamic member names, $ExecutionContext,
-    # Invoke-Command, and any non-literal & or . invocation target outside these exact function|operator|variable sites.
-    $invocationSites=@('Invoke-FontEmbedCom|&|Operation','|.|processSnapshot','|.|fontHelperSnapshot')
-    foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {
-        if(-not ($invoke.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) { throw "Embed harness must not use dynamic code (dynamic member name: $($invoke.Extent.Text))" }
-        $memberName=$invoke.Member.Value
-        if($memberName -in @('InvokeScript','NewScriptBlock')) { throw "Embed harness must not use dynamic code (.$memberName)" }
-        if($invoke.Static -and $memberName -ieq 'Create' -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $invoke.Expression.TypeName.FullName -match '^(System\.Management\.Automation\.)?ScriptBlock$') { throw "Embed harness must not use dynamic code ([scriptblock]::Create)" }
-    }
-    foreach($variable in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
-        if(($variable.VariablePath.UserPath -replace '^(script|global|local|private):','') -ieq 'ExecutionContext') { throw "Embed harness must not use dynamic code ($variable)" }
-    }
-    foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
-        $commandName=$command.GetCommandName()
-        if($null -ne $commandName -and ($commandName -replace '^.*\\','') -in @('Invoke-Command','icm')) { throw "Embed harness must not use dynamic code ($commandName)" }
-        if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Unknown) { continue }
-        $target=$command.CommandElements[0]
-        if($target -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $target -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
-        $owner=$command.Parent; while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
-        $ownerName=$(if($null -eq $owner){''}else{$owner.Name})
-        $operator=$(if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot){'.'}else{'&'})
-        $variableName=$(if($target -is [System.Management.Automation.Language.VariableExpressionAst]){$target.VariablePath.UserPath -replace '^(script|global|local|private):',''}else{$null})
-        if($null -eq $variableName -or $invocationSites -cnotcontains "$ownerName|$operator|$variableName") { throw "Embed harness must not use dynamic code (non-literal $operator invocation in $(if($ownerName){$ownerName}else{'script scope'}): $($command.Extent.Text))" }
-    }
+    Assert-FontEmbedAllowlistAst $ast 'Embed harness'
     $gateCalls=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Get-FontEmbedNativeFontsGate'},$true) | Where-Object {$_.Extent.StartOffset -lt $pureStart -or $_.Extent.EndOffset -gt $pureEnd})
     if($gateCalls.Count -ne 1 -or $gateCalls[0].Extent.Text -cne 'Get-FontEmbedNativeFontsGate $report.nativeFontsObservation') { throw 'The only worker native Fonts gate must evaluate the post-edit $report.nativeFontsObservation' }
     $embedOn=0; $embedOff=0

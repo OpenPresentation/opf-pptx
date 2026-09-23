@@ -22,8 +22,15 @@ export function scanPowerShellSource(sourceText) {
     let index = start, depth = 0;
     while (index < text.length) {
       const char = text[index], next = text[index + 1];
-      if (char === '`') { index += 2; continue; }
-      if (char === '<' && next === '#') { index = scanBlockComment(index); continue; }
+      if (char === '`') {
+        // Only a line continuation is modeled; an escaped character in code (i`ex) changes what PowerShell reads.
+        if (next !== '\n' && next !== '\r') issue('backtick-escape-in-code', index);
+        index += 2; continue;
+      }
+      if (char === '<' && next === '#') {
+        if (index > 0 && !COMMENT_BOUNDARY.test(text[index - 1])) issue('ambiguous-comment-start', index);
+        index = scanBlockComment(index); continue;
+      }
       if (char === '#') {
         if (index > 0 && !COMMENT_BOUNDARY.test(text[index - 1])) issue('ambiguous-comment-start', index);
         index = scanLineComment(index); continue;
@@ -92,6 +99,8 @@ export function scanPowerShellSource(sourceText) {
         literalStart = index;
         continue;
       }
+      // ${name} may contain quotes; it is a variable name, never a string terminator.
+      if (char === '$' && text[index + 1] === '{') { index = scanBracedVariable(index); continue; }
       index++;
     }
     issue('unterminated-string', start);
@@ -121,6 +130,7 @@ export function scanPowerShellSource(sourceText) {
         literalStart = index;
         continue;
       }
+      if (expandable && text[index] === '$' && text[index + 1] === '{') { index = scanBracedVariable(index); continue; }
       index++;
     }
     issue('unterminated-here-string', start);
@@ -136,6 +146,8 @@ export function scanPowerShellSource(sourceText) {
     return index + 1;
   }
 
+  // PowerShell also ends a line at a lone CR, which would move here-string terminators and comment ends; not modeled.
+  for (const match of text.matchAll(/\r(?!\n)/g)) issue('lone-carriage-return', match.index);
   scanCode(0, false);
   return {code: out.join(''), issues};
 }
@@ -269,10 +281,11 @@ export function dynamicCodeInvocations(sourceText, {exemptFunction = null, exemp
   for (const match of code.matchAll(/\.\s*(InvokeScript|NewScriptBlock)\s*\(/gi)) found.push(`.${match[1]}() at ${match.index}`);
   for (const match of code.matchAll(/\.\$(?:\{[^}]*\}|\w+|\()[^\s=]*?\(/g)) found.push(`dynamic member name at ${match.index}`);
   for (const match of code.matchAll(new RegExp(String.raw`\$\{?${SCOPE_PREFIX}ExecutionContext(?![\w])`, 'gi'))) found.push(`$ExecutionContext at ${match.index}`);
-  // `&` not part of a word, `&&` or a redirection such as 2>&1; `.` dot-source at a statement boundary followed by space.
+  // `&` (not part of a word, `&&` or a redirection such as 2>&1) with a variable, expression or string target; and every
+  // `.` dot-source, which is a `.` not glued to a value and followed by whitespace, whatever its target.
   const invocations = [
-    ...[...code.matchAll(/(?<![\w$\])}>&])&(?!&)\s*(?=[$(])/g)].map(match => ({operator: '&', match})),
-    ...[...code.matchAll(/(?<=^|[\s;{(|])\.\s+(?=[$(])/gm)].map(match => ({operator: '.', match})),
+    ...[...code.matchAll(new RegExp(String.raw`(?<![\w$\])}>&])&(?!&)\s*(?=[$(]|${QUOTE_CLASS})`, 'g'))].map(match => ({operator: '&', match})),
+    ...[...code.matchAll(new RegExp(String.raw`(?<![\w$\])}.]|${QUOTE_CLASS})\.(?!\.)\s+`, 'g'))].map(match => ({operator: '.', match})),
   ];
   for (const {operator, match} of invocations) {
     const rest = code.slice(match.index + match[0].length);
@@ -284,16 +297,206 @@ export function dynamicCodeInvocations(sourceText, {exemptFunction = null, exemp
   return found;
 }
 
-// Shared static harness policy: unmodeled syntax fails closed, dynamic code is forbidden outside the exempt
-// pure-regression helper and listed invocation sites, and member assignments are limited to local report roots and the
-// documented COM setters.
-export function auditHarnessSourcePolicy(sourceText, {label, localRoots = [], comSetters = [], exemptFunction = null, exemptInvocations = [], invocationSites = []} = {}) {
+// ---------------------------------------------------------------------------------------------------------------------
+// Allowlist model. Every bareword (command name or bare argument), invoked instance member, static type access and type
+// literal in the lexed code must be on the harness's reviewed allowlist; anything else fails. Each harness's PowerShell
+// AST check enforces the same lists ($script:<Prefix>Policy*), and the controls assert that the two copies are equal, so
+// neither layer depends on recognizing a particular dangerous construct.
+//
+// A policy has the same keys as the PowerShell lists, with 'a|b' pairs where PowerShell uses them:
+//   commands          commands allowed anywhere (functions declared in the file are allowed too)
+//   scoped            'Command|Function' - a command allowed only inside the named function(s)
+//   forms             'Command|^regex$' - the command's full text must match one reviewed form
+//   instance          invoked instance member names
+//   statics           'Type::Member' static invocations; properties: 'Type::Member' static property reads
+//   types             type literals: casts, constraints, attributes and static-access targets
+//   sites             'Function|&|variable' or 'Function|.|variable' ('' = script scope) non-literal invocations
+//   pipelines         'Function|exact text' ForEach-Object / Where-Object calls without a single script block
+//   roots, setters    local assignment roots and exact 'variable.Member' COM setters
+//   rootSources       'root|exact source' non-literal values a local root may be bound to
+// Node-only keys: bareArguments (reviewed bare argument words such as UTF8 or Directory), dynamicMemberSites
+// ('Function|root' where $root.$name or $root.(expr) member access is allowed), exemptFunction and exemptInvocations
+// (the pure regression's exact Invoke-Expression lines).
+
+const KEYWORDS = new Set(['begin', 'break', 'catch', 'class', 'continue', 'data', 'do', 'dynamicparam', 'else', 'elseif', 'end', 'enum', 'exit', 'filter', 'finally', 'for', 'foreach', 'function', 'if', 'in', 'param', 'process', 'return', 'switch', 'throw', 'trap', 'try', 'until', 'while']);
+const QUOTE_CHARS = new Set(["'", '"', ...[0x2018, 0x2019, 0x201A, 0x201B, 0x201C, 0x201D, 0x201E].map(code => String.fromCharCode(code))]);
+const PARAMETER_BOUNDARY = /[\s(,{;=|![]/;
+
+// Splits lexed code into the tokens the allowlist policy checks. Offsets refer to the original source.
+export function tokenizeHarnessCode(sourceText) {
+  const code = stripPowerShellLiteralsForScan(sourceText);
+  const result = {barewords: [], declared: new Set(), members: [], statics: [], types: [], dynamicMembers: [], problems: []};
+  const stack = [];
+  let index = 0, last = 'start', lastWord = null, afterPipe = false;
+  const problem = (kind, at) => result.problems.push(`${kind} at ${at}`);
+  while (index < code.length) {
+    const char = code[index], next = code[index + 1];
+    if (/\s/.test(char)) { index++; continue; }
+    const glued = index > 0 && !/\s/.test(code[index - 1]);
+    const pipe = afterPipe; afterPipe = false;
+    if (char === '$') {
+      if (next === '{') { const end = code.indexOf('}', index); index = end < 0 ? code.length : end + 1; last = 'value'; continue; }
+      if (next === '(') { stack.push('('); index += 2; last = 'open'; continue; }
+      const variable = /^\$(?:(?:script|global|local|private|using|env):)?\w+|^\$[$?^]/i.exec(code.slice(index));
+      index += variable ? variable[0].length : 1; last = 'value';
+      if (code.startsWith('::', index)) problem('static access on a variable', index);
+      continue;
+    }
+    if (char === '@' && (next === '(' || next === '{')) { stack.push(next === '{' ? 'hash' : '('); index += 2; last = 'open'; continue; }
+    if (QUOTE_CHARS.has(char)) { index++; last = 'value'; continue; }
+    if (char === '[') {
+      if (glued && last === 'value') { stack.push('['); index++; last = 'open'; continue; }
+      let depth = 0, end = index;
+      for (; end < code.length; end++) { if (code[end] === '[') depth++; else if (code[end] === ']' && --depth === 0) break; }
+      const content = code.slice(index + 1, end).replace(/\s+/g, '');
+      const attribute = /^([\w.]+)\(/.exec(content);
+      const typeName = attribute ? attribute[1] : content;
+      result.types.push({name: typeName, index});
+      index = end + 1; last = 'type';
+      if (code.startsWith('::', index)) {
+        const member = /^::(\w+)/.exec(code.slice(index));
+        if (!member) { problem('static access without a member name', index); index += 2; continue; }
+        result.statics.push({type: typeName, name: member[1], index, invoked: code[index + member[0].length] === '('});
+        index += member[0].length; last = 'value';
+      }
+      continue;
+    }
+    if (char === ':' && next === ':') { problem('static access on an expression', index); index += 2; continue; }
+    if (char === '.') {
+      if (next === '.') { index += 2; last = 'op'; continue; }
+      if (glued && (last === 'value' || last === 'type')) {
+        const member = /^\.(\w+)/.exec(code.slice(index));
+        if (member) { result.members.push({name: member[1], index, invoked: code[index + member[0].length] === '('}); index += member[0].length; last = 'value'; continue; }
+        result.dynamicMembers.push({index}); index++; continue;
+      }
+      index++; last = 'op'; continue;
+    }
+    if (char === '-' && /[A-Za-z]/.test(next ?? '') && (index === 0 || PARAMETER_BOUNDARY.test(code[index - 1]))) {
+      const parameter = /^-[A-Za-z]\w*/.exec(code.slice(index)); index += parameter[0].length; last = 'op'; continue;
+    }
+    if (/\d/.test(char)) { const number = /^\d[\w.]*/.exec(code.slice(index)); index += number[0].length; last = 'value'; continue; }
+    if (/[A-Za-z_]/.test(char)) {
+      const word = /^[A-Za-z_][\w.\\-]*/.exec(code.slice(index))[0].replace(/[.-]+$/, '');
+      const start = index; index += word.length;
+      const lower = word.toLowerCase();
+      if (lastWord === 'function' || lastWord === 'filter') { result.declared.add(lower); lastWord = null; last = 'value'; continue; }
+      lastWord = lower;
+      if (stack.at(-1) === 'hash' && /^\s*=(?!=)/.test(code.slice(index))) { last = 'op'; continue; }
+      if (KEYWORDS.has(lower) && !pipe) { last = 'op'; continue; }
+      result.barewords.push({name: word, index: start, afterPipe: pipe});
+      last = 'value'; continue;
+    }
+    lastWord = null;
+    if (char === '{' || char === '(') { stack.push(char); last = 'open'; }
+    else if (char === '}' || char === ')' || char === ']') { stack.pop(); last = 'value'; }
+    else {
+      if (pipe && (char === '%' || char === '?')) problem('pipeline alias', index);
+      last = 'op'; if (char === '|') afterPipe = true;
+    }
+    index++;
+  }
+  return result;
+}
+
+const lowerSet = values => new Set((values ?? []).map(value => value.toLowerCase()));
+const pairs = values => (values ?? []).map(value => { const at = value.indexOf('|'); return [value.slice(0, at), value.slice(at + 1)]; });
+const COMMAND_END = '(?=[ \\t]*(?:[)};|\\r\\n]|$))';
+
+// Allowlist findings for lexed harness code; see the policy keys above.
+export function allowlistViolations(sourceText, policy) {
+  const text = String(sourceText);
+  const code = stripPowerShellLiteralsForScan(text);
+  const tokens = tokenizeHarnessCode(text);
+  const extents = functionExtents(code);
+  const commands = lowerSet(policy.commands), bare = lowerSet(policy.bareArguments);
+  const scoped = new Map(); for (const [name, fn] of pairs(policy.scoped)) scoped.set(name.toLowerCase(), [...(scoped.get(name.toLowerCase()) ?? []), fn]);
+  const forms = new Map(); for (const [name, pattern] of pairs(policy.forms)) forms.set(name.toLowerCase(), [...(forms.get(name.toLowerCase()) ?? []), new RegExp(pattern.replace(/\$$/, '') + COMMAND_END)]);
+  const pipelines = pairs(policy.pipelines);
+  const found = {command: [], member: [], static: [], type: [], structure: [...tokens.problems]};
+  for (const word of tokens.barewords) {
+    const lower = word.name.toLowerCase(), owner = enclosingFunction(extents, word.index) ?? '';
+    if (scoped.has(lower)) { if (!scoped.get(lower).includes(owner)) found.command.push(`${word.name} in ${owner || 'script scope'}`); continue; }
+    if (!(commands.has(lower) || tokens.declared.has(lower) || (!word.afterPipe && bare.has(lower)))) { found.command.push(word.name); continue; }
+    if (forms.has(lower) && !forms.get(lower).some(pattern => pattern.test(text.slice(word.index)))) found.command.push(`${word.name} (unreviewed form)`);
+    if (lower === 'foreach-object' || lower === 'where-object') {
+      const rest = text.slice(word.index);
+      const exempt = pipelines.some(([fn, exact]) => fn === owner && new RegExp('^' + exact.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + COMMAND_END).test(rest));
+      if (!/^[\w-]+[ \t]*\{/.test(rest) && !exempt) found.command.push(`${word.name} without a single script block`);
+    }
+  }
+  const dynamicSites = pairs(policy.dynamicMemberSites);
+  for (const {index} of tokens.dynamicMembers) {
+    const owner = enclosingFunction(extents, index) ?? '', root = chainRoot(code, index)?.root ?? null;
+    if (!dynamicSites.some(([fn, name]) => fn === owner && name === root)) found.structure.push(`dynamic member access at ${index}`);
+  }
+  const members = lowerSet(policy.instance);
+  for (const member of tokens.members) if (member.invoked && !members.has(member.name.toLowerCase())) found.member.push(member.name);
+  const statics = lowerSet(policy.statics), properties = lowerSet(policy.properties);
+  for (const item of tokens.statics) {
+    const pair = `${item.type}::${item.name}`;
+    if (!(item.invoked ? statics : properties).has(pair.toLowerCase())) found.static.push(pair + (item.invoked ? '()' : ''));
+  }
+  const types = lowerSet(policy.types);
+  for (const type of tokens.types) if (!types.has(type.name.toLowerCase())) found.type.push(type.name);
+  return found;
+}
+
+// Shared static harness policy: unmodeled syntax fails closed; dynamic code is forbidden outside the exempt
+// pure-regression lines and the listed invocation sites; member assignments are limited to local report roots and the
+// documented COM setters; and every command, bare word, invoked member, static access and type must be allowlisted.
+export function auditHarnessSourcePolicy(sourceText, {label, ...policy}) {
   const failures = [];
-  const {issues} = scanPowerShellSource(sourceText);
-  if (issues.length) failures.push({code: 'source-scan-unsupported', message: `${label} has PowerShell syntax the source-policy lexer does not model: ${issues.map(item => `${item.kind}@${item.index}`).join(', ')}`});
-  const dynamic = dynamicCodeInvocations(sourceText, {exemptFunction, exemptInvocations, invocationSites});
-  if (dynamic.length) failures.push({code: 'dynamic-code', message: `${label} must not use dynamic code (Invoke-Expression, iex, Add-Type, Invoke-Command, [scriptblock]::Create, InvokeScript, $ExecutionContext, string-named or non-literal & / . invocations) outside its listed exemptions: ${dynamic.join(', ')}`});
-  const assignments = disallowedMemberAssignments(sourceText, {localRoots, comSetters});
-  if (assignments.length) failures.push({code: 'com-property-assignment', message: `${label} assigns members outside its local report roots and documented COM setters: ${assignments.join(', ')}`});
+  const add = (code, message, values) => { if (values.length) failures.push({code, message: `${label} ${message}: ${[...new Set(values)].join(', ')}`}); };
+  add('source-scan-unsupported', 'has PowerShell syntax the source-policy lexer does not model', scanPowerShellSource(sourceText).issues.map(item => `${item.kind}@${item.index}`));
+  const invocationSites = pairs(policy.sites).map(([fn, rest]) => { const [operator, variable] = rest.split('|'); return {function: fn || null, operator, variable}; });
+  add('dynamic-code', 'must not use dynamic code (Invoke-Expression, iex, Add-Type, Invoke-Command, [scriptblock]::Create, InvokeScript, $ExecutionContext, string-named or non-literal & / . invocations) outside its listed exemptions', dynamicCodeInvocations(sourceText, {exemptFunction: policy.exemptFunction ?? null, exemptInvocations: policy.exemptInvocations ?? [], invocationSites}));
+  add('com-property-assignment', 'assigns members outside its local report roots and documented COM setters', disallowedMemberAssignments(sourceText, {localRoots: policy.roots ?? [], comSetters: policy.setters ?? []}));
+  add('local-root-binding', 'may bind a local report root only to a literal or a reviewed source', localRootBindings(sourceText, {roots: policy.roots ?? [], rootSources: policy.rootSources ?? []}));
+  const found = allowlistViolations(sourceText, policy);
+  add('forbidden-command', 'uses commands or bare words outside its reviewed allowlist', found.command);
+  add('forbidden-member', 'invokes members outside its reviewed allowlist', found.member);
+  add('forbidden-static', 'uses static members outside its reviewed allowlist', found.static);
+  add('forbidden-type', 'uses types outside its reviewed allowlist', found.type);
+  add('dynamic-code', 'uses unsupported dynamic access', found.structure);
   return failures;
+}
+
+// The $script:<Prefix>Policy* lists a harness defines, parsed from its source, for Node/PowerShell parity controls.
+export function readPowerShellPolicyLists(sourceText, prefix) {
+  const lists = {};
+  const keys = {Commands: 'commands', ScopedCommands: 'scoped', CommandForms: 'forms', InstanceMembers: 'instance', StaticMembers: 'statics', StaticProperties: 'properties', Types: 'types', InvocationSites: 'sites', PipelineExceptions: 'pipelines', AssignmentRoots: 'roots', ComSetters: 'setters', RootSources: 'rootSources'};
+  for (const [suffix, key] of Object.entries(keys)) {
+    const match = new RegExp(String.raw`^\$script:${prefix}Policy${suffix}=@\((.*)\)\s*$`, 'm').exec(String(sourceText));
+    lists[key] = match ? [...match[1].matchAll(/'((?:[^']|'')*)'/g)].map(item => item[1].replace(/''/g, "'")) : null;
+  }
+  return lists;
+}
+
+// Ways a local report root could alias a COM object, which would let root-based member assignments reach it: binding
+// the root to anything but a hashtable literal or a reviewed exact source ('root|source' in rootSources), a multiple
+// assignment, a parameter, a foreach variable, or a variable-binding common parameter (-OutVariable, -PipelineVariable,
+// -ErrorVariable, -WarningVariable, -InformationVariable and their aliases or prefixes).
+export function localRootBindings(sourceText, {roots = [], rootSources = []} = {}) {
+  const text = String(sourceText), code = stripPowerShellLiteralsForScan(text);
+  const rootSet = new Set(roots), sources = pairs(rootSources), found = [];
+  const name = variable => variable.replace(/^\$/, '').replace(/^(?:script|global|local|private):/i, '');
+  for (const match of code.matchAll(/\$[\w:]+(?:\s*,\s*\$[\w:]+)+\s*=(?!=)/g)) {
+    for (const variable of match[0].match(/\$[\w:]+/g)) if (rootSet.has(name(variable))) found.push(`multiple assignment of $${name(variable)} at ${match.index}`);
+  }
+  for (const match of code.matchAll(new RegExp(String.raw`\$${SCOPE_PREFIX}(\w+)\s*([-+*/%]?=)(?!=)`, 'gi'))) {
+    if (!rootSet.has(match[1]) || /,\s*$/.test(code.slice(0, match.index))) continue;
+    let start = match.index + match[0].length;
+    while (/[ \t]/.test(code[start] ?? '')) start++;
+    const literal = match[2] === '=' && /^(?:\[\s*(?:ordered|pscustomobject)\s*\]\s*)?@\{/i.test(code.slice(start));
+    const reviewed = sources.some(([root, source]) => root === match[1] && text.startsWith(source, start) && /^[ \t]*(?:;|\r?\n|\}|$)/.test(text.slice(start + source.length)));
+    if (!literal && !reviewed) found.push(`$${match[1]} bound to an unreviewed source at ${match.index}`);
+  }
+  for (const match of code.matchAll(new RegExp(String.raw`\bforeach\s*\(\s*\$${SCOPE_PREFIX}(\w+)\s+in\b`, 'gi'))) if (rootSet.has(match[1])) found.push(`foreach variable $${match[1]} at ${match.index}`);
+  for (const match of code.matchAll(/(?:\bparam|\bfunction\s+[\w-]+)\s*\(/gi)) {
+    let depth = 0, end = match.index + match[0].length - 1;
+    for (; end < code.length; end++) { if (code[end] === '(') depth++; else if (code[end] === ')' && --depth === 0) break; }
+    for (const variable of code.slice(match.index, end).matchAll(new RegExp(String.raw`\$${SCOPE_PREFIX}(\w+)`, 'gi'))) if (rootSet.has(variable[1])) found.push(`parameter $${variable[1]} at ${match.index}`);
+  }
+  for (const match of code.matchAll(/(?<=[\s(])-(?:ov|pv|ev|wv|iv|outv[a-z]*|errorv[a-z]*|warningv[a-z]*|informationv[a-z]*|pipelinev[a-z]*|pi|pip|pipe|pipel|pipeli|pipelin|pipeline)(?![\w-])/gi)) found.push(`variable-binding parameter ${match[0]} at ${match.index}`);
+  return found;
 }

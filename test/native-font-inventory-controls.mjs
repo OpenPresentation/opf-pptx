@@ -6,8 +6,10 @@ import {createRequire} from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {PERMITTED_CARLITO_FIXTURE, PERMITTED_CARLITO_FIXTURE_FILES, PERMITTED_CARLITO_LICENSE_SHA256} from './native-font-embed-audit.mjs';
-import {ALLOWED_COM_MEMBERS, ALLOWED_INSTANCE_MEMBERS, ALLOWED_STATIC_MEMBERS, analyzeFailureCleanup, AUDIT_SCHEMA_VERSION, auditEvidenceDirectory, auditInventoryVerifierSource, computeFontLedger, emptyNameFontFindings, expectedInventoryStages, INVENTORY_ASSIGNMENT_ROOTS, INVENTORY_BOUNDS, invokedMembers, PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256} from './native-font-inventory-audit.mjs';
+import {PERMITTED_CARLITO_FIXTURE, PERMITTED_CARLITO_FIXTURE_FILES, PERMITTED_CARLITO_LICENSE_SHA256, stripPowerShellLiteralsForScan} from './native-font-embed-audit.mjs';
+import {ALLOWED_COM_MEMBERS, ALLOWED_INSTANCE_MEMBERS, ALLOWED_STATIC_MEMBERS, analyzeFailureCleanup, AUDIT_SCHEMA_VERSION, auditEvidenceDirectory, auditInventoryVerifierSource, computeFontLedger, emptyNameFontFindings, expectedInventoryStages, INVENTORY_ASSIGNMENT_ROOTS, INVENTORY_BOUNDS, invokedMembers, PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256, INVENTORY_SOURCE_POLICY} from './native-font-inventory-audit.mjs';
+import {assertSourcePolicyProbes} from './powershell-scan-probes.mjs';
+import {readPowerShellPolicyLists} from './powershell-scan.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -72,6 +74,15 @@ record('verifier-read-only-source-policy');
   }
 }
 record('verifier-node-com-assignment-and-dynamic-code-policy');
+
+// The Node allowlist policy and the harness's $script:InventoryPolicy* lists (enforced by its PowerShell AST check) are
+// one reviewed allowlist; every independent-review probe is rejected by both layers.
+{
+  const lists = readPowerShellPolicyLists(verifierSource, 'Inventory');
+  for (const [key, value] of Object.entries(lists)) assert.deepEqual(value, [...INVENTORY_SOURCE_POLICY[key]], `InventoryPolicy ${key} parity`);
+  const probes = await assertSourcePolicyProbes({source: verifierSource, audit: auditInventoryVerifierSource, harnessPath: verifier, assertFunction: 'Assert-InventoryWorkerAst', positives: []});
+  record('source-policy-allowlist-parity-and-review-probes', {probes});
+}
 
 const ps = path.join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 if (process.platform === 'win32') {
@@ -328,6 +339,9 @@ try {
     assert.equal(sha(await readFile(path.join(evidence, 'audit.json'))), sha(auditBytes));
     const reauditAgain = spawnSync(node, [auditCli, evidence, '--reaudit-v2'], spawnOptions);
     assert.notEqual(reauditAgain.status, 0); assert.match(reauditAgain.stderr, /Refusing to overwrite/);
+    // Only the re-audit mode tolerates an audit-v2.json in the evidence directory.
+    assert.ok(codes(await auditEvidenceDirectory(evidence)).has('unexpected-output'), 'default mode must reject audit-v2.json');
+    assert.equal((await auditEvidenceDirectory(evidence, {priorReviewedVerifiers: true})).passed, true);
     const unknownFlag = spawnSync(node, [auditCli, evidence, '--reaudit-v3'], spawnOptions);
     assert.notEqual(unknownFlag.status, 0); assert.match(unknownFlag.stderr, /Usage/);
     record('cli-reaudit-v2-exclusive-create');
@@ -370,7 +384,12 @@ try {
     const needle = '(New-Object -ComObject PowerPoint.Application)';
     assert.equal(verifierSource.split(needle).length, 2, 'Expected exactly one ComObject construction to replace');
     const mocked = verifierSource.replace(needle, `$(. '${mockPath.replaceAll("'", "''")}'; New-OpfInventoryMockApplication)`);
-    assert.doesNotMatch(mocked, /ComObject|PowerPoint\.Application/, 'Mock copy must not construct any COM object');
+    // The reviewed policy lists name the construction in string literals; the mock copy's code must not construct it.
+    assert.doesNotMatch(stripPowerShellLiteralsForScan(mocked), /ComObject|PowerPoint\.Application/, 'Mock copy must not construct any COM object');
+    // The mock line is never valid native evidence: it dot-sources a string path, calls an unreviewed command and
+    // constructs no PowerPoint.Application, so exactly these three source-policy codes are expected.
+    const mockCodes = ['com-construction', 'dynamic-code', 'forbidden-command'];
+    assert.deepEqual([...new Set(auditInventoryVerifierSource(mocked).map(item => item.code))].sort(), mockCodes);
     await writeFile(path.join(harness, 'native-font-inventory.ps1'), mocked);
     for (const name of ['native-process.ps1', 'native-text-fonts.ps1']) await copyFile(path.join(root, name), path.join(harness, name));
     const fixtureDir = path.join(harness, 'fixture'); await mkdir(path.join(fixtureDir, 'fonts'), {recursive: true});
@@ -391,7 +410,7 @@ try {
       const child = mockRun(args, variant);
       assert.equal(child.status, 0, `${name}: ${child.stderr || child.stdout}`);
       const result = await auditEvidenceDirectory(args[args.indexOf('-OutputDirectory') + 1], {reviewedRoot: harness});
-      assert.deepEqual([...codes(result)], ['com-construction'], `${name}: ${JSON.stringify(result.failures)}`);
+      assert.deepEqual([...codes(result)].sort(), mockCodes, `${name}: ${JSON.stringify(result.failures)}`);
       assert.equal(result.findings.ledger.aptosReported, expectAptos, name);
       assert.equal(result.findings.failureCleanup.applicable, false, name);
       if (variant === 'cloud') assert.equal(JSON.parse((await readFile(path.join(args[args.indexOf('-OutputDirectory') + 1], 'report.json'), 'utf8')).replace(/^\uFEFF/, '')).preflightPresentationCount, 1);
@@ -421,7 +440,7 @@ try {
     assert.notEqual(refused.status, 0); assert.match(refused.stderr + refused.stdout, /fresh output directory/);
     const controlWithFonts = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', path.join(harness, 'native-font-inventory.ps1'), '-ControlDeck', '-OutputDirectory', path.join(harness, 'run-control-2'), '-InputPresentation', path.join(harness, 'control.pptx'), '-FontFixtureDirectory', fixtureDir], spawnOptions);
     assert.notEqual(controlWithFonts.status, 0); assert.match(controlWithFonts.stderr + controlWithFonts.stdout, /control decks never register/);
-    record('mock-object-model-end-to-end', {runs: [...runs.map(run => run[0]), ...failureRuns.map(run => run[0])], onlyExpectedFailure: 'com-construction (mock copy is never valid native evidence)'});
+    record('mock-object-model-end-to-end', {runs: [...runs.map(run => run[0]), ...failureRuns.map(run => run[0])], onlyExpectedFailures: 'com-construction, dynamic-code and forbidden-command from the mock construction line (mock copy is never valid native evidence)'});
   } else record('mock-object-model-end-to-end', {skipped: 'non-Windows runner'});
 } finally {
   const resolved = path.resolve(scratch);

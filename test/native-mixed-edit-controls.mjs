@@ -11,6 +11,9 @@ import {
   PINNED_LICENSE_SHA256, PINNED_SOURCE_SHA256, auditMixedEditDirectory, auditMixedEditVerifierSource, MIXED_EDIT_COM_SETTERS,
   evaluateMixedEditReport, lineIntervals, previewLineBreakLimit,
 } from './native-mixed-edit-audit.mjs';
+import {MIXED_EDIT_SOURCE_POLICY} from './native-mixed-edit-audit.mjs';
+import {assertSourcePolicyProbes} from './powershell-scan-probes.mjs';
+import {readPowerShellPolicyLists} from './powershell-scan.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const testRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -167,7 +170,7 @@ const workerAnchor = 'function Get-MixedEditSha256(';
 const pureAnchor = '        Invoke-Expression $comDefinition[0].Extent.Text';
 const withWorker = line => verifierSource.replace(workerAnchor, `function Invoke-MixedEditForbiddenDynamic($Text) { ${line} }\r\n${workerAnchor}`);
 const withPure = line => verifierSource.replace(pureAnchor, `${pureAnchor}\r\n        ${line}`);
-const IEX_MESSAGE = /must not run Invoke-Expression, iex or Add-Type/, DYNAMIC_MESSAGE = /must not use dynamic code/;
+const IEX_MESSAGE = /must not run Invoke-Expression, iex or Add-Type/, DYNAMIC_MESSAGE = /harness must not (use dynamic code|use|run|invoke|reference|pass)/;
 const dynamicCodeNegatives = [
   ['worker-invoke-expression', withWorker('Invoke-Expression $Text'), IEX_MESSAGE],
   ['worker-iex', withWorker('iex $Text'), IEX_MESSAGE],
@@ -223,11 +226,21 @@ if (process.platform === 'win32') {
       const copy = path.join(astRoot, `${name}.ps1`); await writeFile(copy, text);
       const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], psOptions);
       assert.ok(!negative.error && negative.status !== null && negative.status !== 0, `${name}: ${negative.error?.message ?? negative.status}`);
-      assert.match(negative.stderr + negative.stdout, message, name);
+      // PowerShell wraps error records at the console width, so compare with all whitespace removed.
+      assert.match((negative.stderr + negative.stdout).replace(/\s+/g, ''), new RegExp(message.source.replace(/ /g, '')), name);
     }
   } finally { await rm(astRoot, {recursive: true, force: true}); }
   outcomes.push({name: 'verifier-ast-dynamic-code-negatives', passed: true});
 } else outcomes.push({name: 'verifier-ast-dynamic-code-negatives', passed: true, skipped: 'non-Windows runner'});
+
+// The Node allowlist policy and the harness's $script:MixedEditPolicy* lists (enforced by its PowerShell AST check) are
+// one reviewed allowlist; every independent-review probe is rejected by both layers.
+{
+  const lists = readPowerShellPolicyLists(verifierSource, 'MixedEdit');
+  for (const [key, value] of Object.entries(lists)) assert.deepEqual(value, [...MIXED_EDIT_SOURCE_POLICY[key]], `MixedEditPolicy ${key} parity`);
+  const probes = await assertSourcePolicyProbes({source: verifierSource, audit: auditMixedEditVerifierSource, harnessPath: verifierPath, assertFunction: 'Assert-MixedEditVerifierAst', positives: []});
+  outcomes.push({name: 'source-policy-allowlist-parity-and-review-probes', passed: true, probes});
+}
 
 function stage(sequence, name, status, ownedPresentationPath, cleanupConfirmed, seconds) {
   return {sequence, timestamp: new Date(Date.UTC(2026, 8, 22, 12, 0, seconds)).toISOString(), stage: name, status, error: null, cleanupConfirmed, officeOperationsStopped: false, ownedPresentationPath};

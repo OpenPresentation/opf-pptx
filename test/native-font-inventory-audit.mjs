@@ -52,15 +52,32 @@ export const ALLOWED_STATIC_MEMBERS = Object.freeze(['GetExtension', 'GetFullPat
 // a COM object, and the inventory worker has no COM setter at all.
 export const INVENTORY_ASSIGNMENT_ROOTS = Object.freeze(['report', 'slideRecord', 'shapeRecord', 'seen', 'wrongGeneration', 'sample', 'sampleRows', 'policyRejected', 'errorCloseOutcomes']);
 // Reviewed verifier revisions a --reaudit-v2 run may bind to besides the companion beside this auditor: FF-03 (#59,
-// ef8a158) as checked out with LF and with CRLF. It predates only the static dynamic-code prohibition, which this
-// audit's own source policy enforces on every snapshot.
+// ef8a158) as checked out with LF and with CRLF. It predates only the PowerShell-side AST hardening (dynamic-code
+// prohibition and allowlist block); this audit's Node source policy applies the full current allowlist to every snapshot.
 export const PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256 = Object.freeze({
   'ecbeb36ddc1913be7bd42f7e9dce07d20b734a7e64dc20cc60e1e58a44ea6cd2': 'ff-03-ef8a158-lf',
   '067e96dd14ed89bd98036569af0bf85593ca4fad1447bb8bce5802d00ac9a401': 'ff-03-ef8a158-crlf',
 });
-// Non-literal & / . invocations are allowed only for the COM wrapper's `& $Operation`, the pure regression's local
-// decision/mutation script blocks, and the script-level dot-sourcing of the two hash-checked helper snapshots.
-export const INVENTORY_INVOCATION_SITES = Object.freeze([{function: 'Invoke-InventoryCom', operator: '&', variable: 'Operation'}, {function: 'Invoke-InventoryPureRegression', operator: '&', variable: 'decide'}, {function: 'Invoke-InventoryPureRegression', operator: '&', variable: 'mutate'}, {function: null, operator: '.', variable: 'processSnapshot'}, {function: null, operator: '.', variable: 'fontHelperSnapshot'}]);
+// Reviewed allowlist policy for native-font-inventory.ps1. The controls assert that every list below equals the matching
+// $script:InventoryPolicy* list in that file, which its PowerShell AST check enforces.
+export const INVENTORY_SOURCE_POLICY = Object.freeze({
+  commands: Object.freeze(['Add-Content', 'ConvertFrom-Json', 'ConvertTo-Json', 'Copy-Item', 'ForEach-Object', 'Get-Content', 'Get-Date', 'Get-FileHash', 'Get-ItemProperty', 'Get-Variable', 'Invoke-OpfNativeWorker', 'Invoke-OpfWithTemporaryFonts', 'Join-Path', 'New-Item', 'New-Object', 'Remove-Item', 'Resolve-Path', 'Set-Content', 'Set-Variable', 'Test-Path', 'Where-Object', 'Write-Host', 'Write-Output']),
+  scoped: Object.freeze(['Add-Member|Invoke-InventoryPureRegression']),
+  forms: Object.freeze(['New-Object|^New-Object -ComObject PowerPoint\\.Application$', 'New-Object|^New-Object -TypeName \'System\\.Collections\\.Generic\\.HashSet\\[string\\]\' -ArgumentList \\$strings,\\(\\[StringComparer\\]::Ordinal\\)$', 'Get-Variable|^Get-Variable -Scope Script -Name \\$TotalCounter -ValueOnly$', 'Set-Variable|^Set-Variable -Scope Script -Name \\$TotalCounter -Value \\(\\$used\\+\\$allowed\\)$']),
+  instance: Object.freeze(['Close', 'Contains', 'ContainsKey', 'FindAll', 'GetCommandName', 'Item', 'Open', 'Paragraphs', 'Runs', 'StartsWith', 'Substring', 'ToLowerInvariant', 'ToString', 'ToUniversalTime', 'TrimEnd']),
+  statics: Object.freeze(['Array::Sort', 'Guid::NewGuid', 'IO.File::WriteAllText', 'IO.Path::GetExtension', 'IO.Path::GetFullPath', 'IO.Path::GetTempPath', 'Math::Max', 'Math::Min', 'string::IsNullOrEmpty', 'string::IsNullOrWhiteSpace', 'System.Management.Automation.Language.Parser::ParseFile']),
+  properties: Object.freeze(['IO.Path::AltDirectorySeparatorChar', 'IO.Path::DirectorySeparatorChar', 'StringComparer::Ordinal', 'StringComparison::OrdinalIgnoreCase', 'System.Management.Automation.Language.TokenKind::Dot', 'System.Management.Automation.Language.TokenKind::Unknown', 'System.Management.Automation.Language.StringConstantType::BareWord', 'System.Management.Automation.Language.TokenKind::Equals']),
+  types: Object.freeze(['Array', 'bool', 'double', 'Guid', 'int', 'IO.File', 'IO.Path', 'long', 'Math', 'ordered', 'pscustomobject', 'ref', 'scriptblock', 'string', 'string[]', 'StringComparer', 'StringComparison', 'switch', 'void', 'ValidateRange', 'System.Collections.IDictionary', 'System.Management.Automation.Language.AssignmentStatementAst', 'System.Management.Automation.Language.AttributeBaseAst', 'System.Management.Automation.Language.CommandAst', 'System.Management.Automation.Language.ConvertExpressionAst', 'System.Management.Automation.Language.FunctionDefinitionAst', 'System.Management.Automation.Language.IndexExpressionAst', 'System.Management.Automation.Language.InvokeMemberExpressionAst', 'System.Management.Automation.Language.MemberExpressionAst', 'System.Management.Automation.Language.Parser', 'System.Management.Automation.Language.ScriptBlockExpressionAst', 'System.Management.Automation.Language.StringConstantExpressionAst', 'System.Management.Automation.Language.StringConstantType', 'System.Management.Automation.Language.TokenKind', 'System.Management.Automation.Language.TypeExpressionAst', 'System.Management.Automation.Language.UnaryExpressionAst', 'System.Management.Automation.Language.VariableExpressionAst', 'System.Management.Automation.Language.ArrayLiteralAst', 'System.Management.Automation.Language.CommandExpressionAst', 'System.Management.Automation.Language.CommandParameterAst', 'System.Management.Automation.Language.ForEachStatementAst', 'System.Management.Automation.Language.HashtableAst', 'System.Management.Automation.Language.ParameterAst']),
+  sites: Object.freeze(['Invoke-InventoryCom|&|Operation', 'Invoke-InventoryPureRegression|&|decide', 'Invoke-InventoryPureRegression|&|mutate', '|.|processSnapshot', '|.|fontHelperSnapshot']),
+  pipelines: Object.freeze(['Select-InventoryNames|Where-Object $Predicate']),
+  roots: Object.freeze(['report', 'slideRecord', 'shapeRecord', 'seen', 'wrongGeneration', 'sample', 'sampleRows', 'policyRejected', 'errorCloseOutcomes']),
+  setters: Object.freeze([]),
+  rootSources: Object.freeze(['sampleRows|@($script:inventoryCanonicalFaces.Keys | ForEach-Object {@{file=$_;sha256=$script:inventoryCanonicalFaces[$_];added=1;removed=$true}})', 'sample|$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json']),
+  bareArguments: Object.freeze(['Close', 'Directory', 'Leaf', 'PowerPoint.Application', 'SHA256', 'Script', 'ScriptMethod', 'SilentlyContinue', 'UTF8']),
+  dynamicMemberSites: Object.freeze(['Invoke-InventoryPureRegression|sample']),
+  exemptFunction: null,
+  exemptInvocations: Object.freeze([]),
+});;
 export const AUDIT_SCHEMA_VERSION = 2;
 const FORBIDDEN_STAGE = /saveas|\.save|export|quit|printout|kill|delete|paste|apply|\.add|\.set$|\.set\./i;
 
@@ -82,7 +99,7 @@ export function auditInventoryVerifierSource(sourceText, {label = 'native-font-i
   const instanceAllowed = [...ALLOWED_COM_MEMBERS, ...ALLOWED_INSTANCE_MEMBERS];
   const rejected = [...members.instance.filter(name => !instanceAllowed.includes(name)), ...members.statics.filter(name => !ALLOWED_STATIC_MEMBERS.includes(name)).map(name => `::${name}`)];
   if (rejected.length || members.dynamic) add('forbidden-member', `invokes members outside the read-only allowlist: ${[...rejected, ...(members.dynamic ? ['dynamic member'] : [])].join(', ')}`);
-  failures.push(...auditHarnessSourcePolicy(sourceText, {label, localRoots: INVENTORY_ASSIGNMENT_ROOTS, comSetters: [], invocationSites: INVENTORY_INVOCATION_SITES}));
+  failures.push(...auditHarnessSourcePolicy(sourceText, {label, ...INVENTORY_SOURCE_POLICY}));
   if (hasOfficeQuitInvocation(sourceText)) add('application-quit', 'must not call Application.Quit or .Quit()');
   if (/\b(?:Stop-Process|taskkill|spps)\b/i.test(code)) add('process-kill', 'must not terminate processes');
   const opens = code.match(/\.Open\s*\(/g) ?? [], closes = code.match(/\.Close\s*\(/g) ?? [];
@@ -408,7 +425,7 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
   const registrationFilePresent = (await listing(root))?.includes('font-registration.json') ?? false;
   let registrations = null;
   if (mode === 'temporary-session') registrations = await readRequired(root, 'font-registration.json', failures, rawHashes);
-  const allowedRoot = ['inputs/', 'progress.json', 'report.json', 'request.json', 'stages.jsonl', 'supervisor.json', 'worker.json', 'worker.stderr.log', 'worker.stdout.log', 'audit.json', 'audit-v2.json', ...(mode === 'temporary-session' ? ['font-registration.json'] : [])];
+  const allowedRoot = ['inputs/', 'progress.json', 'report.json', 'request.json', 'stages.jsonl', 'supervisor.json', 'worker.json', 'worker.stderr.log', 'worker.stdout.log', 'audit.json', ...(priorReviewedVerifiers !== false ? ['audit-v2.json'] : []), ...(mode === 'temporary-session' ? ['font-registration.json'] : [])];
   const rootEntries = await listing(root) ?? [];
   const extra = rootEntries.filter(name => !allowedRoot.includes(name));
   need(extra.length === 0, 'unexpected-output', `Read-only inventory must not leave other outputs: ${extra.join(', ')}`);
@@ -451,7 +468,8 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
   return {schemaVersion: AUDIT_SCHEMA_VERSION, kind: 'native-font-inventory-audit', evidenceDirectory: root, reviewedVerifierRevision, passed: failures.length === 0, failures, rawHashes, findings, scope: 'Offline input, lifecycle, read-only, stage-sequence and font-ledger audit of one native font inventory attempt. No Office, COM or font API is started.'};
 }
 
-// Default: write audit.json. --reaudit-v2: write audit-v2.json beside an existing audit.json (never overwriting either)
+// Default: write audit.json. --reaudit-v2: write audit-v2.json instead, whether or not an audit.json exists, never touch
+// audit.json, tolerate an audit-v2.json in the evidence directory (the default mode rejects one as unexpected output),
 // and additionally accept a pinned prior reviewed verifier revision. Both outputs are exclusive-create.
 async function runCli() {
   const args = process.argv.slice(2);

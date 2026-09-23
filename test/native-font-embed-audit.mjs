@@ -28,27 +28,43 @@ const FONT_STYLES = Object.freeze(['p:regular', 'p:bold', 'p:italic', 'p:boldIta
 
 export {scanPowerShellSource, stripPowerShellLiteralsForScan};
 
-// Any member invocation named Quit in code (not in a comment or string literal): $app.Quit(), ${app}.Quit(),
+// Any member reference named Quit in code (not in a comment or string literal): $app.Quit(), $app.Quit.Invoke(), ${app}.Quit(),
 // $x.Application.Quit(), $apps[0].Quit(). The pure regression's AST policy remains the authoritative PowerShell check.
 export function hasOfficeQuitInvocation(sourceText) {
-  return /\.\s*Quit\s*\(/i.test(stripPowerShellLiteralsForScan(sourceText));
+  return /\.\s*Quit\b/i.test(stripPowerShellLiteralsForScan(sourceText));
 }
 
+// Reviewed allowlist policy for native-font-embed.ps1. The controls assert that every list below equals the matching
+// $script:FontEmbedPolicy* list in that file, which its PowerShell AST check enforces.
+export const EMBED_SOURCE_POLICY = Object.freeze({
+  commands: Object.freeze(['Add-Content', 'ConvertFrom-Json', 'ConvertTo-Json', 'Copy-Item', 'ForEach-Object', 'Get-Content', 'Get-Date', 'Get-FileHash', 'Get-ItemProperty', 'Invoke-OpfNativeWorker', 'Invoke-OpfWithTemporaryFonts', 'Join-Path', 'New-Item', 'New-Object', 'Remove-Item', 'Resolve-Path', 'Set-Content', 'Test-Path', 'Where-Object', 'Write-Host', 'Write-Output']),
+  scoped: Object.freeze(['Invoke-Expression|Invoke-FontEmbedPureRegression', 'Add-Member|New-FontEmbedFakeShape', 'Add-Member|Invoke-FontEmbedPureRegression']),
+  forms: Object.freeze(['New-Object|^New-Object -ComObject PowerPoint\\.Application$']),
+  instance: Object.freeze(['Characters', 'Close', 'Contains', 'ContainsKey', 'FindAll', 'GetCommandName', 'Item', 'Open', 'SaveAs', 'StartsWith', 'ToLowerInvariant', 'ToString', 'ToUniversalTime', 'TrimEnd']),
+  statics: Object.freeze(['Guid::NewGuid', 'IO.File::WriteAllText', 'IO.Path::GetExtension', 'IO.Path::GetFullPath', 'IO.Path::GetTempPath', 'string::IsNullOrEmpty', 'string::IsNullOrWhiteSpace', 'System.Management.Automation.Language.Parser::ParseFile']),
+  properties: Object.freeze(['IO.Path::AltDirectorySeparatorChar', 'IO.Path::DirectorySeparatorChar', 'StringComparison::OrdinalIgnoreCase', 'System.Management.Automation.Language.TokenKind::Dot', 'System.Management.Automation.Language.TokenKind::Minus', 'System.Management.Automation.Language.TokenKind::Unknown', 'System.Management.Automation.Language.StringConstantType::BareWord', 'System.Management.Automation.Language.TokenKind::Equals']),
+  types: Object.freeze(['bool', 'double', 'Guid', 'int', 'IO.File', 'IO.Path', 'long', 'ordered', 'pscustomobject', 'ref', 'scriptblock', 'string', 'StringComparison', 'switch', 'void', 'ValidateRange', 'System.Collections.IDictionary', 'System.Management.Automation.Language.AssignmentStatementAst', 'System.Management.Automation.Language.AttributeBaseAst', 'System.Management.Automation.Language.CommandAst', 'System.Management.Automation.Language.ConstantExpressionAst', 'System.Management.Automation.Language.ConvertExpressionAst', 'System.Management.Automation.Language.FunctionDefinitionAst', 'System.Management.Automation.Language.IndexExpressionAst', 'System.Management.Automation.Language.InvokeMemberExpressionAst', 'System.Management.Automation.Language.MemberExpressionAst', 'System.Management.Automation.Language.ParenExpressionAst', 'System.Management.Automation.Language.Parser', 'System.Management.Automation.Language.ScriptBlockExpressionAst', 'System.Management.Automation.Language.StringConstantExpressionAst', 'System.Management.Automation.Language.StringConstantType', 'System.Management.Automation.Language.TokenKind', 'System.Management.Automation.Language.TypeExpressionAst', 'System.Management.Automation.Language.UnaryExpressionAst', 'System.Management.Automation.Language.VariableExpressionAst', 'System.Management.Automation.Language.ArrayLiteralAst', 'System.Management.Automation.Language.CommandExpressionAst', 'System.Management.Automation.Language.CommandParameterAst', 'System.Management.Automation.Language.ForEachStatementAst', 'System.Management.Automation.Language.HashtableAst', 'System.Management.Automation.Language.ParameterAst']),
+  sites: Object.freeze(['Invoke-FontEmbedCom|&|Operation', '|.|processSnapshot', '|.|fontHelperSnapshot']),
+  pipelines: Object.freeze([]),
+  roots: Object.freeze(['report', 'seen', 'inventory', 'wrongGeneration']),
+  setters: Object.freeze(['Range.Text', 'wholeFont.Name', 'wholeFont.Size', 'wholeFont.Bold', 'wholeFont.Italic', 'runFont.Name', 'runFont.Size', 'runFont.Bold', 'runFont.Italic', 'presentation.Saved']),
+  rootSources: Object.freeze([]),
+  bareArguments: Object.freeze(['Characters', 'Directory', 'Item', 'Leaf', 'PowerPoint.Application', 'SHA256', 'ScriptMethod', 'SilentlyContinue', 'UTF8']),
+  dynamicMemberSites: Object.freeze([]),
+  exemptFunction: 'Invoke-FontEmbedPureRegression',
+  exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text']),
+});;
 // Member assignments the embed worker may make: local report/evidence roots, plus the documented COM setters
 // (the edit's Text and whole-range/run Font2 Name, Size, Bold, Italic, and Saved on the discard-without-save path).
-export const EMBED_LOCAL_ASSIGNMENT_ROOTS = Object.freeze(['report', 'seen', 'inventory', 'wrongGeneration']);
-export const EMBED_COM_SETTERS = Object.freeze(['Range.Text', 'wholeFont.Name', 'wholeFont.Size', 'wholeFont.Bold', 'wholeFont.Italic', 'runFont.Name', 'runFont.Size', 'runFont.Bold', 'runFont.Italic', 'presentation.Saved']);
-// The only dynamic code allowed: the pure regression re-evaluating its own two extracted function definitions.
-// Non-literal & / . invocations are allowed only at these sites: the COM wrapper's `& $Operation` and the script-level
-// dot-sourcing of the two hash-checked helper snapshots.
-export const EMBED_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-FontEmbedPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text']), invocationSites: Object.freeze([{function: 'Invoke-FontEmbedCom', operator: '&', variable: 'Operation'}, {function: null, operator: '.', variable: 'processSnapshot'}, {function: null, operator: '.', variable: 'fontHelperSnapshot'}])});
+export const EMBED_LOCAL_ASSIGNMENT_ROOTS = EMBED_SOURCE_POLICY.roots;
+export const EMBED_COM_SETTERS = EMBED_SOURCE_POLICY.setters;
 
 const OWNED_EMBED_SAVE_OFF =/\.SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/;
 const OWNED_EMBED_SAVE_ON = /\.SaveAs\(\$savedPath,\s*24\s*,\s*(?:\(-1\)|-1)\s*\)/;
 
 export function auditEmbedVerifierSource(sourceText, {label = 'native-font-embed.ps1'} = {}) {
   const scan = scanPowerShellSource(sourceText);
-  const failures = auditHarnessSourcePolicy(sourceText, {label, localRoots: EMBED_LOCAL_ASSIGNMENT_ROOTS, comSetters: EMBED_COM_SETTERS, ...EMBED_PURE_REGRESSION_EXEMPTION});
+  const failures = auditHarnessSourcePolicy(sourceText, {label, ...EMBED_SOURCE_POLICY});
   if (OWNED_EMBED_SAVE_OFF.test(sourceText)) failures.push({code: 'embed-forced-off', message: `${label} must not call SaveAs with EmbedFonts 0`});
   if (!OWNED_EMBED_SAVE_ON.test(sourceText)) failures.push({code: 'embed-not-requested', message: `${label} must call SaveAs with EmbedFonts -1 on the owned presentation`});
   if (hasOfficeQuitInvocation(sourceText)) failures.push({code: 'application-quit', message: `${label} must not call Application.Quit or .Quit()`});
