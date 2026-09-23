@@ -5,10 +5,15 @@ import {spawnSync} from 'node:child_process';
 import {mkdir, readFile, realpath, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
+import {applyMasterBulletFontTransform, carlitoOnlySource, carlitoOnlyTypefaceFailures, declaredFontsUsed, MASTER_BULLET_FONT_TRANSFORM, themeFontSlots, typefaceInventory} from './native-font-embed-fixture-source.mjs';
 
 assert.equal(process.versions.node.split('.')[0], '24', 'Use Node 24 for new evidence.');
-const [outputArgument, consumerArgument] = process.argv.slice(2);
-assert.ok(outputArgument && consumerArgument, 'Usage: node test/native-font-edit-fixture.mjs NEW_OUTPUT_DIRECTORY REGISTRY_CONSUMER');
+const cliFlags = new Set(['--carlito-only', '--harness-master-bullet-font']);
+const flags = process.argv.slice(2).filter(value => value.startsWith('--'));
+const [outputArgument, consumerArgument, ...extraArguments] = process.argv.slice(2).filter(value => !value.startsWith('--'));
+assert.ok(outputArgument && consumerArgument && extraArguments.length === 0 && flags.every(flag => cliFlags.has(flag)), 'Usage: node test/native-font-edit-fixture.mjs NEW_OUTPUT_DIRECTORY REGISTRY_CONSUMER [--carlito-only [--harness-master-bullet-font]]');
+const carlitoOnly = flags.includes('--carlito-only'), harnessBulletFont = flags.includes('--harness-master-bullet-font');
+assert.ok(!harnessBulletFont || carlitoOnly, '--harness-master-bullet-font requires --carlito-only');
 const output = path.resolve(outputArgument), consumer = await realpath(consumerArgument);
 const requireConsumer = createRequire(path.join(consumer, 'package.json'));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -68,12 +73,34 @@ for (const [relative, file, expected] of faces) {
 }
 const {toPptx} = await import(pathToFileURL(bindings['@openpresentation/opf-pptx'].entry).href);
 const {validatePresentation} = await import(pathToFileURL(bindings['@openpresentation/opf'].entry).href);
-const source = {slides: [{title: 'Plain control', text: 'Current content'}]};
+const source = carlitoOnly ? carlitoOnlySource() : {slides: [{title: 'Plain control', text: 'Current content'}]};
 assert.equal(validatePresentation(source).valid, true);
-const before = JSON.stringify(source), presentation = await toPptx(source, {strictAssets: true});
+const before = JSON.stringify(source), exported = await toPptx(source, {strictAssets: true});
 assert.equal(JSON.stringify(source), before);
+let presentation = exported, carlitoFixture = null;
+if (carlitoOnly) {
+  const transforms = [];
+  if (harnessBulletFont) {
+    const transformed = applyMasterBulletFontTransform(exported);
+    presentation = transformed.bytes;
+    transforms.push({...MASTER_BULLET_FONT_TRANSFORM, replacements: transformed.replacements, inputSha256: sha(exported), outputSha256: sha(presentation)});
+  }
+  const typefaces = typefaceInventory(presentation), themeSlots = themeFontSlots(presentation);
+  const {failures, residual} = carlitoOnlyTypefaceFailures(typefaces, themeSlots, {requireCarlitoBullets: harnessBulletFont});
+  assert.deepEqual(failures, [], 'Carlito-only fixture contains a non-Carlito text typeface');
+  carlitoFixture = {
+    variant: harnessBulletFont ? 'carlito-only+harness-master-bullet-font' : 'carlito-only',
+    helper: {file: 'test/native-font-embed-fixture-source.mjs', sha256: sha(await readFile(fileURLToPath(new URL('./native-font-embed-fixture-source.mjs', import.meta.url))))},
+    exporterOutput: {file: harnessBulletFont ? 'exporter-output.pptx' : 'source.pptx', sha256: sha(exported)},
+    harnessTransforms: transforms, themeFontSlots: themeSlots, typefaceInventory: typefaces,
+    residualNonCarlito: residual.map(({code, row}) => ({code, element: row.element, script: row.script, typeface: row.typeface, parts: row.parts})),
+    docPropsFontsUsed: {values: declaredFontsUsed(presentation), note: 'Static PptxGenJS docProps/app.xml metadata; not a text/theme slot and not transformed. PowerPoint rewrites it on save.'},
+    scope: 'Static XML inventory of source.pptx. PowerPoint Presentation.Fonts is decided natively and may still report names this inventory cannot predict.',
+  };
+}
 await mkdir(output); await mkdir(path.join(output, 'fonts'));
 await writeFile(path.join(output, 'source.pptx'), presentation);
+if (harnessBulletFont) await writeFile(path.join(output, 'exporter-output.pptx'), exported);
 await writeFile(path.join(output, 'source.opf.json'), JSON.stringify(source, null, 2) + '\n');
 await writeFile(path.join(output, 'LICENSE_FONT'), license);
 for (const font of fonts) await writeFile(path.join(output, font.file), font.bytes);
@@ -89,6 +116,7 @@ const generation = {
   fonts: fonts.map(({file, sha256}) => ({file, sha256})),
   edit: {title: 'Gate E - Carlito', titleFont: 'Carlito', titleSizePoints: 30, titleBold: true, body: 'Regular 18 | Bold 20 | Italic 22 | BoldItalic 24', spans},
   scope: 'Fixture generation only; no font registration, Office call, PDF, embedding or native acceptance.',
+  ...(carlitoFixture ? {carlitoOnly: carlitoFixture} : {}),
 };
 await writeFile(path.join(output, 'generation.json'), JSON.stringify(generation, null, 2) + '\n');
 console.log(`Created one registry fixture and four exact licensed Carlito faces in ${output}. No Office or font registration calls.`);
