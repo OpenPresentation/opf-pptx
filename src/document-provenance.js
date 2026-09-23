@@ -25,6 +25,7 @@ export const SLIDE_TAG = 'OPF_SLIDE_V1';
 const REL_TAGS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tags';
 const NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const TAGS_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml';
+const MAX_OMITTED = 256;
 const MAX_FIELD_BYTES = 256 * 1024, MAX_CATALOG_BYTES = 1024 * 1024, MAX_TAG_CHARS = 16 * 1024 * 1024;
 
 const enc = new TextEncoder(), dec = new TextDecoder('utf-8', {fatal: true});
@@ -202,9 +203,13 @@ function nativeSlide(entries, path) {
 // ---------------------------------------------------------------------------
 // Export
 
-function sizeOf(value) {
-  return enc.encode(JSON.stringify(value)).byteLength;
-}
+export const PROVENANCE_MODES = Object.freeze(['full', 'references-only']);
+const sizeOf = value => enc.encode(JSON.stringify(value)).byteLength;
+// The tag value is the UTF-8 JSON as uppercase hex: two characters per byte.
+const tagChars = value => sizeOf(value) * 2;
+const SOURCE_KEYS = new Set(['src', 'image', 'logo', 'photo']);
+const SOURCE_PREFIX = /^(asset:|data:|https?:|file:)/i;
+const METADATA_CATALOGS = Object.freeze({narrative: 'narratives', tone: 'tones', purpose: 'purposes', language: 'languages', audience: 'audiences'});
 
 function collectStrings(value, into = new Set()) {
   if (typeof value === 'string') into.add(value);
@@ -213,8 +218,16 @@ function collectStrings(value, into = new Set()) {
   return into;
 }
 
-// Inline catalog records are kept only when the document references their id,
-// so restored ids resolve without copying unrelated catalog content.
+// True when a value names an image, logo, file or URL rather than only catalog ids and settings.
+function carriesSource(value) {
+  if (typeof value === 'string') return SOURCE_PREFIX.test(value);
+  if (Array.isArray(value)) return value.some(carriesSource);
+  if (object(value)) return Object.entries(value).some(([key, item]) => SOURCE_KEYS.has(key) || carriesSource(item));
+  return false;
+}
+
+// Inline catalog records are kept only when referenced, so restored ids
+// resolve without copying unrelated catalog content.
 function pruneCatalogs(catalogs, referenced) {
   if (!object(catalogs)) return undefined;
   const result = {};
@@ -231,34 +244,61 @@ function pruneCatalogs(catalogs, referenced) {
   return Object.keys(result).length ? result : undefined;
 }
 
-function catalogReferences(catalogs) {
-  const ids = new Set();
-  for (const entry of Object.values(catalogs ?? {})) for (const record of array(Array.isArray(entry) ? entry : entry?.records)) collectStrings(record, ids);
-  return ids;
+// A referenced record can itself refer to another inline record (a theme to its color scheme).
+function referencedCatalogs(catalogs, referenced) {
+  let pruned = pruneCatalogs(catalogs, referenced);
+  for (let pass = 0; pass < 3 && pruned; pass += 1) {
+    const ids = new Set(referenced);
+    for (const entry of Object.values(pruned)) for (const record of array(Array.isArray(entry) ? entry : entry?.records)) collectStrings(record, ids);
+    const next = pruneCatalogs(catalogs, ids);
+    if (same(next, pruned)) break;
+    pruned = next;
+  }
+  return pruned;
 }
 
-function assetReferences(value) {
-  return [...collectStrings(value)].filter(item => item.startsWith('asset:')).map(item => item.slice(6));
-}
+const assetReferences = value => [...collectStrings(value)].filter(item => item.startsWith('asset:')).map(item => item.slice(6));
 
 /**
- * The references and metadata to persist. Only values the document states are
- * stored; engine defaults are not. Returns null when there is nothing to keep.
+ * The references and metadata to persist, before package-dependent checks.
+ * Only values the document states are stored; engine defaults are not.
+ *
+ * mode 'full' stores deck design references and composition defaults, the
+ * METADATA fields, slide id/beat/layout/type/composition and slide design
+ * references, the assets those values reference, and referenced inline
+ * catalog records. mode 'references-only' stores catalog references only:
+ * design references and hints that name no image, file or URL, slide
+ * layout/type/composition/beat and slide design references of that kind,
+ * narrative/tone/purpose/language/audience only as catalog ids, and the inline
+ * catalog records those ids need. It stores no organization, speaker,
+ * free-text metadata, slide ids or assets.
  */
-export function documentProvenance(presentation, report = () => {}) {
+export function documentProvenance(presentation, {mode = 'full', isCatalogId = () => false, report = () => {}} = {}) {
+  const referencesOnly = mode === 'references-only';
   const design = {}, metadata = {};
-  for (const key of [...DESIGN_REFERENCES, ...COMPOSITION_HINTS]) if (own(presentation.design, key)) design[key] = clone(presentation.design[key]);
+  for (const key of [...DESIGN_REFERENCES, ...COMPOSITION_HINTS]) {
+    if (!own(presentation.design, key)) continue;
+    if (referencesOnly && carriesSource(presentation.design[key])) continue;
+    design[key] = clone(presentation.design[key]);
+  }
   for (const key of METADATA) {
     if (!own(presentation, key)) continue;
-    const value = clone(presentation[key]);
-    if (sizeOf(value) > MAX_FIELD_BYTES) report({code: 'document-provenance-omitted', path: key, message: `${key} is larger than ${MAX_FIELD_BYTES / 1024} KiB and is not stored in the PPTX; reimport cannot restore it.`});
-    else metadata[key] = value;
+    const value = presentation[key];
+    if (referencesOnly) {
+      const kind = METADATA_CATALOGS[key];
+      const ids = typeof value === 'string' ? [value] : key === 'audience' && Array.isArray(value) && value.every(item => typeof item === 'string') ? value : null;
+      if (!kind || !ids || !ids.every(id => isCatalogId(kind, id))) continue;
+    }
+    metadata[key] = clone(value);
   }
   const slides = presentation.slides.map((slide, index) => {
     const record = {v: 1, slide: index};
-    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE]) if (own(slide, key)) record[key] = clone(slide[key]);
+    for (const key of [...(referencesOnly ? [] : ['id']), 'beat', ...SLIDE_STRUCTURE]) if (own(slide, key)) record[key] = clone(slide[key]);
     const slideDesign = {};
-    for (const key of [...STYLE_REFERENCES, 'background', ...COMPOSITION_HINTS]) if (own(slide.design, key)) slideDesign[key] = clone(slide.design[key]);
+    for (const key of [...STYLE_REFERENCES, 'background', ...COMPOSITION_HINTS]) {
+      if (!own(slide.design, key) || (referencesOnly && carriesSource(slide.design[key]))) continue;
+      slideDesign[key] = clone(slide.design[key]);
+    }
     if (Object.keys(slideDesign).length) record.design = slideDesign;
     return record;
   });
@@ -267,26 +307,59 @@ export function documentProvenance(presentation, report = () => {}) {
   const document = {v: 1, slides: slides.length};
   if (Object.keys(design).length) document.design = design;
   if (Object.keys(metadata).length) document.metadata = metadata;
-  const assetIds = assetReferences(metadata).filter(id => own(presentation.assets, id));
-  if (assetIds.length) {
-    const assets = Object.fromEntries(assetIds.map(id => [id, clone(presentation.assets[id])]));
-    if (sizeOf(assets) > MAX_FIELD_BYTES) report({code: 'document-provenance-omitted', path: 'assets', message: 'Assets referenced by document metadata are too large to store in the PPTX; reimport keeps their asset: references without the registry entries.'});
-    else document.assets = assets;
-  }
+  const stored = [design, metadata, slides];
+  const assetIds = [...new Set(assetReferences(stored))].filter(id => own(presentation.assets, id));
+  if (assetIds.length) document.assets = Object.fromEntries(assetIds.map(id => [id, clone(presentation.assets[id])]));
   const {catalogs, ...rest} = presentation;
-  const referenced = collectStrings(rest);
-  // A referenced record can itself refer to another inline record (a theme to its color scheme).
-  let pruned = pruneCatalogs(catalogs, referenced);
-  for (let pass = 0; pass < 3 && pruned; pass += 1) {
-    const next = pruneCatalogs(catalogs, new Set([...referenced, ...catalogReferences(pruned)]));
-    if (same(next, pruned)) break;
-    pruned = next;
+  const catalogRecords = referencedCatalogs(catalogs, collectStrings(referencesOnly ? stored : rest));
+  if (catalogRecords) document.catalogs = catalogRecords;
+  return {mode, document, slides, report};
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value.replace(/\s+/g, ''));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(binary);
+}
+
+const sameBytes = (a, b) => a.byteLength === b.byteLength && a.every((value, index) => value === b[index]);
+
+// Embedded data: sources are never copied into a tag. A data URI whose bytes
+// are an exported media part becomes a reference to that part; any other data
+// URI makes the value unstorable.
+function mediaExternalizer(entries) {
+  const media = new Map();
+  for (const [path, bytes] of Object.entries(entries)) {
+    if (!/^ppt\/media\/[^/]+$/.test(path)) continue;
+    const key = `${bytes.byteLength}:${hashBytes(bytes)}`;
+    media.set(key, [...(media.get(key) ?? []), path]);
   }
-  if (pruned) {
-    if (sizeOf(pruned) > MAX_CATALOG_BYTES) report({code: 'document-provenance-omitted', path: 'catalogs', message: 'Referenced inline catalog records are larger than 1 MiB and are not stored in the PPTX; restored ids may need their catalogs supplied again.'});
-    else document.catalogs = pruned;
-  }
-  return {document, slides};
+  const find = bytes => (media.get(`${bytes.byteLength}:${hashBytes(bytes)}`) ?? []).find(path => sameBytes(entries[path], bytes));
+  return function externalize(value) {
+    let missing = false;
+    const visit = item => {
+      if (typeof item === 'string' && /^data:/i.test(item)) {
+        const match = item.match(/^data:([\w.+-]+\/[\w.+-]+)?((?:;[^;,]*)*?)(;base64)?,([\s\S]*)$/i);
+        let bytes = null;
+        try { if (match) bytes = match[3] ? base64ToBytes(match[4]) : enc.encode(decodeURIComponent(match[4])); } catch { bytes = null; }
+        const path = bytes && find(bytes);
+        if (!path) { missing = true; return item; }
+        return {$opfMedia: path, prefix: `data:${match[1] || 'application/octet-stream'};base64,`};
+      }
+      if (Array.isArray(item)) return item.map(visit);
+      if (object(item)) return Object.fromEntries(Object.entries(item).map(([key, value]) => [key, visit(value)]));
+      return item;
+    };
+    const result = visit(value);
+    return {value: result, missing};
+  };
 }
 
 function tagPart(name, value) {
@@ -301,6 +374,95 @@ function freeId(relsXml, base) {
 }
 
 /**
+ * Make the collected provenance storable against the final package: data:
+ * sources become media-part references, per-field size limits apply, fields
+ * that name an unstorable asset are dropped, and the whole tag must stay below
+ * the import limit. Every omission is reported with its OPF path.
+ */
+function storable(entries, provenance) {
+  const report = provenance.report ?? (() => {});
+  // Omitted paths are recorded so import knows the source stated them and keeps observed values.
+  const omitted = [];
+  const omit = (path, reason) => { omitted.push(path); report({code: 'document-provenance-omitted', path, message: `${path} is not stored in the PPTX because ${reason}; reimport keeps the values observed in the PPTX instead.`}); };
+  const externalize = mediaExternalizer(entries);
+  const prepare = (path, value, limit = MAX_FIELD_BYTES) => {
+    const {value: result, missing} = externalize(value);
+    if (missing) { omit(path, 'it embeds a data: source that is not one of the exported media parts'); return undefined; }
+    if (sizeOf(result) > limit) { omit(path, `it is larger than ${limit / 1024} KiB`); return undefined; }
+    return result;
+  };
+  const source = provenance.document;
+  const document = {v: 1, slides: source.slides};
+  const assets = {};
+  for (const [id, asset] of Object.entries(source.assets ?? {})) {
+    const value = prepare(`assets.${id}`, asset);
+    if (value !== undefined) assets[id] = value;
+  }
+  const unstoredAsset = value => assetReferences(value).some(id => !Object.hasOwn(assets, id) && own(source.assets, id));
+  for (const section of ['design', 'metadata']) {
+    const fields = {};
+    for (const [key, value] of Object.entries(source[section] ?? {})) {
+      const path = section === 'design' ? `design.${key}` : key;
+      // A design reference is only restorable together with its asset.
+      if (section === 'design' && unstoredAsset(value)) { omit(path, 'the asset it references could not be stored'); continue; }
+      const prepared = prepare(path, value);
+      if (prepared !== undefined) fields[key] = prepared;
+    }
+    if (Object.keys(fields).length) document[section] = fields;
+  }
+  if (Object.keys(assets).length) document.assets = assets;
+  if (source.catalogs !== undefined) {
+    const catalogs = prepare('catalogs', source.catalogs, MAX_CATALOG_BYTES);
+    if (catalogs !== undefined) document.catalogs = catalogs;
+  }
+  const slides = provenance.slides.map((record, index) => {
+    const result = {v: 1, slide: index};
+    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE]) {
+      if (record[key] === undefined) continue;
+      const value = prepare(`slides.${index}.${key}`, record[key]);
+      if (value !== undefined) result[key] = value;
+    }
+    const slideDesign = {};
+    for (const [key, value] of Object.entries(record.design ?? {})) {
+      const path = `slides.${index}.design.${key}`;
+      if (unstoredAsset(value)) { omit(path, 'the asset it references could not be stored'); continue; }
+      const prepared = prepare(path, value);
+      if (prepared !== undefined) slideDesign[key] = prepared;
+    }
+    if (Object.keys(slideDesign).length) result.design = slideDesign;
+    return result;
+  });
+  // Keep the whole tag importable: shed the largest optional content first.
+  const budget = MAX_TAG_CHARS - 64 * 1024;
+  const shed = (holder, path) => { omit(path, `the tag would exceed the ${MAX_TAG_CHARS / (1024 * 1024)} MiB import limit`); };
+  while (tagChars(document) > budget) {
+    if (document.catalogs) { delete document.catalogs; shed(document, 'catalogs'); continue; }
+    if (document.assets) { delete document.assets; shed(document, 'assets'); continue; }
+    const candidates = ['metadata', 'design'].flatMap(section => Object.entries(document[section] ?? {}).map(([key, value]) => ({section, key, size: sizeOf(value)})));
+    if (!candidates.length) break;
+    const largest = candidates.sort((a, b) => b.size - a.size)[0];
+    delete document[largest.section][largest.key];
+    shed(document, largest.section === 'design' ? `design.${largest.key}` : largest.key);
+  }
+  for (const [index, record] of slides.entries()) {
+    while (tagChars(record) > budget) {
+      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
+        ...Object.keys(record.design ?? {}).map(key => ({key, design: true, size: sizeOf(record.design[key])}))];
+      if (!candidates.length) break;
+      const largest = candidates.sort((a, b) => b.size - a.size)[0];
+      if (largest.design) delete record.design[largest.key]; else delete record[largest.key];
+      shed(record, `slides.${index}.${largest.design ? 'design.' : ''}${largest.key}`);
+    }
+  }
+  for (const path of omitted.slice(0, MAX_OMITTED)) {
+    const slide = path.match(/^slides\.(\d+)\.(.+)$/);
+    const holder = slide ? slides[Number(slide[1])] : document;
+    (holder.omitted ??= []).push(slide ? slide[2] : path);
+  }
+  return {document, slides};
+}
+
+/**
  * Record native evidence from the final normalized parts and write the tags.
  * `entries` maps part paths to bytes and is updated in place.
  */
@@ -311,8 +473,9 @@ export function attachDocumentProvenance(entries, provenance) {
   const rels = relationships(entries, 'ppt/presentation.xml');
   const paths = slidePaths(entries, presentationRoot, rels);
   if (paths.length !== provenance.slides.length) throw Error('Generated slide count differs from the document.');
+  const prepared = storable(entries, provenance);
   const types = [];
-  const document = {...provenance.document, native: nativeDocument(entries, presentationRoot, rels)};
+  const document = {...prepared.document, native: nativeDocument(entries, presentationRoot, rels)};
 
   // CT_Presentation: custDataLst follows photoAlbum and precedes kinsoku/defaultTextStyle/modifyVerifier/extLst.
   const documentPart = 'ppt/tags/opfDocument.xml';
@@ -327,12 +490,12 @@ export function attachDocumentProvenance(entries, provenance) {
   types.push(documentPart);
 
   for (const [index, path] of paths.entries()) {
-    const record = {...provenance.slides[index], native: nativeSlide(entries, path)};
+    const record = {...prepared.slides[index], native: nativeSlide(entries, path)};
     const tag = `<p:tag name="${SLIDE_TAG}" val="${encodeTextTag(record)}"/>`;
     let xml = dec.decode(entries[path]);
     const slideRels = relsPath(path);
     let relsXml = dec.decode(entries[slideRels]);
-    // One p:tags per custDataLst: join the slide's existing tag list (furniture) when present.
+    // CT_CustomerDataList allows one p:tags: join the slide's existing tag list (furniture) when present.
     const existing = xml.match(/<\/p:spTree>\s*<p:custDataLst>\s*<p:tags r:id="([^"]+)"\s*\/>/);
     if (existing) {
       const target = relationships(entries, path).get(existing[1]);
@@ -361,7 +524,7 @@ function readTag(entries, container, rels, name) {
   let unreadable = false;
   for (const link of array(container?.['p:tags'])) {
     const rel = rels.get(link?.['r:id']);
-    if (rel?.type !== REL_TAGS || rel.external || !rel.path || !entries[rel.path]) { unreadable = true; continue; }
+    if (rel?.type !== REL_TAGS || rel.external || rel.targetMode === 'External' || !rel.path || !entries[rel.path]) { unreadable = true; continue; }
     try { found.push(...array(parser.parse(dec.decode(entries[rel.path]))?.['p:tagLst']?.['p:tag']).filter(tag => String(tag?.name ?? '').toUpperCase() === name)); }
     catch { unreadable = true; }
   }
@@ -372,22 +535,26 @@ function readTag(entries, container, rels, name) {
   return {value: decodeTextTag(value)};
 }
 
-const validNative = native => object(native);
+function validateOmitted(value) {
+  if (value !== undefined && (!Array.isArray(value) || value.length > MAX_OMITTED || !value.every(path => typeof path === 'string' && /^[A-Za-z0-9_.:+-]{1,256}$/.test(path)))) throw Error('Invalid omitted field list.');
+}
 
 function validateDocument(value) {
   if (!object(value) || value.v !== 1 || !Number.isSafeInteger(value.slides) || value.slides < 1) throw Error('Unsupported document provenance version.');
   for (const key of ['design', 'metadata', 'catalogs', 'assets']) if (value[key] !== undefined && !object(value[key])) throw Error(`Invalid ${key} record.`);
-  if (!validNative(value.native)) throw Error('Missing native evidence.');
+  if (!object(value.native)) throw Error('Missing native evidence.');
   for (const key of Object.keys(value.design ?? {})) if (![...DESIGN_REFERENCES, ...COMPOSITION_HINTS].includes(key)) throw Error(`Unknown design field ${key}.`);
   for (const key of Object.keys(value.metadata ?? {})) if (!METADATA.includes(key)) throw Error(`Unknown metadata field ${key}.`);
+  validateOmitted(value.omitted);
   return value;
 }
 
 function validateSlide(value) {
   if (!object(value) || value.v !== 1 || !Number.isSafeInteger(value.slide) || value.slide < 0) throw Error('Unsupported slide provenance version.');
-  if (!validNative(value.native) || typeof value.native.structure !== 'string' || typeof value.native.background !== 'string' || typeof value.native.style !== 'string') throw Error('Missing slide native evidence.');
+  if (!object(value.native) || typeof value.native.structure !== 'string' || typeof value.native.background !== 'string' || typeof value.native.style !== 'string') throw Error('Missing slide native evidence.');
   if (value.design !== undefined && !object(value.design)) throw Error('Invalid slide design record.');
   for (const key of Object.keys(value.design ?? {})) if (![...STYLE_REFERENCES, 'background', ...COMPOSITION_HINTS].includes(key)) throw Error(`Unknown slide design field ${key}.`);
+  validateOmitted(value.omitted);
   return value;
 }
 
@@ -399,22 +566,56 @@ function changedSlots(stored, observed) {
   return keys.join(', ') || 'unreadable';
 }
 
+// Media references back to data: URIs from the current package bytes.
+function resolveMedia(value, entries) {
+  let unresolved = false;
+  const visit = item => {
+    if (Array.isArray(item)) return item.map(visit);
+    if (!object(item)) return item;
+    if (Object.hasOwn(item, '$opfMedia')) {
+      const {$opfMedia: path, prefix} = item;
+      const bytes = typeof path === 'string' && /^ppt\/media\/[^/]+$/.test(path) ? entries[path] : undefined;
+      if (!bytes || Object.keys(item).length !== 2 || typeof prefix !== 'string' || !/^data:[\w.+-]+\/[\w.+-]+;base64,$/.test(prefix)) { unresolved = true; return null; }
+      return prefix + bytesToBase64(bytes);
+    }
+    return Object.fromEntries(Object.entries(item).map(([key, value]) => [key, visit(value)]));
+  };
+  const result = visit(value);
+  return {value: result, unresolved};
+}
+
+// Remove properties and list items whose asset: reference does not resolve.
+function pruneDangling(value, dangling, path, removed) {
+  const isDangling = item => (typeof item === 'string' && item.startsWith('asset:') && dangling(item.slice(6)))
+    || (object(item) && typeof item.src === 'string' && item.src.startsWith('asset:') && dangling(item.src.slice(6)));
+  if (Array.isArray(value)) return value.flatMap((item, index) => isDangling(item) ? (removed.push(`${path}.${index}`), []) : [pruneDangling(item, dangling, `${path}.${index}`, removed)]);
+  if (!object(value)) return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => isDangling(item) ? (removed.push(`${path}.${key}`), []) : [[key, pruneDangling(item, dangling, `${path}.${key}`, removed)]]));
+}
+
 /**
- * Read OPF_DOCUMENT_V1 / OPF_SLIDE_V1 and restore what still matches the
- * package. `imported` is modified in place. Returns per-slide layout evidence
- * ({layout, structure: 'match' | 'changed' | 'untagged'}) for layout recovery.
+ * Read OPF_DOCUMENT_V1 / OPF_SLIDE_V1 and decide what still matches the
+ * package. Nothing is modified here: the result lists restore groups (one per
+ * OPF field; background deduplication belongs to design.background) for
+ * applyDocumentProvenance, and per-slide layout evidence.
+ *
+ * slides[i] = {layout, structure: 'match' | 'changed' | 'untagged', record, catalogRecord}
+ * is the contract for layout-structure recovery (FF-29): `record` is the
+ * validated OPF_SLIDE_V1 value (layout, type, composition, design hints, ...),
+ * `catalogRecord` the stored inline layouts record for `layout`, if any.
  */
 export function restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, slides, organizationConflict = false}, report) {
+  const untagged = {groups: [], slides: slides.map(() => ({structure: 'untagged'})), finalize: doc => doc};
   const invalid = message => report({code: 'invalid-document-provenance', path: '', message: `${message} Ordinary import keeps the values observed in the PPTX.`});
   let document;
   try {
     const found = readTag(entries, presentationRoot?.['p:custDataLst'], presentationRels, DOCUMENT_TAG);
     if (found.missing) {
       if (found.unreadable) invalid('Presentation customer data could not be read.');
-      return {slides: slides.map(() => ({structure: 'untagged'}))};
+      return untagged;
     }
     document = validateDocument(found.value);
-  } catch (error) { invalid(`${error.message}`); return {slides: slides.map(() => ({structure: 'untagged'}))}; }
+  } catch (error) { invalid(`${error.message}`); return untagged; }
 
   const slideRecords = slides.map(({root, relationships: rels, path}, index) => {
     try {
@@ -427,13 +628,39 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
     }
   });
 
+  // Stored assets resolve against current media parts; a missing part leaves the asset unavailable.
+  const storedAssets = {};
+  for (const [id, asset] of Object.entries(object(document.assets) ? document.assets : {})) {
+    const {value, unresolved} = resolveMedia(asset, entries);
+    if (!unresolved) storedAssets[id] = value;
+  }
+  const available = id => own(imported.assets, id) || Object.hasOwn(storedAssets, id);
+  const groups = [];
+  const changed = (path, message) => report({code: 'design-reference-changed', path, message});
+  // A value is restorable only when its media and asset references resolve.
+  const restorable = (field, value, {prune = false} = {}) => {
+    const {value: resolved, unresolved} = resolveMedia(value, entries);
+    if (unresolved) { report({code: 'unresolved-asset-reference', path: field, message: `${field} refers to a picture that is no longer in the PPTX, so it was not restored; the imported document keeps the values observed in the PPTX.`}); return undefined; }
+    const missing = [...new Set(assetReferences(resolved).filter(id => !available(id)))];
+    if (!missing.length) return resolved;
+    if (!prune) { report({code: 'unresolved-asset-reference', path: field, message: `${field} refers to asset '${missing[0]}', which the PPTX no longer provides, so it was not restored; the imported document keeps the values observed in the PPTX.`}); return undefined; }
+    const removed = [];
+    const pruned = pruneDangling(resolved, id => !available(id), field, removed);
+    for (const path of removed) report({code: 'unresolved-asset-reference', path, message: `${path} refers to an asset the PPTX no longer provides and was left out of the restored ${field}.`});
+    return pruned;
+  };
+  const group = (field, ops) => groups.push({field, ops});
+  const set = (path, value) => ({path, value});
+  const remove = path => ({path, remove: true});
+
+  const notStored = path => report({code: 'document-provenance-omitted', path, message: `${path} was stated in the source document but not stored at export, so the imported document keeps the values observed in the PPTX.`});
+  for (const path of array(document.omitted)) notStored(path);
+  for (const [index, entry] of slideRecords.entries()) for (const path of array(entry?.record.omitted)) notStored(`slides.${index}.${path}`);
+
   const native = nativeDocument(entries, presentationRoot, presentationRels);
   const stored = document.native;
   const match = {colors: same(stored.colors, native.colors) && native.colors !== null, fonts: same(stored.fonts, native.fonts) && native.fonts !== null, size: same(stored.size, native.size)};
-  const design = {...(imported.design ?? {})};
-  const changed = (path, message) => report({code: 'design-reference-changed', path, message});
   const storedDesign = document.design ?? {};
-
   const gates = {
     theme: [match.colors && match.fonts, () => `The PPTX theme colors or fonts changed since export (${[match.colors ? '' : changedSlots(stored.colors, native.colors), match.fonts ? '' : `${changedSlots(stored.fonts, native.fonts)} font`].filter(Boolean).join('; ')}).`],
     colorScheme: [match.colors, () => `The PPTX theme colors changed since export (${changedSlots(stored.colors, native.colors)}).`],
@@ -442,16 +669,23 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
   };
   const restoredStyle = {};
   for (const key of ['theme', 'colorScheme', 'fontScheme', 'dimensions']) {
-    if (storedDesign[key] === undefined) continue;
     const [ok, why] = gates[key];
-    if (ok) { design[key] = clone(storedDesign[key]); restoredStyle[key] = true; }
-    else { restoredStyle[key] = false; changed(`design.${key}`, `${why()} design.${key} ${label(storedDesign[key])} was not restored; the imported document keeps the values observed in the PPTX.`); }
+    // Keys FF-24 recovers that the source never stated (a theme-only deck
+    // gains its colorScheme) are left as observed; see docs/document-roundtrip.md.
+    if (storedDesign[key] === undefined) continue;
+    if (!ok) { restoredStyle[key] = false; changed(`design.${key}`, `${why()} design.${key} ${label(storedDesign[key])} was not restored; the imported document keeps the values observed in the PPTX.`); continue; }
+    const value = restorable(`design.${key}`, storedDesign[key]);
+    if (value === undefined) { restoredStyle[key] = false; continue; }
+    restoredStyle[key] = true;
+    group(`design.${key}`, [set(['design', key], value)]);
   }
   const styleIntact = STYLE_REFERENCES.every(key => restoredStyle[key] !== false);
 
   // Slide-level references.
   const layouts = [];
   const seenIds = new Set();
+  const storedLayouts = document.catalogs?.layouts;
+  const layoutRecords = array(Array.isArray(storedLayouts) ? storedLayouts : storedLayouts?.records);
   let allStructure = slideRecords.length === document.slides && slideRecords.every(Boolean);
   const backgroundInheritors = [];
   for (const [index, slide] of imported.slides.entries()) {
@@ -460,75 +694,82 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
     const {record, native: observed} = entry;
     const structureMatch = record.native.structure === observed.structure;
     if (!structureMatch) allStructure = false;
-    layouts.push({layout: typeof record.layout === 'string' ? record.layout : undefined, structure: structureMatch ? 'match' : 'changed'});
+    const {native: _native, ...recordValue} = record;
+    const layout = typeof record.layout === 'string' ? record.layout : undefined;
+    layouts.push({layout, structure: structureMatch ? 'match' : 'changed', record: clone(recordValue),
+      ...(layout && layoutRecords.some(item => item?.id === layout) ? {catalogRecord: clone(layoutRecords.find(item => item?.id === layout))} : {})});
+    const at = (...path) => ['slides', index, ...path];
     if (record.id !== undefined) {
       if (seenIds.has(record.id)) report({code: 'duplicate-slide-id', path: `slides.${index}.id`, message: `Slide id '${record.id}' appears on more than one slide (a duplicated slide); the first keeps it.`});
-      else { seenIds.add(record.id); slide.id = clone(record.id); }
+      else { seenIds.add(record.id); group(`slides.${index}.id`, [set(at('id'), clone(record.id))]); }
     }
-    if (record.beat !== undefined) slide.beat = clone(record.beat);
+    if (record.beat !== undefined) group(`slides.${index}.beat`, [set(at('beat'), clone(record.beat))]);
     for (const key of SLIDE_STRUCTURE) {
       if (record[key] === undefined) continue;
-      if (structureMatch) slide[key] = clone(record[key]);
+      if (structureMatch) group(`slides.${index}.${key}`, [set(at(key), clone(record[key]))]);
       else report({code: key === 'layout' ? 'layout-reference-changed' : 'slide-reference-changed', path: `slides.${index}.${key}`,
         message: `The slide's objects were moved, resized, added or removed since export, so slides.${index}.${key} ${label(record[key])} was not restored; the imported slide keeps its observed arrangement.`});
     }
-    const slideDesign = {...(slide.design ?? {})};
     const recordDesign = record.design ?? {};
     for (const key of COMPOSITION_HINTS) {
       if (recordDesign[key] === undefined) continue;
-      if (structureMatch) slideDesign[key] = clone(recordDesign[key]);
+      if (structureMatch) group(`slides.${index}.design.${key}`, [set(at('design', key), clone(recordDesign[key]))]);
       else changed(`slides.${index}.design.${key}`, `The slide's objects changed since export, so slides.${index}.design.${key} was not restored.`);
     }
     const styleMatch = record.native.style === observed.style;
     for (const key of STYLE_REFERENCES) {
       if (recordDesign[key] === undefined) continue;
-      if (styleMatch) slideDesign[key] = clone(recordDesign[key]);
-      else changed(`slides.${index}.design.${key}`, `The slide's fonts or colors changed since export, so slides.${index}.design.${key} ${label(recordDesign[key])} was not restored; the slide keeps its observed formatting.`);
+      if (!styleMatch) { changed(`slides.${index}.design.${key}`, `The slide's fonts or colors changed since export, so slides.${index}.design.${key} ${label(recordDesign[key])} was not restored; the slide keeps its observed formatting.`); continue; }
+      const value = restorable(`slides.${index}.design.${key}`, recordDesign[key]);
+      if (value !== undefined) group(`slides.${index}.design.${key}`, [set(at('design', key), value)]);
     }
     const backgroundMatch = record.native.background === observed.background;
     if (recordDesign.background !== undefined) {
-      if (backgroundMatch) slideDesign.background = clone(recordDesign.background);
-      else changed(`slides.${index}.design.background`, `The slide background changed since export, so slides.${index}.design.background ${label(recordDesign.background)} was not restored; the slide keeps its observed background.`);
-    } else backgroundInheritors.push({index, backgroundMatch, slideDesign});
-    slide.design = slideDesign;
+      if (!backgroundMatch) { changed(`slides.${index}.design.background`, `The slide background changed since export, so slides.${index}.design.background ${label(recordDesign.background)} was not restored; the slide keeps its observed background.`); continue; }
+      const value = restorable(`slides.${index}.design.background`, recordDesign.background);
+      if (value !== undefined) group(`slides.${index}.design.background`, [set(at('design', 'background'), value)]);
+    } else if (!array(record.omitted).includes('design.background')) backgroundInheritors.push({index, backgroundMatch});
   }
 
   // A deck background is evidenced by the slides that inherit it. It is kept
   // while at least one of them still shows it (edited slides keep a local
-  // override) or when every slide overrides it.
-  let deckBackground = storedDesign.background === undefined;
+  // override) or when every slide overrides it. Unchanged inheriting slides
+  // then drop the background import observed on them.
+  const backgroundOps = [];
+  let deckBackground = storedDesign.background === undefined && !array(document.omitted).includes('design.background');
   if (storedDesign.background !== undefined) {
-    if (!backgroundInheritors.length || backgroundInheritors.some(item => item.backgroundMatch)) { design.background = clone(storedDesign.background); deckBackground = true; }
-    else changed('design.background', `Every slide that inherited the deck background now shows a different background, so design.background ${label(storedDesign.background)} was not restored; slides keep their observed backgrounds.`);
+    if (!backgroundInheritors.length || backgroundInheritors.some(item => item.backgroundMatch)) {
+      const value = restorable('design.background', storedDesign.background);
+      if (value !== undefined) { backgroundOps.push(set(['design', 'background'], value)); deckBackground = true; }
+    } else changed('design.background', `Every slide that inherited the deck background now shows a different background, so design.background ${label(storedDesign.background)} was not restored; slides keep their observed backgrounds.`);
   }
   if (deckBackground && styleIntact) {
-    for (const {index, backgroundMatch, slideDesign} of backgroundInheritors) {
-      if (backgroundMatch) delete slideDesign.background;
+    for (const {index, backgroundMatch} of backgroundInheritors) {
+      if (backgroundMatch) { if (imported.slides[index]?.design?.background !== undefined) backgroundOps.push(remove(['slides', index, 'design', 'background'])); }
       else if (storedDesign.background !== undefined) changed(`slides.${index}.design.background`, `This slide's background changed since export; it is kept as a slide background override instead of inheriting design.background.`);
     }
   }
-  for (const slide of imported.slides) if (object(slide.design) && !Object.keys(slide.design).length) delete slide.design;
+  if (backgroundOps.length) group('design.background', backgroundOps);
 
   for (const key of COMPOSITION_HINTS) {
     if (storedDesign[key] === undefined) continue;
-    if (allStructure) design[key] = clone(storedDesign[key]);
+    if (allStructure) group(`design.${key}`, [set(['design', key], clone(storedDesign[key]))]);
     else changed(`design.${key}`, `Slides were added, removed or rearranged since export, so the deck default design.${key} was not restored.`);
   }
-  if (Object.keys(design).length) imported.design = design;
 
-  // Authoring metadata has no native counterpart; current native text still
-  // wins for the organization name shown in furniture.
+  // Authoring metadata has no native counterpart. Fields read from native
+  // content (the furniture organization name, linked socials) win over their
+  // stored values; stored-only fields (logo, role ...) return.
   const metadata = document.metadata ?? {};
   for (const key of METADATA) {
     if (metadata[key] === undefined) continue;
-    let value = clone(metadata[key]);
     if (key === 'organization' && organizationConflict) {
       report({code: 'metadata-reference-changed', path: 'organization', message: 'Slides now show different organization names in their furniture, so the stored organization was not restored; each slide keeps its visible text.'});
       continue;
     }
+    let value = restorable(key, metadata[key], {prune: true});
+    if (value === undefined) continue;
     if (key === 'organization' && object(imported.organization)) {
-      // Fields read from native content (furniture name, linked socials) win
-      // over their stored values; stored-only fields (logo, role ...) return.
       const observed = imported.organization;
       const list = array(value);
       const index = list.findIndex(item => object(item) && item.id === observed.id);
@@ -536,23 +777,59 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
       else if (Array.isArray(value)) value[index] = {...list[index], ...clone(observed)};
       else value = {...value, ...clone(observed)};
     }
-    imported[key] = value;
+    group(key, [set([key], value)]);
   }
-  if (object(document.assets)) {
-    const assets = {...(object(imported.assets) ? imported.assets : {})};
-    for (const [id, asset] of Object.entries(document.assets)) if (!Object.hasOwn(assets, id)) assets[id] = clone(asset);
-    if (Object.keys(assets).length) imported.assets = assets;
-  }
-  if (object(document.catalogs)) {
-    const {catalogs: _ignored, ...rest} = imported;
-    const referenced = collectStrings(rest);
-    let pruned = pruneCatalogs(document.catalogs, referenced);
-    for (let pass = 0; pass < 3 && pruned; pass += 1) {
-      const next = pruneCatalogs(document.catalogs, new Set([...referenced, ...catalogReferences(pruned)]));
-      if (same(next, pruned)) break;
-      pruned = next;
+
+  // Assets and inline catalog records follow what the restored document references.
+  const finalize = doc => {
+    const needed = [...new Set(assetReferences(doc))].filter(id => !own(doc.assets, id) && Object.hasOwn(storedAssets, id));
+    if (needed.length) doc.assets = {...(object(doc.assets) ? doc.assets : {}), ...Object.fromEntries(needed.map(id => [id, clone(storedAssets[id])]))};
+    if (object(document.catalogs)) {
+      const {catalogs: _ignored, ...rest} = doc;
+      const {value, unresolved} = resolveMedia(referencedCatalogs(document.catalogs, collectStrings(rest)), entries);
+      if (value && !unresolved) doc.catalogs = value;
     }
-    if (pruned) imported.catalogs = clone(pruned);
+    return doc;
+  };
+  return {groups, slides: layouts, finalize};
+}
+
+function applyOp(doc, {path, value, remove: removing}) {
+  let holder = doc;
+  for (const key of path.slice(0, -1)) {
+    if (!object(holder[key]) && !Array.isArray(holder[key])) { if (removing) return; holder[key] = {}; }
+    holder = holder[key];
   }
-  return {slides: layouts};
+  const last = path.at(-1);
+  if (removing) delete holder[last]; else holder[last] = clone(value);
+}
+
+function tidy(doc) {
+  for (const slide of doc.slides ?? []) if (object(slide.design) && !Object.keys(slide.design).length) delete slide.design;
+  if (object(doc.design) && !Object.keys(doc.design).length) delete doc.design;
+  return doc;
+}
+
+/**
+ * Apply restore groups to a copy of `imported`. When the combined result does
+ * not validate, groups are applied one at a time and only the groups that make
+ * the document invalid are left out, each with a diagnostic at its path.
+ */
+export function applyDocumentProvenance(imported, {groups, finalize}, validate, report) {
+  const build = accepted => {
+    const doc = structuredClone(imported);
+    for (const item of accepted) for (const op of item.ops) applyOp(doc, op);
+    return tidy(doc);
+  };
+  const all = finalize(build(groups));
+  if (validate(all).valid) return all;
+  const accepted = [];
+  for (const item of groups) {
+    if (validate(build([...accepted, item])).valid) accepted.push(item);
+    else report({code: 'invalid-document-provenance', path: item.field, message: `The stored ${item.field} does not form a valid document with the imported content, so it was not restored; the imported document keeps the values observed in the PPTX.`});
+  }
+  const result = finalize(build(accepted));
+  if (validate(result).valid) return result;
+  report({code: 'invalid-document-provenance', path: 'catalogs', message: 'Stored inline catalog records or assets do not validate with the imported document and were not restored.'});
+  return build(accepted);
 }

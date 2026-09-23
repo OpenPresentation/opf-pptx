@@ -38,6 +38,14 @@ export interface FontSchemeDiagnostic { code: "unresolved-font-scheme"; path: st
 export interface ToPptxOptions {
   /** Default compatible converts WebP to a static PNG. Preserve embeds original WebP bytes. */
   imageFormat?: "compatible" | "preserve";
+  /**
+   * OPF_DOCUMENT_V1 / OPF_SLIDE_V1 customer-data tags that let fromPptx restore
+   * catalog references, layout ids and authoring metadata (docs/document-roundtrip.md).
+   * Tags are not shown in PowerPoint's UI. Default "full"; "references-only"
+   * stores catalog references without organization, speaker, free text, slide ids
+   * or assets; false writes no tags.
+   */
+  provenance?: "full" | "references-only" | false;
   textMeasurement?: TextMeasurement;
   /** Match preview/pagination clearance around supplied vector text outlines; default 1. */
   textRasterPadding?: number;

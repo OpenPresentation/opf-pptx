@@ -2,14 +2,18 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
+import {XMLParser} from 'fast-xml-parser';
 import {toPptx, fromPptx} from '../dist/index.js';
+import {restoreDocumentProvenance} from '../dist/document-provenance.js';
 import {validatePresentation, catalogs} from '@openpresentation/opf';
 
 // FF-32: catalog references, slide layout ids and authoring metadata survive
 // export -> import while the native evidence they produced is unchanged, and a
 // specific diagnostic replaces a silent loss after an edit.
 const enc = new TextEncoder(), dec = new TextDecoder();
-const logo = `data:image/png;base64,${(await readFile(new URL('fixtures/images/wide.png', import.meta.url))).toString('base64')}`;
+const png = await readFile(new URL('fixtures/images/wide.png', import.meta.url));
+const pngUri = `data:image/png;base64,${png.toString('base64')}`;
+const logo = 'https://example.com/acme-logo.png';
 const layoutRecord = {...structuredClone(catalogs.layouts.find(record => record.id === 'title-subtitle')), id: 'hero-title', name: 'Hero Title'};
 const unused = {...structuredClone(layoutRecord), id: 'never-used'};
 const source = {
@@ -191,9 +195,21 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
     value.metadata.duration = -5;
     return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
   })));
-  assert.deepEqual(invalid.provenance.map(issue => issue.code), ['invalid-document-provenance']);
+  // Only the invalid field is dropped; every other restore still applies.
+  assert.deepEqual(invalid.provenance.map(issue => [issue.code, issue.path]), [['invalid-document-provenance', 'duration']]);
   assert.equal(invalid.deck.duration, undefined);
-  assert.equal(invalid.deck.slides[0].layout, undefined, 'An invalid record restores nothing.');
+  assert.equal(invalid.deck.narrative, 'problem-solution');
+  assert.deepEqual(invalid.deck.design, source.design);
+  assert.equal(invalid.deck.slides[0].layout, 'hero-title');
+  const invalidSlide = await read(modify(exported, entries => text(entries, 'ppt/tags/opfSlide1.xml', xml => {
+    const value = tagValue(xml);
+    value.layout = 42;
+    return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
+  })));
+  assert.deepEqual(invalidSlide.provenance.map(issue => [issue.code, issue.path]), [['invalid-document-provenance', 'slides.0.layout']]);
+  assert.equal(invalidSlide.deck.slides[0].layout, undefined);
+  assert.equal(invalidSlide.deck.slides[0].id, 'intro');
+  assert.equal(invalidSlide.deck.narrative, 'problem-solution');
 
   const unknown = await read(modify(exported, entries => text(entries, 'ppt/tags/opfDocument.xml', xml => {
     const value = tagValue(xml);
@@ -238,4 +254,115 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
   assert.equal(deck.tone, 'formal');
 }
 
-console.log('Document provenance passed: package shape, full reference/metadata/layout round trip and re-export, benign rewrites, theme color/font, size, arrangement and background edits with specific diagnostics, duplicated slides, stripped/damaged/invalid tags, shared furniture tag lists and oversized metadata.');
+// Asset-backed backgrounds: the tag references the exported media part instead
+// of copying the bytes, and the restored asset re-exports the same picture.
+{
+  const deck = {name: 'Asset background', assets: {bg: {src: pngUri, alt: 'Backdrop'}}, design: {fontScheme: 'arial', background: {type: 'image', image: {src: 'asset:bg'}}},
+    slides: [{layout: 'title-subtitle', title: 'One', subtitle: 'Two'}, {layout: 'title-subtitle', title: 'Three', subtitle: 'Four'}]};
+  const bytes = await toPptx(deck);
+  const entries = unzipSync(bytes);
+  const documentXml = dec.decode(entries['ppt/tags/opfDocument.xml']);
+  const stored = tagValue(documentXml);
+  assert.deepEqual(stored.design.background, deck.design.background);
+  assert.match(stored.assets.bg.src.$opfMedia, /^ppt\/media\/[^/]+$/);
+  assert.deepEqual(entries[stored.assets.bg.src.$opfMedia], new Uint8Array(png), 'The referenced media part holds the asset bytes.');
+  assert.ok(!JSON.stringify(stored).includes(png.toString('base64').slice(0, 40)), 'No embedded bytes in the tag.');
+  assert.ok(documentXml.length < 8192);
+  const {deck: imported, provenance} = await read(bytes);
+  assert.deepEqual(provenance, []);
+  assert.deepEqual(imported.design.background, deck.design.background);
+  assert.deepEqual(imported.assets, {bg: {src: pngUri, alt: 'Backdrop'}});
+  assert.deepEqual(imported.slides.map(slide => slide.design), [undefined, undefined]);
+  const again = unzipSync(await toPptx(imported));
+  assert.match(dec.decode(again['ppt/slides/slide1.xml']), /<p:bg><p:bgPr><a:blipFill/, 'Re-export keeps the picture background.');
+  // A media reference that no longer resolves never restores a bare asset reference.
+  const broken = await read(modify(bytes, parts => text(parts, 'ppt/tags/opfDocument.xml', xml => {
+    const value = tagValue(xml);
+    value.assets.bg.src.$opfMedia = 'ppt/media/missing.png';
+    return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
+  })));
+  assert.deepEqual(broken.provenance.map(issue => [issue.code, issue.path]), [['unresolved-asset-reference', 'design.background']]);
+  assert.equal(broken.deck.design.background, undefined);
+  assert.equal(broken.deck.assets, undefined);
+  assert.equal(broken.deck.slides[0].design.background.type, 'image', 'The observed native picture stays.');
+  assert.match(dec.decode(unzipSync(await toPptx(broken.deck))['ppt/slides/slide1.xml']), /<p:bg><p:bgPr><a:blipFill/, 'Re-export is not a white slide.');
+  // An embedded source that is not an exported media part is never copied into a tag.
+  const report = [];
+  const unused = await toPptx({name: 'Logo', organization: {id: 'acme', name: 'Acme', logo: 'asset:logo'}, assets: {logo: pngUri}, tone: 'formal', slides: [{title: 'One'}]}, {onDiagnostic: issue => report.push(issue)});
+  assert.deepEqual(report.filter(issue => issue.code === 'document-provenance-omitted').map(issue => issue.path), ['assets.logo']);
+  const logoImport = await read(unused);
+  assert.deepEqual(logoImport.deck.organization, {id: 'acme', name: 'Acme'}, 'The dangling logo reference is left out.');
+  assert.deepEqual(logoImport.provenance.map(issue => [issue.code, issue.path]), [['document-provenance-omitted', 'assets.logo'], ['unresolved-asset-reference', 'organization.logo']]);
+  assert.equal(logoImport.deck.tone, 'formal');
+}
+
+// Size limits: oversized design and slide values are reported and recorded as
+// omitted; import then keeps observed values instead of treating them as unstated.
+{
+  const issues = [];
+  const bytes = await toPptx({name: 'Sizes', design: {fontScheme: 'arial', colorScheme: {id: 'boost', name: 'x'.repeat(300 * 1024)}},
+    slides: [{layout: 'title-subtitle', beat: ['y'.repeat(300 * 1024)], title: 'One', subtitle: 'Two'}]}, {onDiagnostic: issue => issues.push(issue)});
+  assert.deepEqual(issues.filter(issue => issue.code === 'document-provenance-omitted').map(issue => issue.path), ['design.colorScheme', 'slides.0.beat']);
+  const entries = unzipSync(bytes);
+  assert.deepEqual(tagValue(dec.decode(entries['ppt/tags/opfDocument.xml'])).omitted, ['design.colorScheme']);
+  assert.deepEqual(tagValue(dec.decode(entries['ppt/tags/opfSlide1.xml'])).omitted, ['beat']);
+  const {deck, provenance} = await read(bytes);
+  assert.deepEqual(provenance.map(issue => [issue.code, issue.path]), [['document-provenance-omitted', 'design.colorScheme'], ['document-provenance-omitted', 'slides.0.beat']]);
+  assert.equal(deck.design.fontScheme, 'arial');
+  assert.equal(deck.slides[0].layout, 'title-subtitle');
+  // Many referenced assets would exceed the import limit: they are shed with a warning, never silently.
+  const many = Object.fromEntries(Array.from({length: 48}, (_, index) => [`a${index}`, `https://example.com/${'z'.repeat(200 * 1024)}/${index}.png`]));
+  const shedIssues = [];
+  const shed = await toPptx({name: 'Many', tags: Object.keys(many).map(id => `asset:${id}`), assets: many, slides: [{title: 'One'}]}, {onDiagnostic: issue => shedIssues.push(issue)});
+  assert.deepEqual(shedIssues.filter(issue => issue.code === 'document-provenance-omitted').map(issue => issue.path), ['assets']);
+  assert.equal(tagValue(dec.decode(unzipSync(shed)['ppt/tags/opfDocument.xml'])).metadata.tags.length, 48);
+  const shedImport = await read(shed);
+  assert.deepEqual(shedImport.deck.tags, [], 'Every tag referred to an unavailable asset and was pruned.');
+}
+
+// Provenance modes: false writes nothing; 'references-only' keeps catalog references and no personal metadata.
+{
+  const none = unzipSync(await toPptx(structuredClone(source), {provenance: false}));
+  assert.equal(Object.keys(none).some(path => /opfDocument|opfSlide/.test(path)), false);
+  assert.doesNotMatch(dec.decode(none['ppt/presentation.xml']), /custDataLst/);
+  const refs = unzipSync(await toPptx({...structuredClone(source), audience: ['executives', 'Series B investors']}, {provenance: 'references-only'}));
+  const document = tagValue(dec.decode(refs['ppt/tags/opfDocument.xml']));
+  assert.deepEqual(document.design, source.design);
+  assert.deepEqual(document.metadata, {narrative: 'problem-solution', tone: 'formal', purpose: 'decide', language: 'japanese'});
+  assert.equal(document.assets, undefined);
+  assert.deepEqual(document.catalogs.layouts.records.map(record => record.id), ['hero-title']);
+  const slide = tagValue(dec.decode(refs['ppt/tags/opfSlide1.xml']));
+  assert.deepEqual({id: slide.id, beat: slide.beat, layout: slide.layout}, {id: undefined, beat: 'problem', layout: 'hero-title'});
+  for (const secret of ['Alice', 'Acme', 'Ship it', 'Series B']) assert.ok(!JSON.stringify([document, slide]).includes(secret), secret);
+  const imageOnly = unzipSync(await toPptx({slides: [{title: 'One', layout: 'title', design: {background: {type: 'image', image: {src: pngUri}}}}]}, {provenance: 'references-only'}));
+  assert.equal(tagValue(dec.decode(imageOnly['ppt/tags/opfSlide1.xml'])).design, undefined, 'references-only stores no image sources');
+  await assert.rejects(toPptx(structuredClone(source), {provenance: 'everything'}), {code: 'invalid-provenance-option'});
+}
+
+// Per-slide layout contract for layout-structure recovery (FF-29).
+{
+  const entries = unzipSync(exported);
+  const xmlParser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false});
+  const rels = part => {
+    const map = new Map(), base = part.slice(0, part.lastIndexOf('/') + 1);
+    for (const rel of [xmlParser.parse(dec.decode(entries[`${base}_rels/${part.slice(base.length)}.rels`])).Relationships.Relationship].flat()) {
+      const path = rel.Target.startsWith('../') ? `ppt/${rel.Target.slice(3)}` : base + rel.Target;
+      map.set(rel.Id, {type: rel.Type, targetMode: rel.TargetMode ?? 'Internal', path});
+    }
+    return map;
+  };
+  const presentationRoot = xmlParser.parse(dec.decode(entries['ppt/presentation.xml']))['p:presentation'];
+  const paths = [1, 2, 3].map(index => `ppt/slides/slide${index}.xml`);
+  const slides = paths.map(path => ({path, root: xmlParser.parse(dec.decode(entries[path]))['p:sld'], relationships: rels(path)}));
+  const imported = {name: 'x', slides: [{}, {}, {}]};
+  const before = structuredClone(imported);
+  const result = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels: rels('ppt/presentation.xml'), slides}, () => {});
+  assert.deepEqual(imported, before, 'Reading provenance does not modify the document.');
+  assert.deepEqual(result.slides.map(slide => [slide.layout, slide.structure]), [['hero-title', 'match'], ['title-subtitle', 'match'], ['title-subtitle', 'match']]);
+  assert.deepEqual(result.slides[0].record.design, {titleAlignment: 'center', contentBox: false});
+  assert.equal(result.slides[0].record.native, undefined);
+  assert.deepEqual(result.slides[0].catalogRecord, layoutRecord);
+  assert.equal(result.slides[1].catalogRecord, undefined, 'Bundled layouts need no stored record.');
+}
+
+console.log('Document provenance passed: package shape, full reference/metadata/layout round trip and re-export, benign rewrites, theme color/font, size, arrangement and background edits with specific diagnostics, duplicated slides, stripped/damaged/invalid tags and per-field fallback, shared furniture tag lists, asset-backed backgrounds via media parts, size limits and omitted-field records, provenance modes and the per-slide layout contract.');
