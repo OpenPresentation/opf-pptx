@@ -4,6 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {unzipSync} from 'fflate';
 import {XMLParser, XMLValidator} from 'fast-xml-parser';
+import {auditHarnessSourcePolicy, scanPowerShellSource, stripPowerShellLiteralsForScan} from './powershell-scan.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -25,27 +26,34 @@ const FONT_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006
 const FONT_CONTENT_TYPES = new Set(['application/x-fontdata', 'application/vnd.openxmlformats-officedocument.obfuscatedFont']);
 const FONT_STYLES = Object.freeze(['p:regular', 'p:bold', 'p:italic', 'p:boldItalic']);
 
-export function stripPowerShellLiteralsForScan(sourceText) {
-  return sourceText.replace(/'(?:''|[^'])*'/g, "''").replace(/"(?:`"|[^"])*"/g, '""').replace(/#.*$/gm, '');
-}
+export {scanPowerShellSource, stripPowerShellLiteralsForScan};
 
+// Any member invocation named Quit in code (not in a comment or string literal): $app.Quit(), ${app}.Quit(),
+// $x.Application.Quit(), $apps[0].Quit(). The pure regression's AST policy remains the authoritative PowerShell check.
 export function hasOfficeQuitInvocation(sourceText) {
-  const code = stripPowerShellLiteralsForScan(sourceText);
-  return /(?:\$[\w]+\.Quit|\.Application\.Quit)\s*\(/i.test(code);
+  return /\.\s*Quit\s*\(/i.test(stripPowerShellLiteralsForScan(sourceText));
 }
 
-const OWNED_EMBED_SAVE_OFF = /\.SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/;
+// Member assignments the embed worker may make: local report/evidence roots, plus the documented COM setters
+// (the edit's Text and whole-range/run Font2 Name, Size, Bold, Italic, and Saved on the discard-without-save path).
+export const EMBED_LOCAL_ASSIGNMENT_ROOTS = Object.freeze(['report', 'seen', 'inventory', 'wrongGeneration']);
+export const EMBED_COM_SETTERS = Object.freeze(['Range.Text', 'wholeFont.Name', 'wholeFont.Size', 'wholeFont.Bold', 'wholeFont.Italic', 'runFont.Name', 'runFont.Size', 'runFont.Bold', 'runFont.Italic', 'presentation.Saved']);
+// The only dynamic code allowed: the pure regression re-evaluating its own two extracted function definitions.
+export const EMBED_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-FontEmbedPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text'])});
+
+const OWNED_EMBED_SAVE_OFF =/\.SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/;
 const OWNED_EMBED_SAVE_ON = /\.SaveAs\(\$savedPath,\s*24\s*,\s*(?:\(-1\)|-1)\s*\)/;
 
 export function auditEmbedVerifierSource(sourceText, {label = 'native-font-embed.ps1'} = {}) {
-  const failures = [];
+  const scan = scanPowerShellSource(sourceText);
+  const failures = auditHarnessSourcePolicy(sourceText, {label, localRoots: EMBED_LOCAL_ASSIGNMENT_ROOTS, comSetters: EMBED_COM_SETTERS, ...EMBED_PURE_REGRESSION_EXEMPTION});
   if (OWNED_EMBED_SAVE_OFF.test(sourceText)) failures.push({code: 'embed-forced-off', message: `${label} must not call SaveAs with EmbedFonts 0`});
   if (!OWNED_EMBED_SAVE_ON.test(sourceText)) failures.push({code: 'embed-not-requested', message: `${label} must call SaveAs with EmbedFonts -1 on the owned presentation`});
   if (hasOfficeQuitInvocation(sourceText)) failures.push({code: 'application-quit', message: `${label} must not call Application.Quit or .Quit()`});
   for (const required of ['nativeFontsGate', 'blockedByNativeFontsGate', 'edited.presentation.native-fonts-gate']) {
     if (!sourceText.includes(required)) failures.push({code: 'missing-native-font-gate', message: `${label} lacks ${required}`});
   }
-  const gateInputs = [...stripPowerShellLiteralsForScan(sourceText).matchAll(/Get-FontEmbedNativeFontsGate\s+(\$[\w:.]+)/g)].map(match => match[1]);
+  const gateInputs = [...scan.code.matchAll(/Get-FontEmbedNativeFontsGate\s+(\$[\w:.]+)/g)].map(match => match[1]);
   if (JSON.stringify(gateInputs) !== JSON.stringify(['$report.nativeFontsObservation'])) failures.push({code: 'native-font-gate-input', message: `${label} must gate SaveAs on exactly one post-edit $report.nativeFontsObservation; found ${gateInputs.join(', ') || 'none'}`});
   for (const required of ['preEditFontsObservation', 'postTextFontsObservations', 'postFormatFontsObservations', 'fontSlotObservations', 'Get-FontEmbedFontsInventory', 'Get-FontEmbedRangeSnapshot', 'Get-FontEmbedFontSlotObservations']) {
     if (!sourceText.includes(required)) failures.push({code: 'missing-diagnostic-observation', message: `${label} lacks ${required}`});
@@ -519,7 +527,7 @@ async function loadAndBindEvidence(root, {requirePptx}) {
   const registrations = await readRequired(root, 'font-registration.json', failures, rawHashes);
   const generation = await readRequired(root, 'inputs/generation.json', failures, rawHashes);
   const stages = await readRequired(root, 'stages.jsonl', failures, rawHashes, bytes => {
-    const text = Buffer.from(bytes).toString('utf8').replace(/^﻿/, '').trim();
+    const text = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '').trim();
     return text ? text.split(/\r?\n/).map(line => JSON.parse(line)) : [];
   });
   for (const [name, value] of Object.entries({request, report, supervisor, worker, progress, generation})) need(value !== null && typeof value === 'object' && !Array.isArray(value), 'evidence-object', `${name}.json must contain a JSON object`);

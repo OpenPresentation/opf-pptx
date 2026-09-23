@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {PERMITTED_CARLITO_FIXTURE, PERMITTED_CARLITO_FIXTURE_FILES, PERMITTED_CARLITO_LICENSE_SHA256} from './native-font-embed-audit.mjs';
-import {ALLOWED_COM_MEMBERS, ALLOWED_INSTANCE_MEMBERS, ALLOWED_STATIC_MEMBERS, analyzeFailureCleanup, auditEvidenceDirectory, auditInventoryVerifierSource, computeFontLedger, expectedInventoryStages, INVENTORY_BOUNDS, invokedMembers} from './native-font-inventory-audit.mjs';
+import {ALLOWED_COM_MEMBERS, ALLOWED_INSTANCE_MEMBERS, ALLOWED_STATIC_MEMBERS, analyzeFailureCleanup, AUDIT_SCHEMA_VERSION, auditEvidenceDirectory, auditInventoryVerifierSource, computeFontLedger, emptyNameFontFindings, expectedInventoryStages, INVENTORY_ASSIGNMENT_ROOTS, INVENTORY_BOUNDS, invokedMembers, PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256} from './native-font-inventory-audit.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +48,27 @@ const policyNegatives = [
 for (const [name, text, code] of policyNegatives) assert.ok(auditInventoryVerifierSource(text).some(item => item.code === code), name);
 assert.deepEqual(auditInventoryVerifierSource(verifierSource + "\n# $app.Quit() and .SaveAs( in a comment\n$note='SaveAs( and .Quit() in a string'\n"), []);
 record('verifier-read-only-source-policy');
+
+// The inventory worker has no COM setter: every member assignment must target a local report root, and dynamic code is
+// forbidden outright (it has no pure-regression re-evaluation).
+{
+  assert.deepEqual(INVENTORY_ASSIGNMENT_ROOTS, ['report', 'slideRecord', 'shapeRecord', 'seen', 'wrongGeneration', 'sample', 'sampleRows', 'policyRejected', 'errorCloseOutcomes']);
+  const policyCodes = text => new Set(auditInventoryVerifierSource(text).map(item => item.code));
+  for (const [name, line] of [
+    ['shape-name', "$shape.Name='edited'"], ['font-name', "$font.Name='Aptos'"], ['saved-flag', '$script:presentation.Saved=-1'],
+    ['application-visible', '$app.Visible=0'], ['chained', "$script:presentation.Slides.Item(1).Shapes.Item(1).Name='x'"],
+    ['prefix-increment', '++$shape.Top'], ['compound', '$shape.Top -= 1'], ['pipeline-variable', "$shapes | ForEach-Object { $_.Name='x' }"],
+    ['comment-then-assignment', "# it's the presentation's font\n$font.Name='Aptos'"],
+  ]) assert.ok(policyCodes(`${verifierSource}\n${line}\n`).has('com-property-assignment'), name);
+  for (const [name, line] of [
+    ['invoke-expression', 'Invoke-Expression $x'], ['iex', 'iex $x'], ['qualified', 'Microsoft.PowerShell.Utility\\Invoke-Expression $x'],
+    ['string-named', "& 'iex' $x"], ['add-type', 'Add-Type -TypeDefinition $x'], ['string-named-member', "$null=$app.'Quit'()"],
+  ]) assert.ok(policyCodes(`${verifierSource}\n${line}\n`).has('dynamic-code'), name);
+  for (const [name, line] of [['comment', "# $shape.Name='x'; iex $x"], ['string', "$note='Invoke-Expression and $font.Name=1'"], ['local-root', '$report.extra=1']]) {
+    assert.deepEqual(auditInventoryVerifierSource(`${verifierSource}\n${line}\n`), [], name);
+  }
+}
+record('verifier-node-com-assignment-and-dynamic-code-policy');
 
 const ps = path.join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 if (process.platform === 'win32') {
@@ -294,6 +315,47 @@ try {
     const missingDir = spawnSync(node, [auditCli, path.join(scratch, 'missing')], spawnOptions);
     assert.notEqual(missingDir.status, 0); assert.match(missingDir.stderr, /does not exist/);
     record('cli-exclusive-create-audit');
+
+    // --reaudit-v2 writes audit-v2.json beside the existing audit.json, never overwriting either.
+    const reaudit = spawnSync(node, [auditCli, evidence, '--reaudit-v2'], spawnOptions);
+    assert.equal(reaudit.status, 0, reaudit.stderr || reaudit.stdout);
+    const v2 = JSON.parse(await readFile(path.join(evidence, 'audit-v2.json'), 'utf8'));
+    assert.equal(v2.passed, true); assert.equal(v2.schemaVersion, AUDIT_SCHEMA_VERSION); assert.equal(v2.mode, 'reaudit-v2'); assert.equal(v2.reviewedVerifierRevision, 'current');
+    assert.equal(v2.findings.ledger.emptyNameFontReported, false);
+    assert.equal(sha(await readFile(path.join(evidence, 'audit.json'))), sha(auditBytes));
+    const reauditAgain = spawnSync(node, [auditCli, evidence, '--reaudit-v2'], spawnOptions);
+    assert.notEqual(reauditAgain.status, 0); assert.match(reauditAgain.stderr, /Refusing to overwrite/);
+    const unknownFlag = spawnSync(node, [auditCli, evidence, '--reaudit-v3'], spawnOptions);
+    assert.notEqual(unknownFlag.status, 0); assert.match(unknownFlag.stderr, /Usage/);
+    record('cli-reaudit-v2-exclusive-create');
+  }
+
+  {
+    // A Presentation.Fonts entry with an empty Name (observed natively as {name:'',embedded:0,embeddable:0}) is a valid
+    // observation and a finding; the name ledgers omit it exactly as the worker's ledger does.
+    const empty = await auditEvidenceDirectory(await buildEvidence({fonts: ['Carlito', ''], mutate: state => { Object.assign(state.report.presentationFonts.entries[1], {embedded: 0, embeddable: 0}); }}));
+    assert.equal(empty.passed, true, JSON.stringify(empty.failures));
+    assert.equal(empty.findings.ledger.emptyNameFontReported, true);
+    assert.deepEqual(empty.findings.ledger.emptyNamePresentationFontIndexes, [2]);
+    assert.deepEqual(empty.findings.ledger.presentationFontNames, ['Carlito']);
+    assert.deepEqual(emptyNameFontFindings({presentationFonts: {entries: [{index: 1, name: 'Carlito'}]}}), {emptyNamePresentationFontIndexes: [], emptyNameFontReported: false});
+    const missingName = await auditEvidenceDirectory(await buildEvidence({fonts: ['Carlito', 'Aptos'], mutate: state => { state.report.presentationFonts.entries[1].name = null; }}));
+    assert.ok(codes(missingName).has('observation-font-entry'));
+    record('empty-name-font-entry-is-a-finding');
+  }
+
+  {
+    // Prior reviewed verifier revisions bind only when explicitly enabled (the CLI's --reaudit-v2), and only by hash.
+    assert.deepEqual(Object.values(PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256).sort(), ['ff-03-ef8a158-crlf', 'ff-03-ef8a158-lf']);
+    const evidence = await buildEvidence();
+    const newerRoot = path.join(scratch, 'newer-reviewed'); await mkdir(newerRoot);
+    await writeFile(path.join(newerRoot, 'native-font-inventory.ps1'), `${verifierSource}\n# a newer reviewed revision\n`);
+    for (const name of ['native-process.ps1', 'native-text-fonts.ps1']) await copyFile(path.join(root, name), path.join(newerRoot, name));
+    assert.ok(codes(await auditEvidenceDirectory(evidence, {reviewedRoot: newerRoot})).has('reviewed-verifier-binding'));
+    assert.ok(codes(await auditEvidenceDirectory(evidence, {reviewedRoot: newerRoot, priorReviewedVerifiers: true})).has('reviewed-verifier-binding'));
+    const prior = await auditEvidenceDirectory(evidence, {reviewedRoot: newerRoot, priorReviewedVerifiers: {[sha(await readFile(verifier))]: 'control-prior'}});
+    assert.equal(prior.passed, true, JSON.stringify(prior.failures)); assert.equal(prior.reviewedVerifierRevision, 'control-prior');
+    record('prior-reviewed-verifier-binding-is-explicit');
   }
 
   // Windows: drive the real parent and worker end to end against the offline
@@ -329,7 +391,7 @@ try {
       assert.deepEqual([...codes(result)], ['com-construction'], `${name}: ${JSON.stringify(result.failures)}`);
       assert.equal(result.findings.ledger.aptosReported, expectAptos, name);
       assert.equal(result.findings.failureCleanup.applicable, false, name);
-      if (variant === 'cloud') assert.equal(JSON.parse((await readFile(path.join(args[args.indexOf('-OutputDirectory') + 1], 'report.json'), 'utf8')).replace(/^﻿/, '')).preflightPresentationCount, 1);
+      if (variant === 'cloud') assert.equal(JSON.parse((await readFile(path.join(args[args.indexOf('-OutputDirectory') + 1], 'report.json'), 'utf8')).replace(/^\uFEFF/, '')).preflightPresentationCount, 1);
     }
     // Failures while the owned presentation is open: exactly one error close
     // only for a non-COM failure with the owned FullName; otherwise left open.
@@ -347,9 +409,9 @@ try {
       const cleanup = result.findings.failureCleanup;
       assert.equal(cleanup.applicable, true, name); assert.ok(cleanup.outcome.startsWith(outcome), `${name}: ${cleanup.outcome}`);
       assert.equal(cleanup.consistent, true, `${name}: ${JSON.stringify(cleanup.problems)}`); assert.equal(cleanup.closeInvocations, closeInvocations, name);
-      const report = JSON.parse((await readFile(path.join(out, 'report.json'), 'utf8')).replace(/^﻿/, ''));
+      const report = JSON.parse((await readFile(path.join(out, 'report.json'), 'utf8')).replace(/^\uFEFF/, ''));
       assert.equal(report.cleanupConfirmed, cleanupConfirmed, name); assert.equal(report.ownedCloseCount, closeInvocations, name);
-      const supervisor = JSON.parse((await readFile(path.join(out, 'supervisor.json'), 'utf8')).replace(/^﻿/, ''));
+      const supervisor = JSON.parse((await readFile(path.join(out, 'supervisor.json'), 'utf8')).replace(/^\uFEFF/, ''));
       assert.equal(supervisor.passed, false, name);
     }
     const refused = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', path.join(harness, 'native-font-inventory.ps1'), ...runs[1][1]], spawnOptions);

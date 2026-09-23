@@ -177,12 +177,20 @@ function Assert-FontEmbedVerifierAst([string]$Path) {
         if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ceq 'Quit') { throw 'Embed harness must not invoke .Quit() on an Office application' }
         if($member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $member.Value -ceq 'Kill') { throw 'Embed harness must not invoke .Kill(); only native-process.ps1 may stop its owned worker' }
     }
-    foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
-        if($command.GetCommandName() -in @('Stop-Process','taskkill','taskkill.exe')) { throw 'Embed harness must not stop processes directly' }
-    }
     $pureDefinitions=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-FontEmbedPureRegression'},$true))
     if($pureDefinitions.Count -ne 1) { throw 'Expected exactly one Invoke-FontEmbedPureRegression definition' }
     $pureStart=$pureDefinitions[0].Extent.StartOffset; $pureEnd=$pureDefinitions[0].Extent.EndOffset
+    # Dynamic code is forbidden everywhere except the pure regression's exact re-evaluation of its two extracted helpers.
+    $pureInvocations=@('Invoke-Expression $stageDefinition[0].Extent.Text','Invoke-Expression $comDefinition[0].Extent.Text')
+    foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        $commandName=$command.GetCommandName()
+        if($commandName -in @('Stop-Process','taskkill','taskkill.exe')) { throw 'Embed harness must not stop processes directly' }
+        $bareName=$(if($null -eq $commandName){$null}else{$commandName -replace '^.*\\',''})
+        if($bareName -in @('Invoke-Expression','iex','Add-Type')) {
+            $insidePure=($command.Extent.StartOffset -gt $pureStart -and $command.Extent.EndOffset -lt $pureEnd)
+            if(-not ($insidePure -and $commandName -ceq 'Invoke-Expression' -and $pureInvocations -ccontains $command.Extent.Text)) { throw "Embed harness must not run Invoke-Expression, iex or Add-Type ($commandName) outside the pure-regression helper re-evaluation" }
+        }
+    }
     $gateCalls=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Get-FontEmbedNativeFontsGate'},$true) | Where-Object {$_.Extent.StartOffset -lt $pureStart -or $_.Extent.EndOffset -gt $pureEnd})
     if($gateCalls.Count -ne 1 -or $gateCalls[0].Extent.Text -cne 'Get-FontEmbedNativeFontsGate $report.nativeFontsObservation') { throw 'The only worker native Fonts gate must evaluate the post-edit $report.nativeFontsObservation' }
     $embedOn=0; $embedOff=0

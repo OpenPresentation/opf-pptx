@@ -18,12 +18,16 @@ import {
   auditBlockedEvidenceDirectory,
   auditEvidenceDirectory,
   auditSavedEmbedPresentation,
+  EMBED_COM_SETTERS,
+  EMBED_LOCAL_ASSIGNMENT_ROOTS,
   hasOfficeQuitInvocation,
   inspectFontEmbeddingPackage,
   PERMITTED_CARLITO_FIXTURE,
   PERMITTED_CARLITO_FIXTURE_FILES,
   PERMITTED_CARLITO_LICENSE_SHA256,
   PERMITTED_NATIVE_FONT_NAMES,
+  scanPowerShellSource,
+  stripPowerShellLiteralsForScan,
 } from './native-font-embed-audit.mjs';
 import {applyMasterBulletFontTransform, carlitoOnlySource, carlitoOnlyTypefaceFailures, declaredFontsUsed, MASTER_BULLET_FONT_TRANSFORM, themeFontSlots, typefaceInventory} from './native-font-embed-fixture-source.mjs';
 
@@ -45,6 +49,24 @@ const record = name => outcomes.push({name, passed: true});
 const embedSource = await readFile(embedVerifier, 'utf8');
 assert.deepEqual(auditEmbedVerifierSource(embedSource), []);
 record('embed-verifier-requests-gated-embed');
+
+// Dynamic code outside the pure regression's exact re-evaluation of its two extracted helpers, checked by both the
+// PowerShell AST policy (Windows) and the Node source policy.
+const workerAnchor = 'function Get-FontEmbedSha256(';
+const pureAnchor = '        Invoke-Expression $comDefinition[0].Extent.Text';
+const withWorker = line => embedSource.replace(workerAnchor, `function Invoke-FontEmbedForbiddenDynamic($Text) { ${line} }\r\n${workerAnchor}`);
+const withPure = line => embedSource.replace(pureAnchor, `${pureAnchor}\r\n        ${line}`);
+const dynamicCodeNegatives = [
+  ['worker-invoke-expression', withWorker('Invoke-Expression $Text')],
+  ['worker-iex', withWorker('iex $Text')],
+  ['worker-qualified-invoke-expression', withWorker('Microsoft.PowerShell.Utility\\Invoke-Expression $Text')],
+  ['worker-string-named-iex', withWorker("& 'iex' $Text")],
+  ['worker-add-type', withWorker('Add-Type -TypeDefinition $Text')],
+  ['pure-other-argument', withPure('Invoke-Expression $script:payload')],
+  ['pure-iex-alias', withPure('iex $stageDefinition[0].Extent.Text')],
+  ['pure-add-type', withPure('Add-Type -TypeDefinition $script:payload')],
+];
+assert.ok(embedSource.includes(workerAnchor) && embedSource.includes(pureAnchor));
 
 const editSource = await readFile(editVerifier, 'utf8');
 assert.match(editSource, /SaveAs\(\$savedPath,\s*24\s*,\s*0\s*\)/, 'Gate E native-font-edit must keep EmbedFonts 0.');
@@ -71,6 +93,7 @@ if (process.platform === 'win32') {
       ['gate-on-pre-edit', embedSource.replace('$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation', '$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.preEditFontsObservation'), /post-edit \$report\.nativeFontsObservation/],
       ['kill', embedSource.replace('function Get-FontEmbedSha256(', 'function Invoke-FontEmbedForbiddenKill($Target) { $Target.Kill() }\r\nfunction Get-FontEmbedSha256('), /must not invoke \.Kill/],
       ['stop-process', embedSource.replace('function Get-FontEmbedSha256(', 'function Invoke-FontEmbedForbiddenStop($Target) { Stop-Process -Id $Target }\r\nfunction Get-FontEmbedSha256('), /must not stop processes/],
+      ...dynamicCodeNegatives.map(([name, text]) => [`dynamic-${name}`, text, /must not run Invoke-Expression, iex or Add-Type/]),
     ];
     for (const [name, text, message] of astNegatives) {
       assert.notEqual(text, embedSource, name);
@@ -87,6 +110,93 @@ assert.ok(auditEmbedVerifierSource('$script:presentation.SaveAs($savedPath,24,0)
 assert.equal(auditEmbedVerifierSource("throw 'Embed harness must not call Application.Quit'").filter(item => item.code === 'application-quit').length, 0);
 assert.ok(hasOfficeQuitInvocation('$app.Quit()'));
 record('source-policy-negatives');
+
+// Node dynamic-code and member-assignment policy: the pure-regression exemption is exact, and the worker may assign only
+// local report roots and the documented COM setters (EMBED_COM_SETTERS).
+{
+  const codes = text => new Set(auditEmbedVerifierSource(text).map(item => item.code));
+  for (const [name, text] of dynamicCodeNegatives) assert.ok(codes(text).has('dynamic-code'), `node ${name}`);
+  assert.ok(codes(embedSource.replace(pureAnchor, `${pureAnchor}\r\n        $script:o=$app.'Quit'()`)).has('dynamic-code'), 'string-named member');
+  assert.ok(EMBED_COM_SETTERS.includes('wholeFont.Name') && EMBED_COM_SETTERS.includes('presentation.Saved') && !EMBED_LOCAL_ASSIGNMENT_ROOTS.includes('presentation'));
+  for (const [name, line] of [
+    ['application-visible', '$app.Visible=0'],
+    ['other-font-object', "$font.Name='Aptos'"],
+    ['nested-setter', '$wholeFont.Color.RGB=0'],
+    ['chained-com-property', "$script:presentation.Slides.Item(1).Shapes.Item(1).Name='x'"],
+    ['compound-assignment', '$shape.Top += 1'],
+    ['postfix-increment', '$shape.Top++'],
+    ['prefix-increment', '++$shape.Top'],
+    ['index-on-com', "$script:presentation.Tags['k']='v'"],
+    ['setter-method', '$script:presentation.set_Saved(0)'],
+    ['pipeline-variable', "$shapes | ForEach-Object { $_.Name='x' }"],
+  ]) assert.ok(codes(`${embedSource}\r\n${line}\r\n`).has('com-property-assignment'), `assignment ${name}`);
+  for (const [name, line] of [
+    ['comment', "# $app.Visible=0 and $font.Name='Aptos'"],
+    ['string', "$note='$app.Visible=0'"],
+    ['here-string', "$note=@'\r\n$font.Name='Aptos'\r\n'@"],
+    ['local-report', '$report.extra=1'],
+    ['documented-setter', '$runFont.Bold=0'],
+    ['comparison', 'if($font.Name -eq $x) { }'],
+  ]) assert.deepEqual(auditEmbedVerifierSource(`${embedSource}\r\n${line}\r\n`), [], `allowed ${name}`);
+}
+record('source-policy-dynamic-code-and-com-assignments');
+
+// Source-policy lexer: comments, every string form, and here-strings are blanked in one left-to-right pass, so an
+// apostrophe in a comment can neither hide a following Quit call (fail open) nor invent a gate-input mismatch (fail closed).
+{
+  const codes = text => new Set(auditEmbedVerifierSource(text).map(item => item.code));
+  const quitCases = [
+    ['apostrophe-in-line-comment', "# it's the presentation's owner\r\n$app.Quit()\r\n$x = 'y'", true],
+    ['apostrophe-in-double-quoted-string', '$msg = "it\'s done"\n$app.Quit()\n$y = \'z\'', true],
+    ['block-comment-with-quotes', '<# it\'s "quoted" and \'single\' #>\n$app.Quit()', true],
+    ['quit-inside-block-comment', "<#\n$app.Quit()\nit's #>\n$x = 1", false],
+    ['single-here-string-with-quit', "$t = @'\n$app.Quit()\nit's\n'@\n$x = 1", false],
+    ['double-here-string-with-quit', '$t = @"\n$app.Quit() "quoted" it\'s\n"@\n$x = 1', false],
+    ['quit-after-here-string', "$t = @'\nit's\n'@\n$app.Quit()", true],
+    ['here-string-terminator-must-start-line', "$t = @'\n x '@ $app.Quit()\n'@\n$x = 1", false],
+    ['backtick-escaped-double-quote', '$m = "say `"hi`" it\'s"; $app.Quit()', true],
+    ['backtick-escaped-quote-stays-literal', '$m = "`"; $app.Quit(); `""', false],
+    ['doubled-double-quote', '$m = "a""b"; $app.Quit()', true],
+    ['doubled-single-quote', "$m = 'it''s'; $app.Quit()", true],
+    ['backtick-escaped-quote-in-code', "Write-Output `'; $app.Quit()", true],
+    ['typographic-quotes', '$m = \u2018 # \u2019; $app.Quit()', true],
+    ['subexpression-in-expandable-string', '$m = "$($app.Quit())"', true],
+    ['expandable-string-member-text', '$m = "$app.Quit()"', false],
+    ['braced-variable', "${app's}.Quit()", true],
+    ['application-quit-member', '$ppt.Application.Quit()', true],
+  ];
+  for (const [name, text, expected] of quitCases) {
+    assert.equal(hasOfficeQuitInvocation(text), expected, name);
+    const code = stripPowerShellLiteralsForScan(text);
+    assert.equal(code.length, text.length, `${name}: offsets preserved`);
+    assert.deepEqual([...code.matchAll(/\r?\n/g)].map(match => match.index), [...text.matchAll(/\r?\n/g)].map(match => match.index), `${name}: line breaks preserved`);
+    assert.deepEqual(scanPowerShellSource(text).issues, [], `${name}: fully modeled`);
+  }
+  // The reviewed verifier with an apostrophe comment near the gate still audits clean, and a hidden Quit is caught.
+  const gateLine = '$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation';
+  assert.ok(embedSource.includes(gateLine));
+  assert.deepEqual(auditEmbedVerifierSource(embedSource.replace(gateLine, `# gate the presentation's post-edit inventory\r\n    ${gateLine}`)), []);
+  assert.deepEqual(auditEmbedVerifierSource(embedSource.replace(gateLine, `${gateLine} # it's final`)), []);
+  const hiddenQuit = embedSource.replace(gateLine, `${gateLine}\r\n    # it's done\r\n    $app.Quit()`);
+  assert.notEqual(hiddenQuit, embedSource);
+  assert.ok(codes(hiddenQuit).has('application-quit'), 'An apostrophe comment must not hide a following $app.Quit()');
+  const hereStringGate = embedSource.replace(gateLine, `${gateLine}\r\n    $note=@'\r\nGet-FontEmbedNativeFontsGate $report.preEditFontsObservation\r\n'@`);
+  assert.deepEqual(auditEmbedVerifierSource(hereStringGate), []);
+  // Syntax the lexer does not model fails closed instead of being guessed.
+  for (const [name, text, kind] of [
+    ['glued-comment', "$x=1#it's\n$app.Quit()", 'ambiguous-comment-start'],
+    ['unterminated-single', "$x = 'open\n$app.Quit()", 'unterminated-string'],
+    ['unterminated-double', '$x = "open\n$app.Quit()', 'unterminated-string'],
+    ['unterminated-block-comment', '<# open\n$app.Quit()', 'unterminated-block-comment'],
+    ['unterminated-here-string', "$x = @'\n$app.Quit()\n '@", 'unterminated-here-string'],
+    ['here-string-header-with-text', "$x = @'text'\n", 'here-string-header'],
+  ]) {
+    assert.ok(scanPowerShellSource(text).issues.some(item => item.kind === kind), name);
+    assert.ok(codes(text).has('source-scan-unsupported'), `${name}: audit fails closed`);
+  }
+  assert.deepEqual(scanPowerShellSource(embedSource).issues, []);
+}
+record('source-policy-lexer');
 
 const generation = {
   kind: 'native-font-edit-fixture', source: {file: 'source.pptx', sha256: '0'.repeat(64)}, registration: {flags: 0},

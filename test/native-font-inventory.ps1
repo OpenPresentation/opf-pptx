@@ -154,7 +154,7 @@ function Get-InventoryParentDecision($Result,$LastDurable,$WorkerReport,[string]
 $script:inventoryAllowedComMembers=@('Open','Close','Item','Paragraphs','Runs')
 $script:inventoryAllowedInstanceMembers=@('Contains','ContainsKey','FindAll','GetCommandName','StartsWith','Substring','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
 $script:inventoryAllowedStaticMembers=@('GetExtension','GetFullPath','GetTempPath','IsNullOrEmpty','IsNullOrWhiteSpace','Max','Min','NewGuid','ParseFile','Sort','WriteAllText')
-$script:inventoryForbiddenCommands=@('Stop-Process','taskkill','taskkill.exe','kill','spps')
+$script:inventoryForbiddenCommands=@('Stop-Process','taskkill','taskkill.exe','kill','spps','Invoke-Expression','iex','Add-Type')
 $script:inventoryAssignmentRoots=@('report','slideRecord','shapeRecord','seen','wrongGeneration','sample','sampleRows','policyRejected','errorCloseOutcomes')
 function Get-InventoryAssignmentRoot($Expression) {
     while($Expression -is [System.Management.Automation.Language.MemberExpressionAst] -or $Expression -is [System.Management.Automation.Language.IndexExpressionAst]) {
@@ -180,7 +180,7 @@ function Assert-InventoryWorkerAst([string]$Path) {
     if($closeCount -ne 1) { throw "Inventory worker must contain exactly one owned Close invocation; found $closeCount" }
     foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
         $commandName=$command.GetCommandName()
-        if($null -ne $commandName -and $script:inventoryForbiddenCommands -contains $commandName) { throw "Inventory worker must not run $commandName" }
+        if($null -ne $commandName -and $script:inventoryForbiddenCommands -contains ($commandName -replace '^.*\\','')) { throw "Inventory worker must not run $commandName" }
     }
     foreach($assignment in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
         $left=$assignment.Left
@@ -275,6 +275,11 @@ function Invoke-InventoryPureRegression {
             replaceFont='$p=$a.Open($x,-1,0,0); $p.Fonts.Replace(''Aptos'',''Carlito''); $p.Close()'
             staticCall='$p=$a.Open($x,-1,0,0); [IO.File]::Delete($y); $p.Close()'
             memberIncrement='$p=$a.Open($x,-1,0,0); $shape.Top++; $p.Close()'
+            invokeExpression='$p=$a.Open($x,-1,0,0); Invoke-Expression $y; $p.Close()'
+            iexAlias='$p=$a.Open($x,-1,0,0); iex $y; $p.Close()'
+            qualifiedInvokeExpression='$p=$a.Open($x,-1,0,0); Microsoft.PowerShell.Utility\Invoke-Expression $y; $p.Close()'
+            stringNamedIex='$p=$a.Open($x,-1,0,0); & ''iex'' $y; $p.Close()'
+            addType='$p=$a.Open($x,-1,0,0); Add-Type -TypeDefinition $y; $p.Close()'
         }
         $policyRejected=[ordered]@{}
         foreach($key in $policyNegatives.Keys) {

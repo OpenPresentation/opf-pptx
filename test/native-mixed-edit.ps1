@@ -58,9 +58,19 @@ function Assert-MixedEditVerifierAst([string]$Path) {
     $tokens=$null; $parseErrors=$null
     $ast=[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$parseErrors)
     if($parseErrors.Count -ne 0) { throw "Verifier parse failed: $($parseErrors[0].Message)" }
+    $pureDefinitions=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-MixedEditPureRegression'},$true))
+    if($pureDefinitions.Count -ne 1) { throw 'Expected exactly one Invoke-MixedEditPureRegression definition' }
+    $pureStart=$pureDefinitions[0].Extent.StartOffset; $pureEnd=$pureDefinitions[0].Extent.EndOffset
+    # Dynamic code is forbidden everywhere except the pure regression's exact re-evaluation of its two extracted helpers.
+    $pureInvocations=@('Invoke-Expression $stageDefinition[0].Extent.Text','Invoke-Expression $comDefinition[0].Extent.Text')
     foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
         $name=$command.GetCommandName()
         if($name -ieq 'Stop-Process' -or $name -ieq 'taskkill') { throw 'Mixed-size edit harness must not kill Office or any other process' }
+        $bareName=$(if($null -eq $name){$null}else{$name -replace '^.*\\',''})
+        if($bareName -in @('Invoke-Expression','iex','Add-Type')) {
+            $insidePure=($command.Extent.StartOffset -gt $pureStart -and $command.Extent.EndOffset -lt $pureEnd)
+            if(-not ($insidePure -and $name -ceq 'Invoke-Expression' -and $pureInvocations -ccontains $command.Extent.Text)) { throw "Mixed-size edit harness must not run Invoke-Expression, iex or Add-Type ($name) outside the pure-regression helper re-evaluation" }
+        }
     }
     $ownedSaves=@()
     foreach($invoke in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]},$true)) {

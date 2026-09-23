@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {
   CHARACTER_PROBES, EDITED_RUNS, EDITED_TEXT, GEOMETRY_TOLERANCE_PT,
   ORIGINAL_RUNS, ORIGINAL_TEXT, OUTER_GEOMETRY_PT, PINNED_FONT_SHA256,
-  PINNED_LICENSE_SHA256, PINNED_SOURCE_SHA256, auditMixedEditDirectory,
+  PINNED_LICENSE_SHA256, PINNED_SOURCE_SHA256, auditMixedEditDirectory, auditMixedEditVerifierSource, MIXED_EDIT_COM_SETTERS,
   evaluateMixedEditReport, lineIntervals, previewLineBreakLimit,
 } from './native-mixed-edit-audit.mjs';
 
@@ -161,6 +161,58 @@ check('verifier-ast-requires-explicit-no-embed-save', () => {
   assert.match(verifierSource, /embed -ne 0/);
   assert.match(auditSource, /GEOMETRY_TOLERANCE_PT = 0\.02/);
 });
+
+// Dynamic code is allowed only as the pure regression's exact re-evaluation of its two extracted helpers.
+const workerAnchor = 'function Get-MixedEditSha256(';
+const pureAnchor = '        Invoke-Expression $comDefinition[0].Extent.Text';
+const withWorker = line => verifierSource.replace(workerAnchor, `function Invoke-MixedEditForbiddenDynamic($Text) { ${line} }\r\n${workerAnchor}`);
+const withPure = line => verifierSource.replace(pureAnchor, `${pureAnchor}\r\n        ${line}`);
+const dynamicCodeNegatives = [
+  ['worker-invoke-expression', withWorker('Invoke-Expression $Text')],
+  ['worker-iex', withWorker('iex $Text')],
+  ['worker-qualified-invoke-expression', withWorker('Microsoft.PowerShell.Utility\\Invoke-Expression $Text')],
+  ['worker-string-named-iex', withWorker("& 'iex' $Text")],
+  ['worker-add-type', withWorker('Add-Type -TypeDefinition $Text')],
+  ['pure-other-argument', withPure('Invoke-Expression $script:payload')],
+  ['pure-iex-alias', withPure('iex $stageDefinition[0].Extent.Text')],
+  ['pure-add-type', withPure('Add-Type -TypeDefinition $script:payload')],
+];
+check('verifier-node-source-policy', () => {
+  assert.ok(verifierSource.includes(workerAnchor) && verifierSource.includes(pureAnchor));
+  assert.deepEqual(auditMixedEditVerifierSource(verifierSource), []);
+  assert.deepEqual(MIXED_EDIT_COM_SETTERS, ['runRange.Text']);
+  const codes = text => new Set(auditMixedEditVerifierSource(text).map(item => item.code));
+  for (const [name, text] of dynamicCodeNegatives) { assert.notEqual(text, verifierSource, name); assert.ok(codes(text).has('dynamic-code'), name); }
+  for (const [name, line] of [
+    ['font-name-set', "$runRange.Font.Name='Aptos'"],
+    ['other-range-text', "$cell.Shape.TextFrame.TextRange.Text='x'"],
+    ['application-visible', '$app.Visible=0'],
+    ['saved-flag', '$script:presentation.Saved=-1'],
+    ['setter-method', '$runRange.set_Text($x)'],
+    ['increment', '$shape.Top++'],
+  ]) assert.ok(codes(`${verifierSource}\r\n${line}\r\n`).has('com-property-assignment'), name);
+  for (const [name, line] of [['comment', "# $runRange.Font.Name='Aptos' it's"], ['string', "$n='$app.Visible=0'"], ['local-report', '$report.extra=1'], ['documented-setter', "$runRange.Text='x'"]]) {
+    assert.deepEqual(auditMixedEditVerifierSource(`${verifierSource}\r\n${line}\r\n`), [], name);
+  }
+  assert.ok(codes(`${verifierSource}\r\n# it's\r\n$app.Quit()\r\n`).has('application-quit'));
+  assert.ok(codes(verifierSource.replace('{ $script:presentation.SaveAs($savedPath,24,0) }', '{ $script:presentation.SaveAs($savedPath,24,-1) }')).has('save-policy'));
+});
+if (process.platform === 'win32') {
+  const ps = path.join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const psOptions = {cwd: packageRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 180_000, windowsHide: true};
+  const astRoot = await mkdtemp(path.join(path.resolve(os.tmpdir()), 'opf-mixed-edit-ast-'));
+  try {
+    const positive = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', verifierPath, '-PureRegression'], psOptions);
+    assert.equal(positive.status, 0, positive.error?.message ?? (positive.stderr || positive.stdout));
+    for (const [name, text] of dynamicCodeNegatives) {
+      const copy = path.join(astRoot, `${name}.ps1`); await writeFile(copy, text);
+      const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], psOptions);
+      assert.ok(!negative.error && negative.status !== null && negative.status !== 0, `${name}: ${negative.error?.message ?? negative.status}`);
+      assert.match(negative.stderr + negative.stdout, /must not run Invoke-Expression, iex or Add-Type/, name);
+    }
+  } finally { await rm(astRoot, {recursive: true, force: true}); }
+  outcomes.push({name: 'verifier-ast-dynamic-code-negatives', passed: true});
+} else outcomes.push({name: 'verifier-ast-dynamic-code-negatives', passed: true, skipped: 'non-Windows runner'});
 
 function stage(sequence, name, status, ownedPresentationPath, cleanupConfirmed, seconds) {
   return {sequence, timestamp: new Date(Date.UTC(2026, 8, 22, 12, 0, seconds)).toISOString(), stage: name, status, error: null, cleanupConfirmed, officeOperationsStopped: false, ownedPresentationPath};

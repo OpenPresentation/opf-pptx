@@ -12,10 +12,11 @@ import {
   PERMITTED_NATIVE_FONT_NAMES,
   stripPowerShellLiteralsForScan,
 } from './native-font-embed-audit.mjs';
+import {auditHarnessSourcePolicy} from './powershell-scan.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-const parse = bytes => JSON.parse(Buffer.from(bytes).toString('utf8').replace(/^﻿/, ''));
+const parse = bytes => JSON.parse(Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, ''));
 const isInt = value => typeof value === 'number' && Number.isInteger(value);
 const isHash = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const isDate = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -47,6 +48,17 @@ const INPUT_MODES = Object.freeze({'carlito-fixture': ['temporary-session', 'non
 export const ALLOWED_COM_MEMBERS = Object.freeze(['Open', 'Close', 'Item', 'Paragraphs', 'Runs']);
 export const ALLOWED_INSTANCE_MEMBERS = Object.freeze(['Contains', 'ContainsKey', 'FindAll', 'GetCommandName', 'StartsWith', 'Substring', 'ToLowerInvariant', 'ToString', 'ToUniversalTime', 'TrimEnd']);
 export const ALLOWED_STATIC_MEMBERS = Object.freeze(['GetExtension', 'GetFullPath', 'GetTempPath', 'IsNullOrEmpty', 'IsNullOrWhiteSpace', 'Max', 'Min', 'NewGuid', 'ParseFile', 'Sort', 'WriteAllText']);
+// Mirrors $script:inventoryAssignmentRoots: member assignments may target only local report/evidence dictionaries, never
+// a COM object, and the inventory worker has no COM setter at all.
+export const INVENTORY_ASSIGNMENT_ROOTS = Object.freeze(['report', 'slideRecord', 'shapeRecord', 'seen', 'wrongGeneration', 'sample', 'sampleRows', 'policyRejected', 'errorCloseOutcomes']);
+// Reviewed verifier revisions a --reaudit-v2 run may bind to besides the companion beside this auditor: FF-03 (#59,
+// ef8a158) as checked out with LF and with CRLF. It predates only the static dynamic-code prohibition, which this
+// audit's own source policy enforces on every snapshot.
+export const PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256 = Object.freeze({
+  'ecbeb36ddc1913be7bd42f7e9dce07d20b734a7e64dc20cc60e1e58a44ea6cd2': 'ff-03-ef8a158-lf',
+  '067e96dd14ed89bd98036569af0bf85593ca4fad1447bb8bce5802d00ac9a401': 'ff-03-ef8a158-crlf',
+});
+export const AUDIT_SCHEMA_VERSION = 2;
 const FORBIDDEN_STAGE = /saveas|\.save|export|quit|printout|kill|delete|paste|apply|\.add|\.set$|\.set\./i;
 
 export function invokedMembers(sourceText) {
@@ -67,6 +79,7 @@ export function auditInventoryVerifierSource(sourceText, {label = 'native-font-i
   const instanceAllowed = [...ALLOWED_COM_MEMBERS, ...ALLOWED_INSTANCE_MEMBERS];
   const rejected = [...members.instance.filter(name => !instanceAllowed.includes(name)), ...members.statics.filter(name => !ALLOWED_STATIC_MEMBERS.includes(name)).map(name => `::${name}`)];
   if (rejected.length || members.dynamic) add('forbidden-member', `invokes members outside the read-only allowlist: ${[...rejected, ...(members.dynamic ? ['dynamic member'] : [])].join(', ')}`);
+  failures.push(...auditHarnessSourcePolicy(sourceText, {label, localRoots: INVENTORY_ASSIGNMENT_ROOTS, comSetters: []}));
   if (hasOfficeQuitInvocation(sourceText)) add('application-quit', 'must not call Application.Quit or .Quit()');
   if (/\b(?:Stop-Process|taskkill|spps)\b/i.test(code)) add('process-kill', 'must not terminate processes');
   const opens = code.match(/\.Open\s*\(/g) ?? [], closes = code.match(/\.Close\s*\(/g) ?? [];
@@ -85,6 +98,15 @@ const shapeSlotValues = shapes => (Array.isArray(shapes) ? shapes : []).flatMap(
   ...(Array.isArray(shape?.paragraphs) ? shape.paragraphs.map(item => item?.font) : []),
   ...(Array.isArray(shape?.runs) ? shape.runs.map(item => item?.font) : []),
 ].flatMap(font => FONT2_SLOTS.map(slot => font?.[slot])));
+
+// Audit-only findings, not part of the worker's fontLedger: PowerPoint can list a Presentation.Fonts entry whose Name is
+// the empty string (observed natively as {name:'',embedded:0,embeddable:0}). It is a valid observation and a finding; the
+// name ledgers omit empty names exactly as the worker's does.
+export function emptyNameFontFindings(report) {
+  const entries = Array.isArray(report?.presentationFonts?.entries) ? report.presentationFonts.entries : [];
+  const empty = entries.filter(entry => entry?.name === '');
+  return {emptyNamePresentationFontIndexes: empty.map(entry => entry.index), emptyNameFontReported: empty.length > 0};
+}
 
 // Independent recomputation of the worker's fontLedger from raw observations.
 export function computeFontLedger(report) {
@@ -173,7 +195,7 @@ export function expectedInventoryStages(report, failures = []) {
   need(isInt(fonts?.count) && fonts.count >= 0 && fonts.count <= INVENTORY_BOUNDS.maxPresentationFonts && Array.isArray(fonts?.entries) && fonts.entries.length === fonts.count, 'observation-fonts', 'Presentation.Fonts must be complete and within 64 entries');
   for (const [offset, entry] of (Array.isArray(fonts?.entries) ? fonts.entries : []).entries()) {
     for (const suffix of ['get', 'name.get', 'embedded.get', 'embeddable.get']) pair(`owned.presentation.fonts.item-${offset + 1}.${suffix}`);
-    need(isObject(entry) && entry.index === offset + 1 && typeof entry.name === 'string' && entry.name.length > 0 && isInt(entry.embedded) && isInt(entry.embeddable), 'observation-font-entry', `Presentation.Fonts item ${offset + 1} is invalid`);
+    need(isObject(entry) && entry.index === offset + 1 && typeof entry.name === 'string' && isInt(entry.embedded) && isInt(entry.embeddable), 'observation-font-entry', `Presentation.Fonts item ${offset + 1} is invalid`);
   }
   pair('owned.presentation.slideMaster.get'); pair('owned.slideMaster.theme.get'); pair('owned.theme.themeFontScheme.get');
   for (const kind of ['major', 'minor']) {
@@ -262,6 +284,7 @@ function auditLifecycle({request, report, supervisor, worker, progress, stages, 
   const {scope: _scope, ...reported} = isObject(report?.fontLedger) ? report.fontLedger : {};
   need(canonical(reported) === canonical(ledger), 'font-ledger', 'report.fontLedger must equal the ledger recomputed from raw observations');
   need(supervisor?.aptosReported === ledger.aptosReported && canonical(supervisor?.presentationFontNames) === canonical(ledger.presentationFontNames), 'supervisor-ledger', 'Supervisor font summary must match the recomputed ledger');
+  Object.assign(ledger, emptyNameFontFindings(report));
 
   const observationFailures = [];
   const expected = expectedInventoryStages(report, observationFailures);
@@ -303,8 +326,9 @@ async function readBound(root, relative, expected, role, failures, rawHashes) {
   } catch { failures.push({code: 'input-missing', message: `${role} is missing`}); return null; }
 }
 
-async function auditInputBindings(root, request, reviewedRoot) {
+async function auditInputBindings(root, request, reviewedRoot, {priorReviewedVerifiers = false} = {}) {
   const failures = [], rawHashes = {}, boundRecords = [];
+  let reviewedVerifierRevision = null;
   const need = (condition, code, message) => { if (!condition) failures.push({code, message}); };
   const fixture = request?.inputMode === 'carlito-fixture';
   const definitions = [
@@ -341,10 +365,13 @@ async function auditInputBindings(root, request, reviewedRoot) {
   for (const [key, name] of [['verifier', 'native-font-inventory.ps1'], ['processHelper', 'native-process.ps1'], ['fontHelper', 'native-text-fonts.ps1']]) {
     try {
       const reviewed = sha(await readFile(path.join(reviewedRoot, name))); rawHashes[`reviewed/${name}`] = reviewed;
-      need(request?.[key]?.sha256 === reviewed, 'reviewed-verifier-binding', `${name} snapshot must match the reviewed companion beside this auditor`);
+      const priorMap = priorReviewedVerifiers === true ? PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256 : isObject(priorReviewedVerifiers) ? priorReviewedVerifiers : {};
+      const prior = key === 'verifier' && Object.hasOwn(priorMap, request?.[key]?.sha256 ?? '') ? priorMap[request[key].sha256] : null;
+      if (key === 'verifier') reviewedVerifierRevision = request?.[key]?.sha256 === reviewed ? 'current' : prior;
+      need(request?.[key]?.sha256 === reviewed || prior !== null, 'reviewed-verifier-binding', `${name} snapshot must match the reviewed companion beside this auditor${key === 'verifier' && Object.keys(priorMap).length ? ' or a pinned prior reviewed revision' : ''}`);
     } catch { failures.push({code: 'reviewed-verifier-missing', message: `Reviewed companion ${name} cannot be read`}); }
   }
-  return {failures, rawHashes, boundRecords};
+  return {failures, rawHashes, boundRecords, reviewedVerifierRevision};
 }
 
 async function listing(directory) {
@@ -356,7 +383,10 @@ async function readRequired(root, relative, failures, rawHashes, parser = parse)
   catch { failures.push({code: 'missing-evidence', message: `${relative} is required and must parse`}); return null; }
 }
 
-export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = path.dirname(__filename)} = {}) {
+// priorReviewedVerifiers (the --reaudit-v2 CLI mode) also accepts a verifier snapshot pinned in
+// PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256, so evidence captured before a verifier-only hardening can be re-audited.
+// Controls may pass an explicit {sha256: revision} map instead of true.
+export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = path.dirname(__filename), priorReviewedVerifiers = false} = {}) {
   const root = realPath(evidenceDirectory), failures = [], rawHashes = {};
   const need = (condition, code, message) => { if (!condition) failures.push({code, message}); };
   const request = await readRequired(root, 'request.json', failures, rawHashes);
@@ -365,7 +395,7 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
   const worker = await readRequired(root, 'worker.json', failures, rawHashes);
   const progress = await readRequired(root, 'progress.json', failures, rawHashes);
   const stages = await readRequired(root, 'stages.jsonl', failures, rawHashes, bytes => {
-    const text = Buffer.from(bytes).toString('utf8').replace(/^﻿/, '').trim();
+    const text = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '').trim();
     return text ? text.split(/\r?\n/).map(line => JSON.parse(line)) : [];
   });
   for (const [name, value] of Object.entries({request, report, supervisor, worker, progress})) need(isObject(value), 'evidence-object', `${name}.json must contain a JSON object`);
@@ -375,7 +405,7 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
   const registrationFilePresent = (await listing(root))?.includes('font-registration.json') ?? false;
   let registrations = null;
   if (mode === 'temporary-session') registrations = await readRequired(root, 'font-registration.json', failures, rawHashes);
-  const allowedRoot = ['inputs/', 'progress.json', 'report.json', 'request.json', 'stages.jsonl', 'supervisor.json', 'worker.json', 'worker.stderr.log', 'worker.stdout.log', 'audit.json', ...(mode === 'temporary-session' ? ['font-registration.json'] : [])];
+  const allowedRoot = ['inputs/', 'progress.json', 'report.json', 'request.json', 'stages.jsonl', 'supervisor.json', 'worker.json', 'worker.stderr.log', 'worker.stdout.log', 'audit.json', 'audit-v2.json', ...(mode === 'temporary-session' ? ['font-registration.json'] : [])];
   const rootEntries = await listing(root) ?? [];
   const extra = rootEntries.filter(name => !allowedRoot.includes(name));
   need(extra.length === 0, 'unexpected-output', `Read-only inventory must not leave other outputs: ${extra.join(', ')}`);
@@ -385,8 +415,10 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
 
   const verifierBytes = await readRequired(root, 'inputs/native-font-inventory.ps1', failures, rawHashes, bytes => bytes);
   if (verifierBytes) failures.push(...auditInventoryVerifierSource(verifierBytes.toString('utf8')));
+  let reviewedVerifierRevision = null;
   if (request) {
-    const binding = await auditInputBindings(root, request, reviewedRoot);
+    const binding = await auditInputBindings(root, request, reviewedRoot, {priorReviewedVerifiers});
+    reviewedVerifierRevision = binding.reviewedVerifierRevision;
     failures.push(...binding.failures); Object.assign(rawHashes, binding.rawHashes);
     const checks = supervisor?.inputChecks;
     need(Array.isArray(checks) && checks.length === binding.boundRecords.length, 'supervisor-input-checks', 'Supervisor must record original and snapshot checks for every bound input');
@@ -413,23 +445,28 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
     failureCleanup: analyzeFailureCleanup(report, Array.isArray(stages) ? stages : []),
     note: 'Findings are evidence only when passed is true. Reported names do not prove physical font-file or per-glyph identity.',
   };
-  return {schemaVersion: 1, kind: 'native-font-inventory-audit', evidenceDirectory: root, passed: failures.length === 0, failures, rawHashes, findings, scope: 'Offline input, lifecycle, read-only, stage-sequence and font-ledger audit of one native font inventory attempt. No Office, COM or font API is started.'};
+  return {schemaVersion: AUDIT_SCHEMA_VERSION, kind: 'native-font-inventory-audit', evidenceDirectory: root, reviewedVerifierRevision, passed: failures.length === 0, failures, rawHashes, findings, scope: 'Offline input, lifecycle, read-only, stage-sequence and font-ledger audit of one native font inventory attempt. No Office, COM or font API is started.'};
 }
 
+// Default: write audit.json. --reaudit-v2: write audit-v2.json beside an existing audit.json (never overwriting either)
+// and additionally accept a pinned prior reviewed verifier revision. Both outputs are exclusive-create.
 async function runCli() {
-  const evidenceRoot = process.argv[2];
-  if (!evidenceRoot || process.argv.length > 3) { console.error(JSON.stringify({passed: false, error: 'Usage: node test/native-font-inventory-audit.mjs EVIDENCE_DIRECTORY'})); process.exitCode = 1; return; }
-  const root = path.resolve(evidenceRoot);
+  const args = process.argv.slice(2);
+  const reaudit = args.includes('--reaudit-v2');
+  const positional = args.filter(arg => arg !== '--reaudit-v2');
+  if (positional.length !== 1 || args.length !== positional.length + (reaudit ? 1 : 0) || positional[0].startsWith('--')) { console.error(JSON.stringify({passed: false, error: 'Usage: node test/native-font-inventory-audit.mjs EVIDENCE_DIRECTORY [--reaudit-v2]'})); process.exitCode = 1; return; }
+  const root = path.resolve(positional[0]);
   try { if (!(await stat(root)).isDirectory()) throw new Error('not a directory'); }
   catch { console.error(JSON.stringify({passed: false, error: `Evidence directory does not exist: ${root}`})); process.exitCode = 1; return; }
-  const outPath = path.join(root, 'audit.json');
+  const outPath = path.join(root, reaudit ? 'audit-v2.json' : 'audit.json');
   try { await stat(outPath); console.error(JSON.stringify({passed: false, error: `Refusing to overwrite existing audit: ${outPath}`})); process.exitCode = 1; return; }
   catch (error) { if (error?.code !== 'ENOENT') { console.error(JSON.stringify({passed: false, error: error.message})); process.exitCode = 1; return; } }
   let out;
-  try { out = await auditEvidenceDirectory(root); }
-  catch (error) { out = {schemaVersion: 1, kind: 'native-font-inventory-audit', evidenceDirectory: root, passed: false, failures: [{code: 'audit-error', message: error.message}], scope: 'Offline audit failed before completion.'}; }
+  try { out = await auditEvidenceDirectory(root, {priorReviewedVerifiers: reaudit}); }
+  catch (error) { out = {schemaVersion: AUDIT_SCHEMA_VERSION, kind: 'native-font-inventory-audit', evidenceDirectory: root, passed: false, failures: [{code: 'audit-error', message: error.message}], scope: 'Offline audit failed before completion.'}; }
+  out = {...out, mode: reaudit ? 'reaudit-v2' : 'audit'};
   await writeFile(outPath, JSON.stringify(out, null, 2) + '\n', {flag: 'wx'});
-  console.log(JSON.stringify({passed: out.passed, failures: out.failures.length, aptosReported: out.findings?.ledger?.aptosReported ?? null, presentationFontNames: out.findings?.ledger?.presentationFontNames ?? null, outPath}));
+  console.log(JSON.stringify({passed: out.passed, failures: out.failures.length, aptosReported: out.findings?.ledger?.aptosReported ?? null, emptyNameFontReported: out.findings?.ledger?.emptyNameFontReported ?? null, presentationFontNames: out.findings?.ledger?.presentationFontNames ?? null, reviewedVerifierRevision: out.reviewedVerifierRevision ?? null, outPath}));
   process.exitCode = out.passed ? 0 : 1;
 }
 

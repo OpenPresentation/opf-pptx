@@ -2,8 +2,24 @@ import {createHash} from 'node:crypto';
 import {readFile, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {auditHarnessSourcePolicy, stripPowerShellLiteralsForScan} from './powershell-scan.mjs';
 
 export const GEOMETRY_TOLERANCE_PT = 0.02;
+// Member assignments the mixed-size edit worker may make: local report/evidence roots plus its one documented COM
+// setter, the edited run's Text. Dynamic code is allowed only where the pure regression re-evaluates its own helpers.
+export const MIXED_EDIT_LOCAL_ASSIGNMENT_ROOTS = Object.freeze(['report', 'seen', 'copy', 'editedRuns', 'record', 'lineRecord']);
+export const MIXED_EDIT_COM_SETTERS = Object.freeze(['runRange.Text']);
+export const MIXED_EDIT_PURE_REGRESSION_EXEMPTION = Object.freeze({exemptFunction: 'Invoke-MixedEditPureRegression', exemptInvocations: Object.freeze(['Invoke-Expression $stageDefinition[0].Extent.Text', 'Invoke-Expression $comDefinition[0].Extent.Text'])});
+
+// Static source policy for the verifier snapshot, applied to code with comments and string literals blanked.
+export function auditMixedEditVerifierSource(sourceText, {label = 'native-mixed-edit.ps1'} = {}) {
+  const failures = auditHarnessSourcePolicy(sourceText, {label, localRoots: MIXED_EDIT_LOCAL_ASSIGNMENT_ROOTS, comSetters: MIXED_EDIT_COM_SETTERS, ...MIXED_EDIT_PURE_REGRESSION_EXEMPTION});
+  const code = stripPowerShellLiteralsForScan(sourceText);
+  if (/\.\s*(?:Quit|Kill)\s*\(/i.test(code)) failures.push({code: 'application-quit', message: `${label} must not call .Quit() or .Kill()`});
+  if (/(?<![\w-])(?:Stop-Process|taskkill|spps)(?![\w-])/i.test(code)) failures.push({code: 'process-kill', message: `${label} must not terminate processes`});
+  if ((code.match(/\.SaveAs\(\$savedPath,24,0\)/g) ?? []).length !== 1 || (code.match(/\.SaveAs\s*\(/g) ?? []).length !== 1) failures.push({code: 'save-policy', message: `${label} must call SaveAs($savedPath,24,0) exactly once and no other SaveAs`});
+  return failures;
+}
 export const PINNED_SOURCE_SHA256 = 'f92c5d5565afa1d03fc6df0cdc8d482771d5ebd5a5403f7a888f75e2ad020a51';
 export const PINNED_LICENSE_SHA256 = '58402f82a7c332a700294988fe7554fbb0a63a8d27ccc1ee3bbc640311990a00';
 export const PINNED_FONT_SHA256 = Object.freeze({
@@ -217,6 +233,7 @@ export async function auditMixedEditDirectory(evidenceDirectory) {
       const actual = await hashRequired(file, failures, 'snapshot-hash', artifactHashes, null, `inputs/${path.basename(file)}`);
       if (!hexSha(item?.sha256) || item?.snapshotSha256 !== item?.sha256 || actual !== item?.sha256) push(failures, 'snapshot-hash', `${key} snapshot is not bound to its request hash`);
     }
+    try { failures.push(...auditMixedEditVerifierSource(await readFile(files.verifier, 'utf8'))); } catch { /* a missing snapshot is already a snapshot-hash failure */ }
     if (request?.fontHelper?.registrationFlags !== 0) push(failures, 'font-fixture', 'request font helper registrationFlags must be the JSON number 0');
     const reviewedCompanions = {verifier: path.join(path.dirname(fileURLToPath(import.meta.url)), 'native-mixed-edit.ps1'), processHelper: path.join(path.dirname(fileURLToPath(import.meta.url)), 'native-process.ps1'), fontHelper: path.join(path.dirname(fileURLToPath(import.meta.url)), 'native-text-fonts.ps1')};
     for (const [key, reviewedPath] of Object.entries(reviewedCompanions)) {
