@@ -1,5 +1,6 @@
 import {importTableFrames} from './table-import.js';
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
+import {resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
 import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
 import {attachCardTags,importCardFrames} from './card-provenance.js';
@@ -721,6 +722,7 @@ function chartFromRelationship(entries, slidePath, relationships, relId) {
   const series = asArray(chartNode.node["c:ser"]);
   if (series.length === 0) return null;
 
+  if (chartNode.type === "scatter") return scatterFromSeries(entries, relationship.path, series);
   const labels = cachedValues(series[0]?.["c:cat"]);
   const names = series.map((entry, index) => firstCachedValue(entry?.["c:tx"]) || `Series ${index + 1}`);
   const values = series.map((entry) => cachedValues(entry?.["c:val"] ?? entry?.["c:yVal"]).map(numericValue));
@@ -744,19 +746,30 @@ function chartFromRelationship(entries, slidePath, relationships, relId) {
   };
 }
 
+// Scatter charts share X values (c:xVal) across Y series (c:yVal). OPF keeps
+// them category-major: [point label, X, Y1, Y2, ...]; native charts carry no
+// point labels, so points are numbered.
+function scatterFromSeries(entries, chartPart, series) {
+  const xs = cachedValues(series[0]?.["c:xVal"]).map(numericValue);
+  const names = series.map((entry, index) => firstCachedValue(entry?.["c:tx"]) || `Series ${index + 1}`);
+  const values = series.map((entry) => cachedValues(entry?.["c:yVal"]).map(numericValue));
+  const rowCount = Math.max(xs.length, ...values.map((row) => row.length));
+  if (rowCount === 0) return null;
+  const rows = [];
+  for (let index = 0; index < rowCount; index += 1) {
+    rows.push([String(index + 1), xs[index] ?? index + 1, ...values.map((row) => row[index] ?? 0)]);
+  }
+  return {
+    type: "scatter",
+    data: { columns: ["Point", readChartCategoryHeading(entries, chartPart) ?? "X", ...names], rows }
+  };
+}
+
 function firstChartNode(plotArea) {
-  const candidates = [
-    ["c:barChart", (node) => node?.["c:barDir"]?.val === "bar" ? "bar" : "column"],
-    ["c:lineChart", () => "line"],
-    ["c:pieChart", () => "pie"],
-    ["c:doughnutChart", () => "doughnut"],
-    ["c:areaChart", () => "area"],
-    ["c:scatterChart", () => "scatter"],
-    ["c:radarChart", () => "radar"]
-  ];
-  for (const [key, type] of candidates) {
-    const node = asArray(plotArea[key])[0];
-    if (node) return { node, type: type(node) };
+  // Map the native construct back to the kept OPF chart type id (FF-22).
+  for (const element of NATIVE_CHART_ELEMENTS) {
+    const node = asArray(plotArea[`c:${element}`])[0];
+    if (node) return { node, type: chartTypeFromNative(element, node) };
   }
   return null;
 }
@@ -1235,14 +1248,15 @@ function addChartPayload(slide, chart, region, context) {
   const fill = {color:normalizeHex(panelFill),transparency};
   const objectName = `OPF chart ${context.chartHeadings.size + 1}`;
   const circular = chartData.type === 'pie' || chartData.type === 'doughnut';
-  context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chart.data.columns[0],labelColor});
+  context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chart.data.columns[0],labelColor,spec:chartData.spec});
+  const percent = chartData.spec.grouping === 'percentStacked';
   slide.addChart(chartData.type, chartData.series, {
     objectName,
     x: region.x,
     y: region.y,
     w: region.w,
     h: region.h,
-    showLegend: circular || chartData.series.length > 1,
+    showLegend: circular || chartData.series.length > (chartData.type === 'scatter' ? 2 : 1),
     showTitle: false,
     chartColors: CHART_COLORS.map(color=>normalizeHex(chartColorForFill(panelFill,`#${color}`))),
     chartArea: {fill:{...fill},roundedCorners:false},
@@ -1260,7 +1274,12 @@ function addChartPayload(slide, chart, region, context) {
     showValue: false,
     valGridLine: { color: context.colors.border, transparency: 30, size: 1 },
     barDir: chartData.barDir,
-    barGrouping: chartData.barGrouping
+    barGrouping: chartData.barGrouping,
+    ...(percent ? { valAxisLabelFormatCode: '0%' } : {}),
+    ...(chartData.spec.markers === undefined ? {} : { lineDataSymbol: chartData.spec.markers ? 'circle' : 'none' }),
+    ...(chartData.spec.radarStyle ? { radarStyle: chartData.spec.radarStyle } : {}),
+    // ScatterWithMarkers: markers only, no connecting line.
+    ...(chartData.type === 'scatter' ? { lineSize: 0, lineDataSymbol: 'circle' } : {})
   });
 }
 
@@ -1585,35 +1604,29 @@ function toPptxChartData(chart) {
   if (data.columns.length < 2 || data.rows.length === 0) return null;
 
   const labels = data.rows.map((row) => stringifyText(row?.[0]));
-  const series = data.columns.slice(1).map((name, seriesIndex) => ({
+  let series = data.columns.slice(1).map((name, seriesIndex) => ({
     name: stringifyText(name),
     labels,
     values: data.rows.map((row) => numericValue(row?.[seriesIndex + 1]))
   }));
-  const mapped = mapChartType(chart.type);
-
-  return { ...mapped, series };
-}
-
-function mapChartType(type) {
-  const normalized = String(type ?? "").toLowerCase();
-  if (normalized.includes("pie")) return { type: "pie" };
-  if (normalized.includes("doughnut") || normalized.includes("donut")) return { type: "doughnut" };
-  if (normalized.includes("area")) return { type: "area" };
-  if (normalized.includes("line") || normalized.includes("sparkline")) return { type: "line" };
-  if (normalized.includes("scatter")) return { type: "scatter" };
-  if (normalized.includes("radar")) return { type: "radar" };
-  if (normalized.includes("bar")) {
-    return {
-      type: "bar",
-      barDir: "bar",
-      barGrouping: normalized.includes("stacked") ? "stacked" : "clustered"
-    };
+  let { spec } = resolveChartType(chart.type);
+  // Office 2016 chartex types are written by a later FF-22 slice; until then
+  // they keep the legacy clustered-column construct.
+  if (spec.family === "chartex") spec = resolveChartType("legacy-column").spec;
+  // Pie and doughnut plot the first series only (one ring).
+  if (spec.family === "circular") series = series.slice(0, 1);
+  if (spec.family === "xy") {
+    // PptxGenJS scatter data: the first entry holds the shared X values.
+    series = series.length > 1
+      ? series
+      : [{ name: "X", labels, values: data.rows.map((_, index) => index + 1) }, ...series];
   }
   return {
-    type: "bar",
-    barDir: "col",
-    barGrouping: normalized.includes("stacked") ? "stacked" : "clustered"
+    type: spec.pptx,
+    spec,
+    series,
+    barDir: spec.barDir,
+    barGrouping: spec.pptx === "bar" || spec.pptx === "area" ? spec.grouping : undefined
   };
 }
 
@@ -1816,8 +1829,9 @@ async function normalizePptxZip(raw, context) {
       if(!context.chartHeadings.has(name))continue;
       const id=frame.match(/<c:chart\b[^>]*\br:id="([^"]+)"/)?.[1],chartPart=relationships.get(id)?.path;
       if(!chartPart)throw new OPFPptxError('packaging-failed','Generated chart relationship is missing.');
-      const {heading,labelColor}=context.chartHeadings.get(name);
+      const {heading,labelColor,spec}=context.chartHeadings.get(name);
       if(heading!==undefined)writeChartCategoryHeading(entries,chartPart,heading);
+      entries[chartPart]=encodeText(applyChartConstruct(decodeText(entries[chartPart]),spec));
       // PptxGenJS hardcodes a black fallback in pie/doughnut label properties.
       // Normalize only our generated chart text styles; point/series fills stay intact.
       entries[chartPart]=encodeText(decodeText(entries[chartPart]).replace(/<c:txPr>[\s\S]*?<\/c:txPr>/g,properties=>properties.replace(/<a:solidFill>[\s\S]*?<\/a:solidFill>/g,()=>`<a:solidFill><a:srgbClr val="${labelColor}"/></a:solidFill>`)));
