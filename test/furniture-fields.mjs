@@ -42,7 +42,8 @@ const edit = (entries, index, mutate) => {
   assert.deepEqual(invalid, []);
   assert.deepEqual(imported.design.footer, footer);
   assert.deepEqual(imported.slides.map(slide => slide.design?.footer), [false, undefined, undefined]);
-  // Moving a slide changes its live number; the fixed total keeps matching, so provenance holds.
+  // A cached number that disagrees with the slide position (as after a move PowerPoint has not yet
+  // refreshed) fails provenance: the visible words are kept as ordinary text, not restored as a field.
   const moved = await read(edit(entries, 2, xml => xml.replace(/(<a:fld\b[^>]*type="slidenum">[\s\S]*?<a:t>)2</, '$18<')));
   assert.equal(moved.invalid.length, 1, 'A visible number that disagrees with its position is ordinary text.');
   // Fixed text around the field that no longer matches the recorded format is not restored.
