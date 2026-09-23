@@ -206,6 +206,12 @@ for (const expected of cases) {
   const restored = await fromPptx(zipSync(entries), {onDiagnostic: diagnostic => diagnostics.push(diagnostic.code)});
   assert.equal(restored.language, 'arabic');
   assert.ok(diagnostics.includes('mixed-run-languages'));
+  // Values that name no language are not counted.
+  const noLanguage = Object.fromEntries(Object.entries(entries).map(([name, value]) => [name, /^ppt\/slides\/slide\d+\.xml$/.test(name)
+    ? new TextEncoder().encode(strFromU8(value).replace(/(<a:rPr\b[^>]*?\slang=")(?:ar-SA|fr-FR)"/g, '$1x-none"')) : value]));
+  const none = [];
+  assert.equal((await fromPptx(zipSync(noLanguage), {onDiagnostic: diagnostic => none.push(diagnostic.code)})).language, undefined);
+  assert.ok(none.includes('rtl-language-mismatch'));
   for (const [name, value] of Object.entries(entries)) {
     if (/^ppt\/slides\/slide\d+\.xml$/.test(name)) entries[name] = new TextEncoder().encode(strFromU8(value).replace(/(\slang=")ar-SA"/g, '$1en-US"'));
   }

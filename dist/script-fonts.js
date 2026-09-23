@@ -142,6 +142,7 @@ export function partScriptFonts(path, xml, plan, slideIndex) {
 // ---------------------------------------------------------------------------
 // Import
 
+const LANGUAGE_TAG = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/;
 const attribute = (xml, name) => new RegExp(`\\s${name}="([^"]*)"`).exec(xml)?.[1];
 
 /**
@@ -165,7 +166,8 @@ export function matchCatalogLanguage(lang, catalogs) {
   if (record) return {language: record.id, record, shared};
   if (resolver) {
     const resolved = resolver({language: lang});
-    const matched = resolved.languageId && records.find(candidate => candidate.id === resolved.languageId);
+    // A tag core cannot resolve falls back to its default language; that is no match.
+    const matched = resolved.languageSource !== "default" && resolved.languageId && records.find(candidate => candidate.id === resolved.languageId);
     return matched ? {language: lang, record: matched, shared: []} : null;
   }
   const byPrimary = records.find(candidate => lower(candidate.bcp47) === primary);
@@ -182,7 +184,11 @@ export function importLanguage({slides, theme, catalogs}, report) {
   const counts = new Map();
   let rtlParagraphs = 0;
   for (const xml of slides) {
-    for (const [, lang] of xml.matchAll(/<a:rPr\b[^>]*?\slang="([^"]+)"/g)) counts.set(lang, (counts.get(lang) ?? 0) + 1);
+    for (const [, lang] of xml.matchAll(/<a:rPr\b[^>]*?\slang="([^"]+)"/g)) {
+      // Values that name no language are not counted: malformed tags, x-none, und and zxx.
+      if (!LANGUAGE_TAG.test(lang) || /^(?:und|zxx)(?:-|$)/i.test(lang)) continue;
+      counts.set(lang, (counts.get(lang) ?? 0) + 1);
+    }
     rtlParagraphs += xml.match(/<a:pPr\b[^>]*?\srtl="1"/g)?.length ?? 0;
   }
   const ranked = [...counts].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
