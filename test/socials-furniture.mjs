@@ -87,15 +87,20 @@ const hosts = [
   [{catalogs: {socialPlatforms: [record('x', 'https://injected.test/{handle}')]}}, 'injected.test/acme'],
   [{catalogs: {socialPlatforms: [record('x', 'https://injected.test/{handle}')]}, catalogSources: {'https://example.test/socials.json': {records: [record('x', 'https://sourced.test/{handle}')]}}}, 'sourced.test/acme'],
 ];
-// CI links the pinned opf-render. The preview half of this check runs only when that
-// renderer passes socials records (opf-render#34 or later); the export half always runs.
+// CI links opf-render#34 or later, which passes socials records to core.
 const previewText = (deck, host) => resolvePresentation(deck, host).slides[0].geometry.furniture.parts.find(part => part.field === 'socials').text.split('\n')[1];
-const previewFormats = previewText(sourced, {}) === 'x.com/acme';
-if (!previewFormats) console.log('Installed opf-render predates FF-34 socials records: preview parity skipped, export order still checked.');
 for (const [host, expected] of hosts) for (const deck of [sourced, {...sourced, catalogs: {socialPlatforms: {source: sourced.catalogs.socialPlatforms.source, records: [record('x', 'https://inline.test/{handle}')]}}}]) {
   const want = deck.catalogs.socialPlatforms.records ? 'inline.test/acme' : expected;
-  if (previewFormats) assert.equal(previewText(deck, host), want, 'preview');
-  assert.ok(slideXml(unzipSync(await toPptx(deck, host))).includes(`<a:t>${want}</a:t>`), `export ${want}`);
+  assert.equal(previewText(deck, host), want, 'preview');
+  const hostBytes = await toPptx(deck, host);
+  assert.ok(slideXml(unzipSync(hostBytes)).includes(`<a:t>${want}</a:t>`), `export ${want}`);
+  // Given the export's host catalogs, re-import recognizes the unedited line and
+  // restores the authored handle; without them the line keeps its visible URL.
+  const back = await fromPptx(hostBytes, host);
+  assert.equal(validatePresentation(back).valid, true);
+  assert.deepEqual(back.organization.socials, organization.socials, `authored socials with host catalogs (${want})`);
+  const withoutHost = (await read(hostBytes)).deck.organization.socials;
+  assert.equal(withoutHost.x, want === 'x.com/acme' || want === 'inline.test/acme' ? '@acme' : `https://${want}`, `without host catalogs (${want})`);
 }
 
 // Every platform key the Socials schema accepts re-imports; the provenance check uses the schema pattern itself.

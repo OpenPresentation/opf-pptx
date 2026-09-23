@@ -307,6 +307,8 @@ export async function fromPptx(input, options = {}) {
   let slideProvenance = slidePaths.map(() => ({structure: "untagged"}));
   try {
     const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true,
+      // Host catalogs format stored socials exactly as export did (FF-34).
+      socialPlatformRecords: catalogs => socialPlatformRecords({catalogs}, options),
       slides: slidePaths.map((path, index) => ({path, root: furnitureContexts[index].root, relationships: furnitureContexts[index].relationships}))}, report);
     // The stored language wins while the runs still carry its tag (FF-07).
     restored.groups = reconcileLanguage(restored.groups, observedLanguage, report);

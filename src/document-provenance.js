@@ -229,7 +229,11 @@ const METADATA_CATALOGS = Object.freeze({narrative: 'narratives', tone: 'tones',
 function collectStrings(value, into = new Set()) {
   if (typeof value === 'string') into.add(value);
   else if (Array.isArray(value)) value.forEach(item => collectStrings(item, into));
-  else if (object(value)) Object.values(value).forEach(item => collectStrings(item, into));
+  else if (object(value)) for (const [key, item] of Object.entries(value)) {
+    // Socials keys are socialPlatforms catalog references (FF-34).
+    if (key === 'socials' && object(item)) Object.keys(item).forEach(id => into.add(id));
+    collectStrings(item, into);
+  }
   return into;
 }
 
@@ -619,7 +623,7 @@ function pruneDangling(value, dangling, path, removed) {
  * validated OPF_SLIDE_V1 value (layout, type, composition, design hints, ...),
  * `catalogRecord` the stored inline layouts record for `layout`, if any.
  */
-export function restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, slides, organizationConflict = false}, report) {
+export function restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, slides, organizationConflict = false, socialPlatformRecords}, report) {
   const untagged = {groups: [], slides: slides.map(() => ({structure: 'untagged'})), finalize: doc => doc};
   const invalid = message => report({code: 'invalid-document-provenance', path: '', message: `${message} Ordinary import keeps the values observed in the PPTX.`});
   let document;
@@ -786,7 +790,9 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
     if (value === undefined) continue;
     if (key === 'organization' && object(imported.organization)) {
       const observed = imported.organization;
-      const records = [...array(document.catalogs?.socialPlatforms?.records ?? document.catalogs?.socialPlatforms), ...(opfCore.catalogs?.socialPlatforms ?? [])].filter(object);
+      // Same order as export: inline records, then the document source, host catalogs and bundled records.
+      const hostRecords = typeof socialPlatformRecords === 'function' ? socialPlatformRecords(document.catalogs) : (opfCore.catalogs?.socialPlatforms ?? []);
+      const records = [...array(document.catalogs?.socialPlatforms?.records ?? document.catalogs?.socialPlatforms), ...hostRecords].filter(object);
       const merge = (stored, current) => object(current.socials) && object(stored?.socials) ? {...current, socials: authoredSocials(stored.socials, current.socials, records)} : current;
       const list = array(value);
       const index = list.findIndex(item => object(item) && item.id === observed.id);
