@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {unzipSync, zipSync} from 'fflate';
 import {toPptx, fromPptx} from '../dist/index.js';
 import {validatePresentation, catalogs} from '@openpresentation/opf';
+import {renderSvgDeck} from '@openpresentation/opf-render';
 
 // FF-29: slide layout intent (layout id, type, composition, composition hints
 // and the inline catalogs.layouts record) is part of each OPF_SLIDE_V1 record.
@@ -31,6 +32,8 @@ const read = async bytes => {
   const issues = [];
   const deck = await fromPptx(bytes, {onDiagnostic: issue => issues.push(issue)});
   assert.equal(validatePresentation(deck).valid, true);
+  // Every restored layout id resolves, so the imported document always renders.
+  assert.equal(renderSvgDeck(deck).length, deck.slides.length);
   return {deck, provenance: issues.filter(issue => /provenance|reference|slide-id/.test(issue.code)).map(issue => [issue.code, issue.path])};
 };
 const modify = (bytes, mutate) => { const entries = unzipSync(bytes); mutate(entries); return zipSync(entries); };
@@ -139,12 +142,17 @@ let cases = 0;
     mutate(value);
     return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
   });
+  // A tampered record is ignored; with no other record the id cannot resolve, so it is not restored.
   const mismatched = await read(modify(exportedA, entries => { stripDocument(entries); retag(entries, value => { value.layoutRecord.id = 'other'; }); }));
-  assert.deepEqual(mismatched.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord']]);
-  assert.equal(mismatched.deck.slides[0].layout, 'gallery-hero');
+  assert.deepEqual(mismatched.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-layout-reference', 'slides.0.layout']]);
+  assert.deepEqual(mismatched.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
   assert.equal(mismatched.deck.catalogs, undefined);
-  // The id itself still returns (an unknown layout id only warns in validation), as does the rest of the intent.
-  assert.equal(mismatched.deck.slides[0].composition?.mode, 'column');
+  assert.equal(mismatched.deck.slides[0].composition?.mode, 'column', 'The rest of the intent still returns.');
+  // With the document record the same tampered slide still resolves through the document.
+  const documented = await read(modify(exportedA, entries => retag(entries, value => { value.layoutRecord.id = 'other'; })));
+  assert.deepEqual(documented.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord']]);
+  assert.equal(documented.deck.slides[0].layout, 'gallery-hero');
+  assert.deepEqual(documented.deck.catalogs, {layouts: {records: [heroA]}});
   const malformed = await read(modify(exportedA, entries => { stripDocument(entries); retag(entries, value => { value.layoutRecord = 'gallery-hero'; }); }));
   assert.deepEqual(malformed.provenance, [['invalid-document-provenance', 'slides.0']]);
   assert.equal(malformed.deck.slides[0].layout, undefined);
@@ -154,6 +162,73 @@ let cases = 0;
     ['design-reference-changed', 'slides.0.design.titleAlignment'], ['design-reference-changed', 'slides.0.design.contentBox']]);
   assert.deepEqual(moved.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
   assert.equal(moved.deck.catalogs, undefined);
+  cases++;
+}
+
+// Decks exported before FF-29 carry no layoutRecord on their slides.
+{
+  const legacy = entries => { for (const index of [1, 2]) text(entries, `ppt/tags/opfSlide${index}.xml`, xml => {
+    const value = JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 'hex').toString('utf8'));
+    delete value.layoutRecord;
+    return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
+  }); };
+  const withDocument = await read(modify(exportedA, legacy));
+  assert.deepEqual(withDocument.provenance, []);
+  assert.deepEqual(withDocument.deck.slides.map(slide => slide.layout), ['gallery-hero', 'title-subtitle']);
+  assert.deepEqual(withDocument.deck.catalogs, {layouts: {records: [heroA]}});
+  // Without the document tag the inline-only id has no record anywhere: it is reported, not restored; bundled ids still return.
+  const stripped = await read(modify(exportedA, entries => { legacy(entries); stripDocument(entries); }));
+  assert.deepEqual(stripped.provenance, [['unresolved-layout-reference', 'slides.0.layout']]);
+  assert.deepEqual(stripped.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
+  assert.equal(stripped.deck.catalogs, undefined);
+  assert.equal(stripped.deck.slides[0].composition?.mode, 'column');
+  cases++;
+}
+
+// A slide record that overrides a built-in layout id never changes other slides' layouts.
+{
+  const override = {...structuredClone(base), name: 'Overridden title-subtitle', placeholders: [{type: 'title'}]};
+  const deckC = {$schema: 'https://openpresentation.org/schema/opf/v1', name: 'Deck C', catalogs: {layouts: {records: [override]}},
+    slides: [{layout: 'title-subtitle', title: 'Override one', subtitle: 'C'}, {layout: 'title-subtitle', title: 'Override two', subtitle: 'C'}]};
+  assert.equal(validatePresentation(deckC).valid, true);
+  const exportedC = await toPptx(structuredClone(deckC));
+  assert.deepEqual(tagValue(unzipSync(exportedC)['ppt/tags/opfSlide1.xml']).layoutRecord, override);
+  // Pasted into deck A, whose slide 2 uses the built-in title-subtitle.
+  const pasted = await read(paste(exportedA, exportedC, 1));
+  assert.deepEqual(pasted.deck.slides.map(slide => slide.layout), ['gallery-hero', 'title-subtitle', undefined]);
+  assert.equal(pasted.deck.slides[2].title, 'Override one');
+  assert.deepEqual(pasted.deck.catalogs, {layouts: {records: [heroA]}}, 'The override is not added to the host catalog.');
+  assert.deepEqual(pasted.provenance, [['layout-reference-changed', 'slides.2.layout'], ['design-reference-changed', 'design.contentAlignment']]);
+  const pastedStripped = await read(modify(paste(exportedA, exportedC, 1), stripDocument));
+  assert.deepEqual(pastedStripped.deck.slides.map(slide => slide.layout), ['gallery-hero', 'title-subtitle', undefined]);
+  assert.deepEqual(pastedStripped.deck.catalogs, {layouts: {records: [heroA]}});
+  assert.deepEqual(pastedStripped.provenance, [['layout-reference-changed', 'slides.2.layout']]);
+  // Deck C on its own: with its document the override is the document's record; without it, every slide agrees on it.
+  for (const bytes of [exportedC, modify(exportedC, stripDocument)]) {
+    const own = await read(bytes);
+    assert.deepEqual(own.provenance, []);
+    assert.deepEqual(own.deck.slides.map(slide => slide.layout), ['title-subtitle', 'title-subtitle']);
+    assert.deepEqual(own.deck.catalogs, {layouts: {records: [override]}});
+  }
+  cases++;
+}
+
+// Privacy: layout records never pull asset registry entries into the tags; references-only stores no source at all.
+{
+  const privateUrl = 'https://intranet.example.com/private/preview.png';
+  const withPreview = {...structuredClone(heroA), preview: {src: 'asset:private-preview'}};
+  const deckP = {...structuredClone(deckA), assets: {'private-preview': privateUrl}, catalogs: {layouts: {records: [withPreview]}}};
+  assert.equal(validatePresentation(deckP).valid, true);
+  const parse = xml => [...xml.matchAll(/ val="([0-9A-F]+)"/g)].map(match => JSON.parse(Buffer.from(match[1], 'hex').toString('utf8')));
+  const tagsOf = async provenance => { const entries = unzipSync(await toPptx(structuredClone(deckP), {provenance})); return Object.keys(entries).filter(path => /^ppt\/tags\/opf(Document|Slide)/.test(path)).map(path => dec.decode(entries[path])); };
+  for (const provenance of ['full', 'references-only']) {
+    const parts = await tagsOf(provenance);
+    assert.ok(parts.length > 0);
+    assert.ok(!parts.some(xml => JSON.stringify(parse(xml)).includes('intranet.example.com')), `${provenance}: no asset URL in provenance tags`);
+    assert.ok(!parts.some(xml => parse(xml).some(value => value.assets !== undefined)), `${provenance}: no assets stored for a layout record`);
+  }
+  const refs = await tagsOf('references-only');
+  assert.ok(refs.flatMap(parse).filter(value => value.slide !== undefined).every(value => value.layoutRecord === undefined), 'references-only stores no slide layout record that names a source.');
   cases++;
 }
 
