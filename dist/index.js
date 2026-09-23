@@ -205,7 +205,7 @@ export async function toPptx(input, options = {}) {
   }
 
   // FF-08: pitchFamily per exported family, from each slide's resolved scheme.
-  context.fontPitch = fontPitchFamilies(presentation.slides.map(slide => resolveSlideContext(presentation, slide, context, options).fonts),
+  context.fontPitch = fontPitchFamilies(presentation.slides.map((slide, index) => resolveSlideContext(presentation, slide, context, options, index).fonts),
     [...normalizeRecords(presentation.catalogs?.fontSchemes), ...defaultCatalog("fontSchemes")]);
 
   let raw;
