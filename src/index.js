@@ -1,4 +1,5 @@
 import {importTableFrames} from './table-import.js';
+import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
 import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
@@ -22,6 +23,8 @@ import {
   catalogs as bundledCatalogs,
   validatePresentation
 } from "@openpresentation/opf";
+
+export {checkPptxTypefaces, inventoryPptxTypefaces, packageFontsUsed, THEME_SCRIPT_SUPPLEMENTS} from './typeface-inventory.js';
 
 export const packageName = "@openpresentation/opf-pptx";
 
@@ -190,14 +193,20 @@ export async function toPptx(input, options = {}) {
   context.codeTags = new Map();
   context.metricTags = new Map();
   context.chartHeadings = new Map();
+  context.chartFonts = new Map();
   context.imageFormat = options.imageFormat ?? "compatible";
   Object.assign(context, exportTheme(presentation, context));
+  context.reportedFontSchemes = new Set();
   const pptx = new PptxGenJS();
   configurePresentation(pptx, presentation, {...context,fonts:resolveSlideContext(presentation,presentation.slides[0],context,options).fonts});
 
   for (let index = 0; index < presentation.slides.length; index += 1) {
     await addSlide(pptx, presentation, presentation.slides[index], index, context, options);
   }
+
+  // FF-08: pitchFamily per exported family, from each slide's resolved scheme.
+  context.fontPitch = fontPitchFamilies(presentation.slides.map((slide, index) => resolveSlideContext(presentation, slide, context, options, index).fonts),
+    [...normalizeRecords(presentation.catalogs?.fontSchemes), ...defaultCatalog("fontSchemes")]);
 
   let raw;
   try {
@@ -892,6 +901,10 @@ function resolvePresentationContext(presentation, options) {
     design.fontScheme ?? theme?.fontScheme,
     DEFAULTS.fontScheme
   );
+  // Shared rule (core resolveFontSchemeReference): an unresolved id falls back to the
+  // DEFAULTS.fontScheme record as the base; resolveSlideContext reports it once per path.
+  const fontSchemeId = referenceId(design.fontScheme ?? theme?.fontScheme);
+  const unresolvedFontScheme = fontSchemeId && !findById(normalizeRecords(presentation.catalogs?.fontSchemes), fontSchemeId) && !findById(defaultCatalog("fontSchemes"), fontSchemeId) ? fontSchemeId : null;
   const dimensions = resolveDimensions(design.dimensions ?? theme?.dimensions);
   const background = resolveBackground(design.background ?? theme?.background, colorScheme);
   const fonts = resolveFonts(fontScheme);
@@ -909,6 +922,7 @@ function resolvePresentationContext(presentation, options) {
     colorScheme,
     backgroundDefinition: design.background ?? theme?.background,
     fonts,
+    unresolvedFontScheme,
     colors: {
       background,
       text: textColor,
@@ -994,7 +1008,7 @@ function configurePresentation(pptx, presentation, context) {
 
 async function addSlide(pptx, presentation, opfSlide, slideIndex, context, options) {
   const slide = pptx.addSlide();
-  const slideContext = resolveSlideContext(presentation, opfSlide, context, options);
+  const slideContext = resolveSlideContext(presentation, opfSlide, context, options, slideIndex);
   slide.background = { color: slideContext.colors.background };
   const backgroundDefinition = slideContext.backgroundDefinition;
   const backgroundPath = `${opfSlide.design?.background !== undefined ? `slides.${slideIndex}.` : ''}design.background`;
@@ -1078,9 +1092,19 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   if (opfSlide.notes) slide.addNotes(String(opfSlide.notes));
 }
 
-function resolveSlideContext(presentation, slide, baseContext, options) {
+function resolveSlideContext(presentation, slide, baseContext, options, slideIndex = 0) {
   const effective = { ...presentation, design: { ...presentation.design, ...slide.design } };
   const resolved = resolvePresentationContext(effective, options);
+  if (resolved.unresolvedFontScheme) {
+    const path = slide.design?.fontScheme !== undefined ? `slides.${slideIndex}.design.fontScheme`
+      : presentation.design?.fontScheme !== undefined ? "design.fontScheme"
+      : slide.design?.theme !== undefined ? `slides.${slideIndex}.design.theme` : "design.theme";
+    if (!baseContext.reportedFontSchemes?.has(path)) {
+      baseContext.reportedFontSchemes?.add(path);
+      const id = resolved.unresolvedFontScheme;
+      options.onDiagnostic?.({ code: "unresolved-font-scheme", path, id, fallback: DEFAULTS.fontScheme, message: `Font scheme '${id}' is not in the inline or bundled catalogs; using the default font scheme '${DEFAULTS.fontScheme}'.` });
+    }
+  }
   if (Math.abs(resolved.dimensions.widthInches - baseContext.dimensions.widthInches) > 1e-6
     || Math.abs(resolved.dimensions.heightInches - baseContext.dimensions.heightInches) > 1e-6) {
     throw new OPFPptxError("mixed-slide-dimensions", "PowerPoint requires one canvas size per presentation. Set dimensions on the deck or export this slide separately.");
@@ -1256,6 +1280,7 @@ function addChartPayload(slide, chart, region, context) {
   const objectName = `OPF chart ${context.chartHeadings.size + 1}`;
   const circular = chartData.type === 'pie' || chartData.type === 'doughnut';
   context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chart.data.columns[0],labelColor});
+  context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
   slide.addChart(chartData.type, chartData.series, {
     objectName,
     x: region.x,
@@ -1782,7 +1807,7 @@ function resolveBackground(value, colorScheme) {
 }
 
 function resolveFonts(fontScheme) {
-  return {id:fontScheme.id,...resolveFontFamilies(fontScheme)};
+  return {id:fontScheme.id,...resolveFontFamilies(fontScheme),scheme:{type:fontScheme.type,major:fontScheme.major,minor:fontScheme.minor}};
 }
 
 
@@ -1845,6 +1870,8 @@ async function normalizePptxZip(raw, context) {
       entries[chartPart]=encodeText(decodeText(entries[chartPart]).replace(/<c:txPr>[\s\S]*?<\/c:txPr>/g,properties=>properties.replace(/<a:solidFill>[\s\S]*?<\/a:solidFill>/g,()=>`<a:solidFill><a:srgbClr val="${labelColor}"/></a:solidFill>`)));
     }
   }
+  applyChartFonts(entries,context.chartFonts,parseRelationships);
+  applyPitchFamilies(entries,context.fontPitch);
   const imageSources = new Map();
   for (const [part, bytes] of Object.entries(entries)) {
     if (!/^ppt\/slides\/slide\d+\.xml$/.test(part)) continue;
@@ -1898,6 +1925,7 @@ async function normalizePptxZip(raw, context) {
     }];
   }
 
+  finalizeFontsUsed(output);
   // Sort after chart/worksheet renaming; source counters can cross digit widths.
   const sortedOutput = Object.fromEntries(Object.keys(output).sort().map(path => [path, output[path]]));
   return zipSync(sortedOutput, {
