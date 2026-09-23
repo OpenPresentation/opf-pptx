@@ -171,12 +171,18 @@ $script:InventoryPolicyCommandForms=@('New-Object|^New-Object -ComObject PowerPo
 $script:InventoryPolicyInstanceMembers=@('Close','Contains','ContainsKey','FindAll','GetCommandName','Item','Open','Paragraphs','Runs','StartsWith','Substring','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
 $script:InventoryPolicyStaticMembers=@('Array::Sort','Guid::NewGuid','IO.File::WriteAllText','IO.Path::GetExtension','IO.Path::GetFullPath','IO.Path::GetTempPath','Math::Max','Math::Min','string::IsNullOrEmpty','string::IsNullOrWhiteSpace','System.Management.Automation.Language.Parser::ParseFile')
 $script:InventoryPolicyStaticProperties=@('IO.Path::AltDirectorySeparatorChar','IO.Path::DirectorySeparatorChar','StringComparer::Ordinal','StringComparison::OrdinalIgnoreCase','System.Management.Automation.Language.TokenKind::Dot','System.Management.Automation.Language.TokenKind::Unknown','System.Management.Automation.Language.StringConstantType::BareWord','System.Management.Automation.Language.TokenKind::Equals')
-$script:InventoryPolicyTypes=@('Array','bool','double','Guid','int','IO.File','IO.Path','long','Math','ordered','pscustomobject','ref','scriptblock','string','string[]','StringComparer','StringComparison','switch','void','ValidateRange','System.Collections.IDictionary','System.Management.Automation.Language.AssignmentStatementAst','System.Management.Automation.Language.AttributeBaseAst','System.Management.Automation.Language.CommandAst','System.Management.Automation.Language.ConvertExpressionAst','System.Management.Automation.Language.FunctionDefinitionAst','System.Management.Automation.Language.IndexExpressionAst','System.Management.Automation.Language.InvokeMemberExpressionAst','System.Management.Automation.Language.MemberExpressionAst','System.Management.Automation.Language.Parser','System.Management.Automation.Language.ScriptBlockExpressionAst','System.Management.Automation.Language.StringConstantExpressionAst','System.Management.Automation.Language.StringConstantType','System.Management.Automation.Language.TokenKind','System.Management.Automation.Language.TypeExpressionAst','System.Management.Automation.Language.UnaryExpressionAst','System.Management.Automation.Language.VariableExpressionAst','System.Management.Automation.Language.ArrayLiteralAst','System.Management.Automation.Language.CommandExpressionAst','System.Management.Automation.Language.CommandParameterAst','System.Management.Automation.Language.ForEachStatementAst','System.Management.Automation.Language.HashtableAst','System.Management.Automation.Language.ParameterAst')
+$script:InventoryPolicyTypes=@('Array','bool','double','Guid','int','IO.File','IO.Path','long','Math','ordered','pscustomobject','ref','scriptblock','string','string[]','StringComparer','StringComparison','switch','void','ValidateRange','System.Collections.IDictionary','System.Management.Automation.Language.AssignmentStatementAst','System.Management.Automation.Language.AttributeBaseAst','System.Management.Automation.Language.CommandAst','System.Management.Automation.Language.ConvertExpressionAst','System.Management.Automation.Language.FunctionDefinitionAst','System.Management.Automation.Language.IndexExpressionAst','System.Management.Automation.Language.InvokeMemberExpressionAst','System.Management.Automation.Language.MemberExpressionAst','System.Management.Automation.Language.Parser','System.Management.Automation.Language.ScriptBlockExpressionAst','System.Management.Automation.Language.StringConstantExpressionAst','System.Management.Automation.Language.StringConstantType','System.Management.Automation.Language.TokenKind','System.Management.Automation.Language.TypeExpressionAst','System.Management.Automation.Language.UnaryExpressionAst','System.Management.Automation.Language.VariableExpressionAst','System.Management.Automation.Language.ArrayLiteralAst','System.Management.Automation.Language.CommandExpressionAst','System.Management.Automation.Language.CommandParameterAst','System.Management.Automation.Language.ForEachStatementAst','System.Management.Automation.Language.HashtableAst','System.Management.Automation.Language.ParameterAst','System.Management.Automation.Language.RedirectionAst')
 $script:InventoryPolicyInvocationSites=@('Invoke-InventoryCom|&|Operation','Invoke-InventoryPureRegression|&|decide','Invoke-InventoryPureRegression|&|mutate','|.|processSnapshot','|.|fontHelperSnapshot')
 $script:InventoryPolicyPipelineExceptions=@('Select-InventoryNames|Where-Object $Predicate')
 $script:InventoryPolicyAssignmentRoots=@('report','slideRecord','shapeRecord','seen','wrongGeneration','sample','sampleRows','policyRejected','errorCloseOutcomes')
 $script:InventoryPolicyComSetters=@()
 $script:InventoryPolicyRootSources=@('sampleRows|@($script:inventoryCanonicalFaces.Keys | ForEach-Object {@{file=$_;sha256=$script:inventoryCanonicalFaces[$_];added=1;removed=$true}})','sample|$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json')
+$script:InventoryPolicyBareArguments=@('Close','Directory','Leaf','PowerPoint.Application','SHA256','Script','ScriptMethod','SilentlyContinue','UTF8')
+$script:InventoryPolicyExactForms=@('Add-Content|Add-Content -LiteralPath $script:stageFile -Encoding UTF8','Set-Content|Set-Content -LiteralPath $script:progressFile -Encoding UTF8','Set-Content|Set-Content -LiteralPath $script:reportFile -Encoding UTF8','New-Item|New-Item -ItemType Directory -Path $pureRoot','Set-Content|Set-Content -LiteralPath $registrationPath -Encoding UTF8','Remove-Item|Remove-Item -LiteralPath $deleteRoot -Recurse -Force -ErrorAction SilentlyContinue','New-Item|New-Item -ItemType Directory -Path $outputRoot','New-Item|New-Item -ItemType Directory -Path $snapshotRoot','Copy-Item|Copy-Item -LiteralPath $PSCommandPath -Destination $verifierSnapshot','Copy-Item|Copy-Item -LiteralPath $processOriginal -Destination $processSnapshot','Copy-Item|Copy-Item -LiteralPath $fontHelperOriginal -Destination $fontHelperSnapshot','Copy-Item|Copy-Item -LiteralPath $inputPath -Destination $sourceSnapshot','New-Item|New-Item -ItemType Directory -Path (Join-Path $snapshotRoot ''fonts'')','Copy-Item|Copy-Item -LiteralPath $generationPath -Destination $generationSnapshot','Copy-Item|Copy-Item -LiteralPath $licensePath -Destination $licenseSnapshot','Copy-Item|Copy-Item -LiteralPath $external -Destination $snapshot','Set-Content|Set-Content -LiteralPath (Join-Path $outputRoot ''request.json'') -Encoding UTF8','Invoke-OpfWithTemporaryFonts|Invoke-OpfWithTemporaryFonts -Generation $generation -EvidenceRoot $snapshotRoot -RunRoot $outputRoot -Action { $script:inventoryWorkerResult=Invoke-OpfNativeWorker -ScriptPath $verifierSnapshot -WorkerArguments $workerArguments -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds }','Invoke-OpfNativeWorker|Invoke-OpfNativeWorker -ScriptPath $verifierSnapshot -WorkerArguments $workerArguments -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds','Set-Content|Set-Content -LiteralPath (Join-Path $outputRoot ''supervisor.json'') -Encoding UTF8')
+$script:InventoryPolicyExactApis=@('IO.File::WriteAllText|[IO.File]::WriteAllText($negativePath,$policyNegatives[$key])','IO.File::WriteAllText|[IO.File]::WriteAllText($positivePath,''$p=$a.Open($x,-1,0,0); $n=$p.Fonts.Item(1).Name; $report.name=$n; $p.Close()'')')
+$script:InventoryPolicyExactMembers=@()
+$script:InventoryPolicyPinned=@('operation','decide','mutate','processsnapshot','fonthelpersnapshot','pureroot','deleteroot','outputroot','snapshotroot','verifiersnapshot','sourcesnapshot','generationsnapshot','licensesnapshot','snapshot','reportfile','stagefile','progressfile','registrationpath','temproot','root','negativepath','positivepath','workerarguments')
+$script:InventoryPolicyPinnedBindings=@('root|=|Get-InventoryAssignmentRoot $left','root|=|Get-InventoryAssignmentRoot $unary.Child','temproot|=|[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)','pureroot|=|Join-Path $tempRoot (''opf-font-inventory-pure-'' + [Guid]::NewGuid().ToString(''n''))','pureroot|=|(Resolve-Path -LiteralPath $pureRoot).Path','negativepath|=|Join-Path $pureRoot "policy-$key.ps1"','positivepath|=|Join-Path $pureRoot ''policy-positive.ps1''','stagefile|=|Join-Path $pureRoot ''stages.jsonl''','progressfile|=|Join-Path $pureRoot ''progress.json''','reportfile|=|Join-Path $pureRoot ''report.json''','stagefile|=|Join-Path $pureRoot "error-close-$($case[0]).jsonl"','progressfile|=|Join-Path $pureRoot "error-close-$($case[0]).progress.json"','registrationpath|=|Join-Path $pureRoot ''font-registration.json''','decide|=|{ param($Result,$Durable,$Report,$Mode,$Registrations,$Present,$Inputs) Get-InventoryParentDecision $Result $Durable $Report $Mode $Registrations $Present $Inputs $null }','mutate|=|{ param($Name,$Value) $sample=$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json; if($Name -like ''source.*''){ $sample.source.($Name.Substring(7))=$Value } else { $sample.$Name=$Value }; return ,$sample }','deleteroot|=|(Resolve-Path -LiteralPath $pureRoot).Path','outputroot|=|[IO.Path]::GetFullPath($OutputDirectory)','snapshotroot|=|Join-Path $outputRoot ''inputs''','verifiersnapshot|=|Join-Path $snapshotRoot ''native-font-inventory.ps1''','processsnapshot|=|Join-Path $snapshotRoot ''native-process.ps1''','fonthelpersnapshot|=|Join-Path $snapshotRoot ''native-text-fonts.ps1''','sourcesnapshot|=|Join-Path $snapshotRoot ''source.pptx''','generationsnapshot|=|Join-Path $snapshotRoot ''generation.json''','licensesnapshot|=|Join-Path $snapshotRoot ''LICENSE_FONT''','snapshot|=|Join-Path $snapshotRoot $font.file','workerarguments|=|@(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-Worker'')','registrationpath|=|Join-Path $outputRoot ''font-registration.json''','root|=|(Resolve-Path -LiteralPath $OutputDirectory).Path','sourcesnapshot|=|(Resolve-Path -LiteralPath $request.source.snapshotPath).Path','stagefile|=|Join-Path $root ''stages.jsonl''','progressfile|=|Join-Path $root ''progress.json''','reportfile|=|Join-Path $root ''report.json''','operation|param|Invoke-InventoryCom|ScriptBlock')
 function Get-InventoryOwnerName($Node) {
     $owner=$Node.Parent
     while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
@@ -245,16 +251,16 @@ function Assert-InventoryAllowlistAst($Ast,[string]$Label) {
         $left=$assignment.Left
         if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
         if(-not ($left -is [System.Management.Automation.Language.MemberExpressionAst] -or $left -is [System.Management.Automation.Language.IndexExpressionAst])) { continue }
-        $root=Get-InventoryAssignmentTarget $left
-        if($null -ne $root -and $script:InventoryPolicyAssignmentRoots -ccontains $root) { continue }
+        $assignmentRoot=Get-InventoryAssignmentTarget $left
+        if($null -ne $assignmentRoot -and $script:InventoryPolicyAssignmentRoots -ccontains $assignmentRoot) { continue }
         $setter=$null
         if($left -is [System.Management.Automation.Language.MemberExpressionAst] -and $left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and $left.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $setter="$($left.Expression.VariablePath.UserPath -replace '^(script|global|local|private):','').$($left.Member.Value)" }
         if($null -eq $setter -or $script:InventoryPolicyComSetters -cnotcontains $setter) { throw "$Label must not assign $($left.Extent.Text); only local report roots and the documented COM setters are on the reviewed allowlist" }
     }
     foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -contains [string]$node.TokenKind},$true)) {
         if($unary.Child -is [System.Management.Automation.Language.MemberExpressionAst] -or $unary.Child -is [System.Management.Automation.Language.IndexExpressionAst]) {
-            $root=Get-InventoryAssignmentTarget $unary.Child
-            if($null -eq $root -or $script:InventoryPolicyAssignmentRoots -cnotcontains $root) { throw "$Label must not increment $($unary.Child.Extent.Text); only local report roots are on the reviewed allowlist" }
+            $assignmentRoot=Get-InventoryAssignmentTarget $unary.Child
+            if($null -eq $assignmentRoot -or $script:InventoryPolicyAssignmentRoots -cnotcontains $assignmentRoot) { throw "$Label must not increment $($unary.Child.Extent.Text); only local report roots are on the reviewed allowlist" }
         }
     }
     # A local report root is bound only to a hashtable literal ([ordered] or [pscustomobject] casts included) or to one of
@@ -284,6 +290,66 @@ function Assert-InventoryAllowlistAst($Ast,[string]$Label) {
     }
     foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandParameterAst]},$true)) {
         if($parameter.ParameterName -match '^(ov|pv|ev|wv|iv|outv[a-z]*|errorv[a-z]*|warningv[a-z]*|informationv[a-z]*|pipelinev[a-z]*|pi|pip|pipe|pipel|pipeli|pipelin|pipeline)$') { throw "$Label must not use the variable-binding parameter -$($parameter.ParameterName)" }
+    }
+    # Each function name is defined once, so a redefinition cannot inherit an invocation site or a scoped command.
+    $functionNames=@($Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | ForEach-Object { $_.Name.ToLowerInvariant() })
+    for($outer=0; $outer -lt $functionNames.Count; $outer++) {
+        for($inner=$outer+1; $inner -lt $functionNames.Count; $inner++) {
+            if($functionNames[$outer] -ceq $functionNames[$inner]) { throw "$Label must not define function $($functionNames[$outer]) more than once" }
+        }
+    }
+    # Drive-qualified variables (${variable:...}, $function:...) other than $env: reach runtime state or redefine
+    # functions; splatting and redirection bypass the reviewed argument forms.
+    foreach($variable in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if($variable.VariablePath.IsDriveQualified -and $variable.VariablePath.DriveName -ine 'env') { throw "$Label must not use dynamic code (drive-qualified variable $($variable.Extent.Text))" }
+        if(($variable.VariablePath.UserPath -replace '^.*:','') -ieq 'ExecutionContext') { throw "$Label must not use dynamic code ($($variable.Extent.Text))" }
+        if($variable.Splatted) { throw "$Label must not use dynamic code (splatted arguments $($variable.Extent.Text))" }
+    }
+    foreach($redirection in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.RedirectionAst]},$true)) { throw "$Label must not use redirection $($redirection.Extent.Text); it is not on the reviewed allowlist" }
+    # Bare-word arguments, exact forms of file-system writes, native helper calls and COM path writes.
+    foreach($command in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        for($position=1; $position -lt $command.CommandElements.Count; $position++) {
+            $element=$command.CommandElements[$position]
+            if($element -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $element.StringConstantType -eq [System.Management.Automation.Language.StringConstantType]::BareWord -and $script:InventoryPolicyBareArguments -notcontains $element.Value) { throw "$Label must not pass bare argument $($element.Value); it is not on the reviewed allowlist" }
+        }
+        $commandName=$command.GetCommandName()
+        if($null -eq $commandName) { continue }
+        $exact=Get-InventoryPairValues $script:InventoryPolicyExactForms $commandName
+        if($exact.Count -gt 0 -and $exact -cnotcontains (($command.Extent.Text -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not run $commandName with arguments that are not on the reviewed allowlist: $($command.Extent.Text)" }
+    }
+    foreach($invoke in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true)) {
+        if($invoke.Static -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) {
+            $exact=Get-InventoryPairValues $script:InventoryPolicyExactApis "$($invoke.Expression.TypeName.FullName)::$($invoke.Member.Value)"
+            if($exact.Count -gt 0 -and $exact -cnotcontains (($invoke.Extent.Text -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not call $($invoke.Extent.Text); that form is not on the reviewed allowlist" }
+        } elseif(-not $invoke.Static) {
+            $exact=Get-InventoryPairValues $script:InventoryPolicyExactMembers $invoke.Member.Value
+            if($exact.Count -gt 0 -and $exact -cnotcontains (($invoke.Extent.Text.Substring($invoke.Expression.Extent.Text.Length) -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not call $($invoke.Extent.Text); that form is not on the reviewed allowlist" }
+        }
+    }
+    # Pinned variables (invocation-site variables and owned paths) keep exactly their reviewed bindings.
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        $targets=@($(if($left -is [System.Management.Automation.Language.ArrayLiteralAst]){$left.Elements}else{$left}))
+        foreach($target in $targets) {
+            if($target -is [System.Management.Automation.Language.ConvertExpressionAst]) { $target=$target.Child }
+            if(-not ($target -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+            $pinnedName=($target.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+            if($script:InventoryPolicyPinned -notcontains $pinnedName) { continue }
+            $binding="$pinnedName|=|$(($assignment.Right.Extent.Text -replace '\s+',' ') -replace '^ | $','')"
+            if($left -is [System.Management.Automation.Language.ArrayLiteralAst] -or $assignment.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals -or $script:InventoryPolicyPinnedBindings -cnotcontains $binding) { throw "$Label must not bind pinned variable `$$pinnedName to $($assignment.Right.Extent.Text); only its reviewed bindings are on the allowlist" }
+        }
+    }
+    foreach($loop in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst]},$true)) {
+        $pinnedName=($loop.Variable.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+        if($script:InventoryPolicyPinned -contains $pinnedName -and $script:InventoryPolicyPinnedBindings -cnotcontains "$pinnedName|foreach|$(($loop.Condition.Extent.Text -replace '\s+',' ') -replace '^ | $','')") { throw "$Label must not bind pinned variable `$$pinnedName in an unreviewed foreach" }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ParameterAst]},$true)) {
+        $pinnedName=($parameter.Name.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+        if($script:InventoryPolicyPinned -contains $pinnedName -and $script:InventoryPolicyPinnedBindings -cnotcontains "$pinnedName|param|$(Get-InventoryOwnerName $parameter)|$($parameter.StaticType.Name)") { throw "$Label must not declare pinned variable `$$pinnedName as an unreviewed parameter" }
+    }
+    foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and $node.Child -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if([string]$unary.TokenKind -in @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -and $script:InventoryPolicyPinned -contains ($unary.Child.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()) { throw "$Label must not modify pinned variable $($unary.Child.Extent.Text)" }
     }
 }
 function Assert-InventoryWorkerAst([string]$Path) {

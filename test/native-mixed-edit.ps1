@@ -59,15 +59,21 @@ function Get-MixedEditOwnedSaveAs($Invoke) {
 $script:MixedEditPolicyCommands=@('Add-Content','ConvertFrom-Json','ConvertTo-Json','Copy-Item','ForEach-Object','Get-Content','Get-Date','Get-FileHash','Get-Item','Get-ItemProperty','Invoke-OpfNativeWorker','Invoke-OpfWithTemporaryFonts','Join-Path','New-Item','New-Object','Remove-Item','Resolve-Path','Set-Content','Test-Path','Where-Object','Write-Host','Write-Output')
 $script:MixedEditPolicyScopedCommands=@('Invoke-Expression|Invoke-MixedEditPureRegression')
 $script:MixedEditPolicyCommandForms=@('New-Object|^New-Object -ComObject PowerPoint\.Application$')
-$script:MixedEditPolicyInstanceMembers=@('Cell','Characters','Close','ContainsKey','Export','FindAll','GetCommandName','Item','Lines','Open','Paragraphs','SaveAs','StartsWith','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
+$script:MixedEditPolicyInstanceMembers=@('Cell','Characters','Close','ContainsKey','Export','FindAll','GetCommandName','Item','Lines','Open','Paragraphs','SaveAs','StartsWith','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd','Substring')
 $script:MixedEditPolicyStaticMembers=@('Guid::NewGuid','IO.Path::GetExtension','IO.Path::GetFileName','IO.Path::GetFullPath','IO.Path::GetTempPath','Math::Min','string::IsNullOrEmpty','string::IsNullOrWhiteSpace','System.Management.Automation.Language.Parser::ParseFile')
 $script:MixedEditPolicyStaticProperties=@('IO.Path::AltDirectorySeparatorChar','IO.Path::DirectorySeparatorChar','StringComparison::Ordinal','StringComparison::OrdinalIgnoreCase','System.Management.Automation.Language.TokenKind::Dot','System.Management.Automation.Language.TokenKind::Minus','System.Management.Automation.Language.TokenKind::Unknown','System.Management.Automation.Language.StringConstantType::BareWord','System.Management.Automation.Language.TokenKind::Equals')
-$script:MixedEditPolicyTypes=@('bool','double','Guid','int','IO.Path','Math','ordered','pscustomobject','ref','scriptblock','string','StringComparison','switch','void','ValidateRange','System.Management.Automation.Language.AssignmentStatementAst','System.Management.Automation.Language.AttributeBaseAst','System.Management.Automation.Language.CommandAst','System.Management.Automation.Language.ConstantExpressionAst','System.Management.Automation.Language.ConvertExpressionAst','System.Management.Automation.Language.FunctionDefinitionAst','System.Management.Automation.Language.IndexExpressionAst','System.Management.Automation.Language.InvokeMemberExpressionAst','System.Management.Automation.Language.MemberExpressionAst','System.Management.Automation.Language.ParenExpressionAst','System.Management.Automation.Language.Parser','System.Management.Automation.Language.ScriptBlockExpressionAst','System.Management.Automation.Language.StringConstantExpressionAst','System.Management.Automation.Language.StringConstantType','System.Management.Automation.Language.TokenKind','System.Management.Automation.Language.TypeExpressionAst','System.Management.Automation.Language.UnaryExpressionAst','System.Management.Automation.Language.VariableExpressionAst','System.Management.Automation.Language.ArrayLiteralAst','System.Management.Automation.Language.CommandExpressionAst','System.Management.Automation.Language.CommandParameterAst','System.Management.Automation.Language.ForEachStatementAst','System.Management.Automation.Language.HashtableAst','System.Management.Automation.Language.ParameterAst')
+$script:MixedEditPolicyTypes=@('bool','double','Guid','int','IO.Path','Math','ordered','pscustomobject','ref','scriptblock','string','StringComparison','switch','void','ValidateRange','System.Management.Automation.Language.AssignmentStatementAst','System.Management.Automation.Language.AttributeBaseAst','System.Management.Automation.Language.CommandAst','System.Management.Automation.Language.ConstantExpressionAst','System.Management.Automation.Language.ConvertExpressionAst','System.Management.Automation.Language.FunctionDefinitionAst','System.Management.Automation.Language.IndexExpressionAst','System.Management.Automation.Language.InvokeMemberExpressionAst','System.Management.Automation.Language.MemberExpressionAst','System.Management.Automation.Language.ParenExpressionAst','System.Management.Automation.Language.Parser','System.Management.Automation.Language.ScriptBlockExpressionAst','System.Management.Automation.Language.StringConstantExpressionAst','System.Management.Automation.Language.StringConstantType','System.Management.Automation.Language.TokenKind','System.Management.Automation.Language.TypeExpressionAst','System.Management.Automation.Language.UnaryExpressionAst','System.Management.Automation.Language.VariableExpressionAst','System.Management.Automation.Language.ArrayLiteralAst','System.Management.Automation.Language.CommandExpressionAst','System.Management.Automation.Language.CommandParameterAst','System.Management.Automation.Language.ForEachStatementAst','System.Management.Automation.Language.HashtableAst','System.Management.Automation.Language.ParameterAst','System.Management.Automation.Language.RedirectionAst')
 $script:MixedEditPolicyInvocationSites=@('Invoke-MixedEditCom|&|Operation','|.|processSnapshot','|.|fontHelperSnapshot')
 $script:MixedEditPolicyPipelineExceptions=@()
 $script:MixedEditPolicyAssignmentRoots=@('report','seen','copy','editedRuns','record','lineRecord')
 $script:MixedEditPolicyComSetters=@('runRange.Text')
 $script:MixedEditPolicyRootSources=@('editedRuns|@($originalRuns | ForEach-Object { $copy=[ordered]@{}; foreach($key in $_.Keys) { $copy[$key]=$_[$key] }; $copy })','record|Read-MixedEditRange $characterRange "$Phase.cell.character-$($probe.position)" $true','lineRecord|Read-MixedEditRange $lineRange "$Phase.cell.line-$lineIndex" $false')
+$script:MixedEditPolicyBareArguments=@('Directory','PowerPoint.Application','SHA256','UTF8')
+$script:MixedEditPolicyExactForms=@('New-Item|New-Item -ItemType Directory -Path $pureRoot','Remove-Item|Remove-Item -LiteralPath $resolvedPureRoot -Recurse -Force','New-Item|New-Item -ItemType Directory -Path $outputRoot','New-Item|New-Item -ItemType Directory -Path $snapshotRoot','New-Item|New-Item -ItemType Directory -Path (Join-Path $snapshotRoot ''fonts'')','Copy-Item|Copy-Item -LiteralPath $PSCommandPath -Destination $verifierSnapshot','Copy-Item|Copy-Item -LiteralPath $processOriginal -Destination $processSnapshot','Copy-Item|Copy-Item -LiteralPath $fontHelperOriginal -Destination $fontHelperSnapshot','Copy-Item|Copy-Item -LiteralPath $inputPath -Destination $sourceSnapshot','Copy-Item|Copy-Item -LiteralPath $fixture.generationPath -Destination (Join-Path $snapshotRoot ''generation.json'')','Copy-Item|Copy-Item -LiteralPath $fixture.licensePath -Destination (Join-Path $snapshotRoot ''LICENSE_FONT'')','Copy-Item|Copy-Item -LiteralPath (Join-Path $fixtureRoot $font.file) -Destination (Join-Path $snapshotRoot $font.file)','Set-Content|Set-Content -LiteralPath (Join-Path $outputRoot ''request.json'') -Encoding UTF8','Invoke-OpfWithTemporaryFonts|Invoke-OpfWithTemporaryFonts -Generation $generation -EvidenceRoot $snapshotRoot -RunRoot $outputRoot -Action { $script:mixedEditWorkerResult=Invoke-OpfNativeWorker -ScriptPath $verifierSnapshot -WorkerArguments @(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-FontFixtureDirectory'',$snapshotRoot,''-Worker'') -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds }','Invoke-OpfNativeWorker|Invoke-OpfNativeWorker -ScriptPath $verifierSnapshot -WorkerArguments @(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-FontFixtureDirectory'',$snapshotRoot,''-Worker'') -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds','Copy-Item|Copy-Item -LiteralPath (Join-Path $outputRoot ''report.json'') -Destination (Join-Path $outputRoot ''report.worker.json'')','Set-Content|Set-Content -LiteralPath (Join-Path $outputRoot ''supervisor.json'') -Encoding UTF8','Set-Content|Set-Content -LiteralPath $reportFile -Encoding UTF8','Add-Content|Add-Content -LiteralPath $script:stageFile -Encoding UTF8','Set-Content|Set-Content -LiteralPath $script:progressFile -Encoding UTF8')
+$script:MixedEditPolicyExactApis=@()
+$script:MixedEditPolicyExactMembers=@('Export|.Export($originalPng,''PNG'',1280,720)','Export|.Export($editedPng,''PNG'',1280,720)','SaveAs|.SaveAs($savedPath,24,0)','Export|.Export($reopenedPng,''PNG'',1280,720)')
+$script:MixedEditPolicyPinned=@('operation','processsnapshot','fonthelpersnapshot','pureroot','resolvedpureroot','outputroot','snapshotroot','verifiersnapshot','sourcesnapshot','reportfile','stagefile','progressfile','root','savedpath','originalpng','editedpng','reopenedpng')
+$script:MixedEditPolicyPinnedBindings=@('pureroot|=|Join-Path ([IO.Path]::GetTempPath()) (''opf-mixed-edit-pure-'' + [Guid]::NewGuid().ToString(''n''))','stagefile|=|Join-Path $pureRoot ''stages.jsonl''','progressfile|=|Join-Path $pureRoot ''progress.json''','resolvedpureroot|=|(Resolve-Path -LiteralPath $pureRoot).Path','outputroot|=|[IO.Path]::GetFullPath($OutputDirectory)','snapshotroot|=|Join-Path $outputRoot ''inputs''','verifiersnapshot|=|Join-Path $snapshotRoot ''native-mixed-edit.ps1''','processsnapshot|=|Join-Path $snapshotRoot ''native-process.ps1''','fonthelpersnapshot|=|Join-Path $snapshotRoot ''native-text-fonts.ps1''','sourcesnapshot|=|Join-Path $snapshotRoot ''source.pptx''','root|=|(Resolve-Path -LiteralPath $OutputDirectory).Path','sourcesnapshot|=|(Resolve-Path -LiteralPath $request.source.snapshotPath).Path','savedpath|=|Join-Path $root ''native-mixed-edit.pptx''','stagefile|=|Join-Path $root ''stages.jsonl''','progressfile|=|Join-Path $root ''progress.json''','reportfile|=|Join-Path $root ''report.json''','originalpng|=|Join-Path $root ''original.png''','editedpng|=|Join-Path $root ''edited.png''','reopenedpng|=|Join-Path $root ''reopened.png''','operation|param|Invoke-MixedEditCom|ScriptBlock')
 function Get-MixedEditOwnerName($Node) {
     $owner=$Node.Parent
     while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
@@ -136,16 +142,16 @@ function Assert-MixedEditAllowlistAst($Ast,[string]$Label) {
         $left=$assignment.Left
         if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
         if(-not ($left -is [System.Management.Automation.Language.MemberExpressionAst] -or $left -is [System.Management.Automation.Language.IndexExpressionAst])) { continue }
-        $root=Get-MixedEditAssignmentTarget $left
-        if($null -ne $root -and $script:MixedEditPolicyAssignmentRoots -ccontains $root) { continue }
+        $assignmentRoot=Get-MixedEditAssignmentTarget $left
+        if($null -ne $assignmentRoot -and $script:MixedEditPolicyAssignmentRoots -ccontains $assignmentRoot) { continue }
         $setter=$null
         if($left -is [System.Management.Automation.Language.MemberExpressionAst] -and $left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and $left.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $setter="$($left.Expression.VariablePath.UserPath -replace '^(script|global|local|private):','').$($left.Member.Value)" }
         if($null -eq $setter -or $script:MixedEditPolicyComSetters -cnotcontains $setter) { throw "$Label must not assign $($left.Extent.Text); only local report roots and the documented COM setters are on the reviewed allowlist" }
     }
     foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -contains [string]$node.TokenKind},$true)) {
         if($unary.Child -is [System.Management.Automation.Language.MemberExpressionAst] -or $unary.Child -is [System.Management.Automation.Language.IndexExpressionAst]) {
-            $root=Get-MixedEditAssignmentTarget $unary.Child
-            if($null -eq $root -or $script:MixedEditPolicyAssignmentRoots -cnotcontains $root) { throw "$Label must not increment $($unary.Child.Extent.Text); only local report roots are on the reviewed allowlist" }
+            $assignmentRoot=Get-MixedEditAssignmentTarget $unary.Child
+            if($null -eq $assignmentRoot -or $script:MixedEditPolicyAssignmentRoots -cnotcontains $assignmentRoot) { throw "$Label must not increment $($unary.Child.Extent.Text); only local report roots are on the reviewed allowlist" }
         }
     }
     # A local report root is bound only to a hashtable literal ([ordered] or [pscustomobject] casts included) or to one of
@@ -175,6 +181,66 @@ function Assert-MixedEditAllowlistAst($Ast,[string]$Label) {
     }
     foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandParameterAst]},$true)) {
         if($parameter.ParameterName -match '^(ov|pv|ev|wv|iv|outv[a-z]*|errorv[a-z]*|warningv[a-z]*|informationv[a-z]*|pipelinev[a-z]*|pi|pip|pipe|pipel|pipeli|pipelin|pipeline)$') { throw "$Label must not use the variable-binding parameter -$($parameter.ParameterName)" }
+    }
+    # Each function name is defined once, so a redefinition cannot inherit an invocation site or a scoped command.
+    $functionNames=@($Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | ForEach-Object { $_.Name.ToLowerInvariant() })
+    for($outer=0; $outer -lt $functionNames.Count; $outer++) {
+        for($inner=$outer+1; $inner -lt $functionNames.Count; $inner++) {
+            if($functionNames[$outer] -ceq $functionNames[$inner]) { throw "$Label must not define function $($functionNames[$outer]) more than once" }
+        }
+    }
+    # Drive-qualified variables (${variable:...}, $function:...) other than $env: reach runtime state or redefine
+    # functions; splatting and redirection bypass the reviewed argument forms.
+    foreach($variable in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if($variable.VariablePath.IsDriveQualified -and $variable.VariablePath.DriveName -ine 'env') { throw "$Label must not use dynamic code (drive-qualified variable $($variable.Extent.Text))" }
+        if(($variable.VariablePath.UserPath -replace '^.*:','') -ieq 'ExecutionContext') { throw "$Label must not use dynamic code ($($variable.Extent.Text))" }
+        if($variable.Splatted) { throw "$Label must not use dynamic code (splatted arguments $($variable.Extent.Text))" }
+    }
+    foreach($redirection in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.RedirectionAst]},$true)) { throw "$Label must not use redirection $($redirection.Extent.Text); it is not on the reviewed allowlist" }
+    # Bare-word arguments, exact forms of file-system writes, native helper calls and COM path writes.
+    foreach($command in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        for($position=1; $position -lt $command.CommandElements.Count; $position++) {
+            $element=$command.CommandElements[$position]
+            if($element -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $element.StringConstantType -eq [System.Management.Automation.Language.StringConstantType]::BareWord -and $script:MixedEditPolicyBareArguments -notcontains $element.Value) { throw "$Label must not pass bare argument $($element.Value); it is not on the reviewed allowlist" }
+        }
+        $commandName=$command.GetCommandName()
+        if($null -eq $commandName) { continue }
+        $exact=Get-MixedEditPairValues $script:MixedEditPolicyExactForms $commandName
+        if($exact.Count -gt 0 -and $exact -cnotcontains (($command.Extent.Text -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not run $commandName with arguments that are not on the reviewed allowlist: $($command.Extent.Text)" }
+    }
+    foreach($invoke in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true)) {
+        if($invoke.Static -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) {
+            $exact=Get-MixedEditPairValues $script:MixedEditPolicyExactApis "$($invoke.Expression.TypeName.FullName)::$($invoke.Member.Value)"
+            if($exact.Count -gt 0 -and $exact -cnotcontains (($invoke.Extent.Text -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not call $($invoke.Extent.Text); that form is not on the reviewed allowlist" }
+        } elseif(-not $invoke.Static) {
+            $exact=Get-MixedEditPairValues $script:MixedEditPolicyExactMembers $invoke.Member.Value
+            if($exact.Count -gt 0 -and $exact -cnotcontains (($invoke.Extent.Text.Substring($invoke.Expression.Extent.Text.Length) -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not call $($invoke.Extent.Text); that form is not on the reviewed allowlist" }
+        }
+    }
+    # Pinned variables (invocation-site variables and owned paths) keep exactly their reviewed bindings.
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        $targets=@($(if($left -is [System.Management.Automation.Language.ArrayLiteralAst]){$left.Elements}else{$left}))
+        foreach($target in $targets) {
+            if($target -is [System.Management.Automation.Language.ConvertExpressionAst]) { $target=$target.Child }
+            if(-not ($target -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+            $pinnedName=($target.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+            if($script:MixedEditPolicyPinned -notcontains $pinnedName) { continue }
+            $binding="$pinnedName|=|$(($assignment.Right.Extent.Text -replace '\s+',' ') -replace '^ | $','')"
+            if($left -is [System.Management.Automation.Language.ArrayLiteralAst] -or $assignment.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals -or $script:MixedEditPolicyPinnedBindings -cnotcontains $binding) { throw "$Label must not bind pinned variable `$$pinnedName to $($assignment.Right.Extent.Text); only its reviewed bindings are on the allowlist" }
+        }
+    }
+    foreach($loop in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst]},$true)) {
+        $pinnedName=($loop.Variable.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+        if($script:MixedEditPolicyPinned -contains $pinnedName -and $script:MixedEditPolicyPinnedBindings -cnotcontains "$pinnedName|foreach|$(($loop.Condition.Extent.Text -replace '\s+',' ') -replace '^ | $','')") { throw "$Label must not bind pinned variable `$$pinnedName in an unreviewed foreach" }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ParameterAst]},$true)) {
+        $pinnedName=($parameter.Name.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+        if($script:MixedEditPolicyPinned -contains $pinnedName -and $script:MixedEditPolicyPinnedBindings -cnotcontains "$pinnedName|param|$(Get-MixedEditOwnerName $parameter)|$($parameter.StaticType.Name)") { throw "$Label must not declare pinned variable `$$pinnedName as an unreviewed parameter" }
+    }
+    foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and $node.Child -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if([string]$unary.TokenKind -in @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -and $script:MixedEditPolicyPinned -contains ($unary.Child.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()) { throw "$Label must not modify pinned variable $($unary.Child.Extent.Text)" }
     }
 }
 function Assert-MixedEditVerifierAst([string]$Path) {

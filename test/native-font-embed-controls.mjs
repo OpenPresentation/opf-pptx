@@ -165,7 +165,7 @@ record('source-policy-dynamic-code-and-com-assignments');
 {
   const lists = readPowerShellPolicyLists(embedSource, 'FontEmbed');
   for (const [key, value] of Object.entries(lists)) assert.deepEqual(value, [...EMBED_SOURCE_POLICY[key]], `FontEmbedPolicy ${key} parity`);
-  const probes = await assertSourcePolicyProbes({source: embedSource, audit: auditEmbedVerifierSource, harnessPath: embedVerifier, assertFunction: 'Assert-FontEmbedVerifierAst', positives: SOURCE_POLICY_PROBE_POSITIVES});
+  const probes = await assertSourcePolicyProbes({source: embedSource, audit: auditEmbedVerifierSource, harnessPath: embedVerifier, assertFunction: 'Assert-FontEmbedVerifierAst', positives: SOURCE_POLICY_PROBE_POSITIVES, names: {com: 'Invoke-FontEmbedCom', pure: 'Invoke-FontEmbedPureRegression'}});
   outcomes.push({name: 'source-policy-allowlist-parity-and-review-probes', passed: true, probes});
 }
 

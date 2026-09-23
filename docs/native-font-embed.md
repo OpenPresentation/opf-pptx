@@ -97,6 +97,18 @@ Both layers also reject the following, with two exact exemptions:
 
 Member assignments (`=`, compound assignment, `++` and `--`) may target only a local report root or a documented COM setter; anything else fails with `com-property-assignment`. A local report root may be bound only to a hashtable literal or to a reviewed exact source. It may not be bound through a multiple assignment, a parameter, a `foreach` variable or a variable-binding common parameter such as `-OutVariable`. A root therefore cannot alias a COM object, and anything else fails with `local-root-binding`. The embed worker's COM setters are the edited range's `Text`, the whole-range and run `Font2` `Name`, `Size`, `Bold` and `Italic`, and `Saved` on the discard-without-save path (`EMBED_SOURCE_POLICY.setters`).
 
+Two further rules make an allowed site trustworthy, and both layers enforce them:
+
+- **Pinned variables.** The variables an allowed invocation site or file-system write depends on are pinned (`pinned` and `pinnedBindings`). These are `$Operation`, the helper snapshots, the owned output, snapshot and pure-regression roots, and the stage, progress, report, saved and PNG paths. Every assignment, `foreach` binding, parameter declaration and increment of a pinned variable must be one of its reviewed exact bindings. For example, `$Operation` must be a `[scriptblock]` parameter of the COM wrapper, so `$processSnapshot = Join-Path $env:TEMP 'evil.ps1'` and `$script:stageFile = $PROFILE` fail.
+- **Exact forms.** Each call of `Remove-Item`, `Set-Content`, `Add-Content`, `Copy-Item`, `New-Item`, `Invoke-OpfNativeWorker` and `Invoke-OpfWithTemporaryFonts` must match one reviewed, whitespace-normalized text (`exactForms`). So must `[IO.File]` writes (`exactApis`) and COM `SaveAs` and `Export` calls (`exactMembers`). An arbitrary `-ScriptPath`, path or splatted argument therefore fails.
+
+Both layers also reject the following:
+
+- A function defined more than once.
+- A drive-qualified variable other than `$env:`, such as `${variable:ExecutionContext}`, `$variable:ExecutionContext` or `${function:...}`.
+- Splatting and redirection.
+- A bare-word argument that is not on the reviewed list.
+
 The independent-review probes in `test/powershell-scan-probes.mjs` are permanent negative controls. The three control suites append every probe to each real harness and require the Node audit to add a failure. On Windows they also require the harness's PowerShell AST check, run offline through `test/native-source-policy-probes.ps1`, to reject it.
 
 `Font2` slot names and `Presentation.Fonts` names are what PowerPoint reports through COM. They do not prove which physical font file drew any glyph, and a reported slot name does not show that the font is installed, embedded or used for rendering.

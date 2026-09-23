@@ -238,7 +238,7 @@ if (process.platform === 'win32') {
 {
   const lists = readPowerShellPolicyLists(verifierSource, 'MixedEdit');
   for (const [key, value] of Object.entries(lists)) assert.deepEqual(value, [...MIXED_EDIT_SOURCE_POLICY[key]], `MixedEditPolicy ${key} parity`);
-  const probes = await assertSourcePolicyProbes({source: verifierSource, audit: auditMixedEditVerifierSource, harnessPath: verifierPath, assertFunction: 'Assert-MixedEditVerifierAst', positives: []});
+  const probes = await assertSourcePolicyProbes({source: verifierSource, audit: auditMixedEditVerifierSource, harnessPath: verifierPath, assertFunction: 'Assert-MixedEditVerifierAst', positives: [], names: {com: 'Invoke-MixedEditCom', pure: 'Invoke-MixedEditPureRegression'}});
   outcomes.push({name: 'source-policy-allowlist-parity-and-review-probes', passed: true, probes});
 }
 

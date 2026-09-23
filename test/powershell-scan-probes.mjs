@@ -49,6 +49,33 @@ export const SOURCE_POLICY_PROBES = Object.freeze([
   ['local-root-foreach', 'foreach($report in @($app)) { $report.Visible = 0 }'],
   ['local-root-parameter', 'function Set-ProbeValue($report) { $report.Visible = 0 }'],
   ['local-root-out-variable', 'Write-Output $app -OutVariable report; $report[0].Visible = 0'],
+  // Second review: an invocation site trusts its variable only through the variable's reviewed binding.
+  ['site-variable-rebind', "$processSnapshot = Join-Path $env:TEMP 'evil.ps1'; . $processSnapshot"],
+  ['site-variable-scope-rebind', "function Set-ProbeSite { $script:fontHelperSnapshot = 'C:/probe/evil.ps1' }"],
+  ['com-wrapper-redefined-untyped', 'function {COM}([string]$StageName,$Operation) { & $Operation }'],
+  ['com-wrapper-operation-reassigned', 'function {COM}([string]$StageName,[scriptblock]$Operation) { $Operation = $null; & $Operation }'],
+  ['pure-regression-redefined', 'function {PURE} { $decide = $y; & $decide }'],
+  ['function-drive-redefinition', '${function:{COM}} = { param($StageName,$Operation) & $Operation }'],
+  // Native helpers and file-system writes are pinned to their reviewed argument forms and owned paths.
+  ['native-worker-any-script', '$null=Invoke-OpfNativeWorker -ScriptPath $env:TEMP -WorkerArguments @() -OutputDirectory $outputRoot -TimeoutSeconds 5'],
+  ['temporary-fonts-bare-path', 'Invoke-OpfWithTemporaryFonts -Generation $generation -EvidenceRoot C:/probe -RunRoot $outputRoot -Action { }'],
+  ['remove-item-any-path', 'Remove-Item -LiteralPath $env:USERPROFILE -Recurse -Force'],
+  ['remove-item-splat', "$probe=@{LiteralPath='C:/probe';Recurse=$true}; Remove-Item @probe"],
+  ['write-all-text-profile', "[IO.File]::WriteAllText($PROFILE, 'probe')"],
+  ['redirection-to-profile', "'probe' > $PROFILE"],
+  ['set-content-profile', "'probe' | Set-Content -LiteralPath $PROFILE"],
+  ['copy-item-other-destination', 'Copy-Item -LiteralPath $inputPath -Destination $PROFILE'],
+  ['owned-root-rebind', '$outputRoot = $env:USERPROFILE'],
+  ['stage-file-rebind', '$script:stageFile = $PROFILE'],
+  ['pinned-foreach-rebind', 'foreach($outputRoot in @($env:USERPROFILE)) { }'],
+  ['pinned-increment', '$stageFile++'],
+  ['saveas-other-path', '$script:presentation.SaveAs($PROFILE,24,0)'],
+  // Runtime state through variable drives.
+  ['braced-variable-drive-execution-context', "$null=${variable:ExecutionContext}.InvokeCommand.GetCommandName('x',$true,$true)"],
+  ['braced-variable-drive-invoke-script', "$null=${variable:ExecutionContext}.InvokeCommand.InvokeScript('x')"],
+  ['unbraced-variable-drive-execution-context', "$null=$variable:ExecutionContext.InvokeCommand.InvokeScript('x')"],
+  // Bare arguments are checked by both layers.
+  ['unlisted-bare-argument', 'Test-Path -PathType Container $outputRoot'],
 ]);
 
 // Allowed in the embed harness, whose documented setters include wholeFont.Name.
@@ -57,17 +84,18 @@ export const SOURCE_POLICY_PROBE_POSITIVES = Object.freeze([
   ['documented-setter-script-scope', '$script:wholeFont.Name = "x"'],
 ]);
 
-export function injectProbe(source, payload) {
-  return source.replace(/\s*$/, `\r\n${payload}\r\n`);
+// {COM} and {PURE} name the harness's COM wrapper and pure-regression function.
+export function injectProbe(source, payload, {com = 'Invoke-ProbeCom', pure = 'Invoke-ProbePureRegression'} = {}) {
+  return source.replace(/\s*$/, `\r\n${payload.replaceAll('{COM}', com).replaceAll('{PURE}', pure)}\r\n`);
 }
 
 // Asserts that every probe is rejected (and every positive accepted) by one harness's Node audit and, on Windows, by
 // its PowerShell AST check through test/native-source-policy-probes.ps1. Returns counts for the controls report.
-export async function assertSourcePolicyProbes({source, audit, harnessPath, assertFunction, positives = []}) {
+export async function assertSourcePolicyProbes({source, audit, harnessPath, assertFunction, positives = [], names = {}}) {
   const {default: assert} = await import('node:assert/strict');
   const baseline = new Set(audit(source).map(item => item.code));
   for (const [name, payload] of SOURCE_POLICY_PROBES) {
-    const added = audit(injectProbe(source, payload)).map(item => item.code).filter(code => !baseline.has(code));
+    const added = audit(injectProbe(source, payload, names)).map(item => item.code).filter(code => !baseline.has(code));
     assert.ok(added.length > 0, `Node audit accepted probe ${name}`);
   }
   for (const [name, payload] of positives) assert.deepEqual(audit(injectProbe(source, payload)), audit(source), `Node audit rejected positive ${name}`);
@@ -75,7 +103,7 @@ export async function assertSourcePolicyProbes({source, audit, harnessPath, asse
   const [{spawnSync}, {mkdtemp, rm, writeFile}, os, path, {fileURLToPath}] = await Promise.all([import('node:child_process'), import('node:fs/promises'), import('node:os'), import('node:path'), import('node:url')]);
   const directory = await mkdtemp(path.join(path.resolve(os.tmpdir()), 'opf-source-policy-probes-'));
   try {
-    for (const [name, payload] of SOURCE_POLICY_PROBES) await writeFile(path.join(directory, `${name}.ps1`), injectProbe(source, payload));
+    for (const [name, payload] of SOURCE_POLICY_PROBES) await writeFile(path.join(directory, `${name}.ps1`), injectProbe(source, payload, names));
     for (const [name, payload] of positives) await writeFile(path.join(directory, `positive-${name}.ps1`), injectProbe(source, payload));
     const ps = path.join(process.env.WINDIR ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const driver = path.join(path.dirname(fileURLToPath(import.meta.url)), 'native-source-policy-probes.ps1');

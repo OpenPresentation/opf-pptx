@@ -80,7 +80,7 @@ record('verifier-node-com-assignment-and-dynamic-code-policy');
 {
   const lists = readPowerShellPolicyLists(verifierSource, 'Inventory');
   for (const [key, value] of Object.entries(lists)) assert.deepEqual(value, [...INVENTORY_SOURCE_POLICY[key]], `InventoryPolicy ${key} parity`);
-  const probes = await assertSourcePolicyProbes({source: verifierSource, audit: auditInventoryVerifierSource, harnessPath: verifier, assertFunction: 'Assert-InventoryWorkerAst', positives: []});
+  const probes = await assertSourcePolicyProbes({source: verifierSource, audit: auditInventoryVerifierSource, harnessPath: verifier, assertFunction: 'Assert-InventoryWorkerAst', positives: [], names: {com: 'Invoke-InventoryCom', pure: 'Invoke-InventoryPureRegression'}});
   record('source-policy-allowlist-parity-and-review-probes', {probes});
 }
 

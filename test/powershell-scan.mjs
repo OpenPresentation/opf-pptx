@@ -280,7 +280,7 @@ export function dynamicCodeInvocations(sourceText, {exemptFunction = null, exemp
   for (const match of code.matchAll(/\[\s*(?:System\.Management\.Automation\.)?ScriptBlock\s*\]\s*::\s*Create\s*\(/gi)) found.push(`[scriptblock]::Create at ${match.index}`);
   for (const match of code.matchAll(/\.\s*(InvokeScript|NewScriptBlock)\s*\(/gi)) found.push(`.${match[1]}() at ${match.index}`);
   for (const match of code.matchAll(/\.\$(?:\{[^}]*\}|\w+|\()[^\s=]*?\(/g)) found.push(`dynamic member name at ${match.index}`);
-  for (const match of code.matchAll(new RegExp(String.raw`\$\{?${SCOPE_PREFIX}ExecutionContext(?![\w])`, 'gi'))) found.push(`$ExecutionContext at ${match.index}`);
+  for (const match of code.matchAll(/\$\{?\s*(?:\w+:)?ExecutionContext(?!\w)/gi)) found.push(`$ExecutionContext at ${match.index}`);
   // `&` (not part of a word, `&&` or a redirection such as 2>&1) with a variable, expression or string target; and every
   // `.` dot-source, which is a `.` not glued to a value and followed by whitespace, whatever its target.
   const invocations = [
@@ -314,13 +314,21 @@ export function dynamicCodeInvocations(sourceText, {exemptFunction = null, exemp
 //   pipelines         'Function|exact text' ForEach-Object / Where-Object calls without a single script block
 //   roots, setters    local assignment roots and exact 'variable.Member' COM setters
 //   rootSources       'root|exact source' non-literal values a local root may be bound to
-// Node-only keys: bareArguments (reviewed bare argument words such as UTF8 or Directory), dynamicMemberSites
+//   bareArguments     reviewed bare argument words (UTF8, Directory, ...), checked by both layers
+//   exactForms        'Command|text': file-system writes and native helper calls must match a reviewed text exactly
+//   exactApis         'Type::Member|text' and exactMembers 'Member|.Member(args)': the same for static and COM path writes
+//   pinned            invocation-site and owned-path variables whose every binding must be a reviewed pinnedBindings entry
+//   pinnedBindings    'name|=|source', 'name|foreach|condition' or 'name|param|Function|Type'
+// Node-only keys: dynamicMemberSites
 // ('Function|root' where $root.$name or $root.(expr) member access is allowed), exemptFunction and exemptInvocations
 // (the pure regression's exact Invoke-Expression lines).
 
 const KEYWORDS = new Set(['begin', 'break', 'catch', 'class', 'continue', 'data', 'do', 'dynamicparam', 'else', 'elseif', 'end', 'enum', 'exit', 'filter', 'finally', 'for', 'foreach', 'function', 'if', 'in', 'param', 'process', 'return', 'switch', 'throw', 'trap', 'try', 'until', 'while']);
 const QUOTE_CHARS = new Set(["'", '"', ...[0x2018, 0x2019, 0x201A, 0x201B, 0x201C, 0x201D, 0x201E].map(code => String.fromCharCode(code))]);
 const PARAMETER_BOUNDARY = /[\s(,{;=|![]/;
+// Scope qualifiers and $env: are the only variable prefixes the harnesses use; any other drive (variable:, function:,
+// alias:) reaches runtime state or redefines functions.
+const ALLOWED_VARIABLE_PREFIXES = /^(?:script|global|local|private|using|env)$/i;
 
 // Splits lexed code into the tokens the allowlist policy checks. Offsets refer to the original source.
 export function tokenizeHarnessCode(sourceText) {
@@ -335,17 +343,27 @@ export function tokenizeHarnessCode(sourceText) {
     const glued = index > 0 && !/\s/.test(code[index - 1]);
     const pipe = afterPipe; afterPipe = false;
     if (char === '$') {
-      if (next === '{') { const end = code.indexOf('}', index); index = end < 0 ? code.length : end + 1; last = 'value'; continue; }
+      if (next === '{') {
+        const end = code.indexOf('}', index);
+        const drive = /^\$\{\s*(\w+):(?!:)/.exec(code.slice(index));
+        if (drive && !ALLOWED_VARIABLE_PREFIXES.test(drive[1])) problem(`drive-qualified variable ${drive[0]}}`, index);
+        index = end < 0 ? code.length : end + 1; last = 'value'; continue;
+      }
       if (next === '(') { stack.push('('); index += 2; last = 'open'; continue; }
+      const drive = /^\$(\w+):(?!:)/.exec(code.slice(index));
+      if (drive && !ALLOWED_VARIABLE_PREFIXES.test(drive[1])) problem(`drive-qualified variable ${drive[0]}`, index);
       const variable = /^\$(?:(?:script|global|local|private|using|env):)?\w+|^\$[$?^]/i.exec(code.slice(index));
       index += variable ? variable[0].length : 1; last = 'value';
       if (code.startsWith('::', index)) problem('static access on a variable', index);
       continue;
     }
+    if (char === '@' && /\w/.test(next ?? '')) problem('splatted arguments', index);
+    if (char === '>') problem('redirection', index);
     if (char === '@' && (next === '(' || next === '{')) { stack.push(next === '{' ? 'hash' : '('); index += 2; last = 'open'; continue; }
     if (QUOTE_CHARS.has(char)) { index++; last = 'value'; continue; }
     if (char === '[') {
       if (glued && last === 'value') { stack.push('['); index++; last = 'open'; continue; }
+      const typeIndex = index;
       let depth = 0, end = index;
       for (; end < code.length; end++) { if (code[end] === '[') depth++; else if (code[end] === ']' && --depth === 0) break; }
       const content = code.slice(index + 1, end).replace(/\s+/g, '');
@@ -356,7 +374,7 @@ export function tokenizeHarnessCode(sourceText) {
       if (code.startsWith('::', index)) {
         const member = /^::(\w+)/.exec(code.slice(index));
         if (!member) { problem('static access without a member name', index); index += 2; continue; }
-        result.statics.push({type: typeName, name: member[1], index, invoked: code[index + member[0].length] === '('});
+        result.statics.push({type: typeName, name: member[1], index, typeIndex, invoked: code[index + member[0].length] === '('});
         index += member[0].length; last = 'value';
       }
       continue;
@@ -379,7 +397,10 @@ export function tokenizeHarnessCode(sourceText) {
       const word = /^[A-Za-z_][\w.\\-]*/.exec(code.slice(index))[0].replace(/[.-]+$/, '');
       const start = index; index += word.length;
       const lower = word.toLowerCase();
-      if (lastWord === 'function' || lastWord === 'filter') { result.declared.add(lower); lastWord = null; last = 'value'; continue; }
+      if (lastWord === 'function' || lastWord === 'filter') {
+        if (result.declared.has(lower)) problem(`function ${word} defined more than once`, start);
+        result.declared.add(lower); lastWord = null; last = 'value'; continue;
+      }
       lastWord = lower;
       if (stack.at(-1) === 'hash' && /^\s*=(?!=)/.test(code.slice(index))) { last = 'op'; continue; }
       if (KEYWORDS.has(lower) && !pipe) { last = 'op'; continue; }
@@ -452,6 +473,8 @@ export function auditHarnessSourcePolicy(sourceText, {label, ...policy}) {
   add('dynamic-code', 'must not use dynamic code (Invoke-Expression, iex, Add-Type, Invoke-Command, [scriptblock]::Create, InvokeScript, $ExecutionContext, string-named or non-literal & / . invocations) outside its listed exemptions', dynamicCodeInvocations(sourceText, {exemptFunction: policy.exemptFunction ?? null, exemptInvocations: policy.exemptInvocations ?? [], invocationSites}));
   add('com-property-assignment', 'assigns members outside its local report roots and documented COM setters', disallowedMemberAssignments(sourceText, {localRoots: policy.roots ?? [], comSetters: policy.setters ?? []}));
   add('local-root-binding', 'may bind a local report root only to a literal or a reviewed source', localRootBindings(sourceText, {roots: policy.roots ?? [], rootSources: policy.rootSources ?? []}));
+  add('pinned-binding', 'may bind pinned invocation-site and owned-path variables only to their reviewed sources', pinnedBindingViolations(sourceText, {pinned: policy.pinned ?? [], pinnedBindings: policy.pinnedBindings ?? []}));
+  add('unreviewed-form', 'calls file-system writes, native helpers or COM path writes in forms outside its reviewed allowlist', exactFormViolations(sourceText, {exactForms: policy.exactForms ?? [], exactApis: policy.exactApis ?? [], exactMembers: policy.exactMembers ?? []}));
   const found = allowlistViolations(sourceText, policy);
   add('forbidden-command', 'uses commands or bare words outside its reviewed allowlist', found.command);
   add('forbidden-member', 'invokes members outside its reviewed allowlist', found.member);
@@ -464,7 +487,7 @@ export function auditHarnessSourcePolicy(sourceText, {label, ...policy}) {
 // The $script:<Prefix>Policy* lists a harness defines, parsed from its source, for Node/PowerShell parity controls.
 export function readPowerShellPolicyLists(sourceText, prefix) {
   const lists = {};
-  const keys = {Commands: 'commands', ScopedCommands: 'scoped', CommandForms: 'forms', InstanceMembers: 'instance', StaticMembers: 'statics', StaticProperties: 'properties', Types: 'types', InvocationSites: 'sites', PipelineExceptions: 'pipelines', AssignmentRoots: 'roots', ComSetters: 'setters', RootSources: 'rootSources'};
+  const keys = {Commands: 'commands', ScopedCommands: 'scoped', CommandForms: 'forms', InstanceMembers: 'instance', StaticMembers: 'statics', StaticProperties: 'properties', Types: 'types', InvocationSites: 'sites', PipelineExceptions: 'pipelines', AssignmentRoots: 'roots', ComSetters: 'setters', RootSources: 'rootSources', BareArguments: 'bareArguments', ExactForms: 'exactForms', ExactApis: 'exactApis', ExactMembers: 'exactMembers', Pinned: 'pinned', PinnedBindings: 'pinnedBindings'};
   for (const [suffix, key] of Object.entries(keys)) {
     const match = new RegExp(String.raw`^\$script:${prefix}Policy${suffix}=@\((.*)\)\s*$`, 'm').exec(String(sourceText));
     lists[key] = match ? [...match[1].matchAll(/'((?:[^']|'')*)'/g)].map(item => item[1].replace(/''/g, "'")) : null;
@@ -498,5 +521,103 @@ export function localRootBindings(sourceText, {roots = [], rootSources = []} = {
     for (const variable of code.slice(match.index, end).matchAll(new RegExp(String.raw`\$${SCOPE_PREFIX}(\w+)`, 'gi'))) if (rootSet.has(variable[1])) found.push(`parameter $${variable[1]} at ${match.index}`);
   }
   for (const match of code.matchAll(/(?<=[\s(])-(?:ov|pv|ev|wv|iv|outv[a-z]*|errorv[a-z]*|warningv[a-z]*|informationv[a-z]*|pipelinev[a-z]*|pi|pip|pipe|pipel|pipeli|pipelin|pipeline)(?![\w-])/gi)) found.push(`variable-binding parameter ${match[0]} at ${match.index}`);
+  return found;
+}
+
+// Whitespace-flexible regex for one reviewed exact form (whitespace-normalized text), anchored at the start and
+// followed by the end of the command or expression.
+function exactFormRegex(text) {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+');
+  return new RegExp(`^${escaped}(?=[ \\t]*(?:[)};|,\\r\\n]|$))`);
+}
+const normalizeSpace = text => text.replace(/\s+/g, ' ').trim();
+
+// Reviewed exact forms: every call of a command in exactForms, every static call in exactApis and every instance call
+// in exactMembers must match one reviewed whitespace-normalized text ('Name|text' pairs).
+export function exactFormViolations(sourceText, {exactForms = [], exactApis = [], exactMembers = []} = {}) {
+  const text = String(sourceText), tokens = tokenizeHarnessCode(text), found = [];
+  const group = entries => { const map = new Map(); for (const [key, form] of pairs(entries)) map.set(key.toLowerCase(), [...(map.get(key.toLowerCase()) ?? []), exactFormRegex(form)]); return map; };
+  const forms = group(exactForms), apis = group(exactApis), members = group(exactMembers);
+  for (const word of tokens.barewords) {
+    const patterns = forms.get(word.name.toLowerCase());
+    if (patterns && !patterns.some(pattern => pattern.test(text.slice(word.index)))) found.push(`${word.name} at ${word.index}`);
+  }
+  for (const item of tokens.statics) {
+    const patterns = apis.get(`${item.type}::${item.name}`.toLowerCase());
+    if (patterns && !patterns.some(pattern => pattern.test(text.slice(item.typeIndex)))) found.push(`${item.type}::${item.name} at ${item.typeIndex}`);
+  }
+  for (const member of tokens.members) {
+    const patterns = members.get(member.name.toLowerCase());
+    if (member.invoked && patterns && !patterns.some(pattern => pattern.test(text.slice(member.index)))) found.push(`.${member.name} at ${member.index}`);
+  }
+  return found;
+}
+
+// PowerShell's ParameterAst.StaticType.Name for the type constraints the harnesses use.
+const PARAMETER_TYPES = {'': 'Object', string: 'String', 'string[]': 'String[]', int: 'Int32', long: 'Int64', double: 'Double', bool: 'Boolean', switch: 'SwitchParameter', scriptblock: 'ScriptBlock', hashtable: 'Hashtable'};
+
+// Every binding of a pinned variable (invocation-site variables and owned paths): assignments (any scope prefix or
+// braced form), foreach variables, parameters and increments must be one of the reviewed 'name|=|source',
+// 'name|foreach|condition' or 'name|param|Function|Type' entries.
+export function pinnedBindingViolations(sourceText, {pinned = [], pinnedBindings = []} = {}) {
+  const text = String(sourceText), code = stripPowerShellLiteralsForScan(text);
+  const names = new Set(pinned.map(name => name.toLowerCase())), found = [];
+  const reviewed = new Set(pinnedBindings);
+  const sources = new Map();
+  for (const binding of pinnedBindings) {
+    const [name, kind, ...rest] = binding.split('|');
+    if (kind === '=') sources.set(name, [...(sources.get(name) ?? []), exactFormRegex(rest.join('|'))]);
+  }
+  const extents = functionExtents(code);
+  for (const match of code.matchAll(/\$[\w:{}]+(?:\s*,\s*\$[\w:{}]+)+\s*=(?!=)/g)) {
+    for (const variable of match[0].match(/\$[\w:{}]+/g)) {
+      const name = variable.replace(/^\$\{?/, '').replace(/\}$/, '').replace(/^(?:script|global|local|private):/i, '').toLowerCase();
+      if (names.has(name)) found.push(`multiple assignment of $${name} at ${match.index}`);
+    }
+  }
+  for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$.\]])\$\{?${SCOPE_PREFIX}(\w+)\}?\s*([-+*/%]?=)(?!=)`, 'gi'))) {
+    const name = match[1].toLowerCase();
+    if (!names.has(name) || /,\s*$/.test(code.slice(0, match.index))) continue;
+    let start = match.index + match[0].length;
+    while (/\s/.test(text[start] ?? '')) start++;
+    if (match[2] !== '=' || !(sources.get(name) ?? []).some(pattern => pattern.test(text.slice(start)))) found.push(`$${name} bound to an unreviewed source at ${match.index}`);
+  }
+  for (const match of code.matchAll(new RegExp(String.raw`\bforeach\s*\(\s*\$${SCOPE_PREFIX}(\w+)\s+in\s+`, 'gi'))) {
+    const name = match[1].toLowerCase();
+    if (!names.has(name)) continue;
+    let depth = 1, end = match.index + match[0].length;
+    for (; end < code.length; end++) { if (code[end] === '(') depth++; else if (code[end] === ')' && --depth === 0) break; }
+    if (!reviewed.has(`${name}|foreach|${normalizeSpace(text.slice(match.index + match[0].length, end))}`)) found.push(`foreach variable $${name} at ${match.index}`);
+  }
+  for (const match of code.matchAll(/(?:\bparam|\bfunction\s+([\w-]+))\s*\(/gi)) {
+    const owner = match[1] ?? enclosingFunction(extents, match.index) ?? '';
+    let depth = 0, end = match.index + match[0].length - 1;
+    for (; end < code.length; end++) { if (code[end] === '(') depth++; else if (code[end] === ')' && --depth === 0) break; }
+    const list = code.slice(match.index + match[0].length, end);
+    const parameters = [];
+    let current = '', level = 0;
+    for (const char of list) { if ('([{'.includes(char)) level++; if (')]}'.includes(char)) level--; if (char === ',' && level === 0) { parameters.push(current); current = ''; } else current += char; }
+    parameters.push(current);
+    for (const parameter of parameters) {
+      const variable = new RegExp(String.raw`\$${SCOPE_PREFIX}(\w+)`, 'i').exec(parameter);
+      if (!variable || !names.has(variable[1].toLowerCase())) continue;
+      const constraints = [];
+      const prefix = parameter.slice(0, variable.index);
+      for (let at = prefix.indexOf('['); at >= 0; at = prefix.indexOf('[', at)) {
+        let level = 0, close = at;
+        for (; close < prefix.length; close++) { if (prefix[close] === '[') level++; else if (prefix[close] === ']' && --level === 0) break; }
+        const content = prefix.slice(at + 1, close).replace(/\s+/g, '').toLowerCase();
+        if (!content.includes('(')) constraints.push(content);
+        at = close + 1;
+      }
+      const typeName = PARAMETER_TYPES[constraints.at(-1) ?? ''] ?? constraints.at(-1);
+      const name = variable[1].toLowerCase();
+      if (!reviewed.has(`${name}|param|${owner}|${typeName}`)) found.push(`parameter $${name} of ${owner || 'script'} typed ${typeName} at ${match.index}`);
+    }
+  }
+  for (const match of code.matchAll(new RegExp(String.raw`(?:\+\+|--)\s*\$\{?${SCOPE_PREFIX}(\w+)|\$\{?${SCOPE_PREFIX}(\w+)\}?\s*(?:\+\+|--)`, 'gi'))) {
+    const name = (match[1] ?? match[2]).toLowerCase();
+    if (names.has(name)) found.push(`increment of $${name} at ${match.index}`);
+  }
   return found;
 }
