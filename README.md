@@ -112,7 +112,7 @@ The exporter reads the presentation `language` through core `resolveScriptFonts(
 
 Charts keep their `c:lang` and left-to-right label paragraphs. The embedded chart workbook is untouched.
 
-`fromPptx` sets `language` from the most common run `lang`. It uses a catalog id when that record exports the same tag (`ja-JP` imports as `japanese`, `en-US` as `english-us`). Otherwise it keeps the tag itself (`en-NZ`), which still resolves to its catalog record. `english` (`en`) exports `en-US`, so it imports as `english-us`. Diagnostics:
+When the package carries an FF-32 stored `language` ([document round trip](docs/document-roundtrip.md)), that reference is restored while the runs still carry its OOXML tag (or none); if the runs now use another tag, the observed language below is kept and `metadata-reference-changed` is reported once. Otherwise `fromPptx` sets `language` from the most common run `lang`. It uses a catalog id when that record exports the same tag (`ja-JP` imports as `japanese`, `en-US` as `english-us`). Otherwise it keeps the tag itself (`en-NZ`), which still resolves to its catalog record. `english` (`en`) exports `en-US`, so it imports as `english-us`. Diagnostics:
 
 - `mixed-run-languages`: runs use several tags; the most common one is imported.
 - `language-ambiguous`: records share one curated tag and none has it as its own tag (`bn-BD` is Bengali and Chittagonian, `fil-PH` Filipino and Tagalog); the record of the same primary language is imported.

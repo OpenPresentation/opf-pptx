@@ -203,12 +203,13 @@ export function matchCatalogLanguage(lang, catalogs) {
 }
 
 /**
- * Recover the presentation language from run `lang`, and check paragraph
- * direction and theme East Asian/complex-script fonts against it. `slides`
- * and `theme` are XML strings. Returns a catalog id or a BCP-47 tag, or
- * undefined when the runs carry no language.
+ * Observe the presentation language in run `lang`. `slides` and `theme` are
+ * XML strings. `language` is a catalog id, the run's tag when no catalog
+ * record matches, or undefined when the runs carry no language; `lang` is the
+ * dominant run tag itself. Nothing is reported here: languageDiagnostics()
+ * reports against the final imported document, after FF-32 provenance.
  */
-export function importLanguage({slides, theme, catalogs}, report) {
+export function observeLanguage({slides, theme, catalogs}) {
   const counts = new Map();
   let rtlParagraphs = 0;
   for (const xml of slides) {
@@ -220,26 +221,58 @@ export function importLanguage({slides, theme, catalogs}, report) {
     rtlParagraphs += xml.match(/<a:pPr\b[^>]*?\srtl="1"/g)?.length ?? 0;
   }
   const ranked = [...counts].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
-  if (!ranked.length) {
-    if (rtlParagraphs) report?.({code: "rtl-language-mismatch", path: "language", message: `${rtlParagraphs} right-to-left paragraph(s) carry no run language, so no presentation language was imported.`});
-    return undefined;
+  const lang = ranked[0]?.[0];
+  const match = lang === undefined ? null : matchCatalogLanguage(lang, catalogs);
+  return {lang, language: lang === undefined ? undefined : match?.language ?? lang, match, ranked, rtlParagraphs, theme};
+}
+
+/**
+ * Reconcile the observed language with a stored FF-32 `language` reference.
+ * The stored reference wins while the runs still carry its OOXML tag (or no
+ * tag, or it cannot be resolved locally); otherwise the observed language
+ * stays and `metadata-reference-changed` names the reference. Returns the
+ * provenance groups to apply.
+ */
+export function reconcileLanguage(groups, observed, report) {
+  const index = groups.findIndex(item => item.field === "language");
+  if (index < 0 || observed.lang === undefined || !resolver) return groups;
+  const stored = groups[index].ops.find(op => op.path?.length === 1 && op.path[0] === "language")?.value;
+  if (stored === undefined) return groups;
+  const resolved = resolver({language: stored});
+  if (resolved.languageSource === "default" || resolved.lang.toLowerCase() === observed.lang.toLowerCase()) return groups;
+  report?.({code: "metadata-reference-changed", path: "language",
+    message: `Runs now use ${observed.lang}, not ${resolved.lang} of the stored language, so the stored language was not restored; the imported language follows the runs.`});
+  return groups.filter((_, position) => position !== index);
+}
+
+/**
+ * Diagnostics for the final imported document: several run languages, a run
+ * tag that maps ambiguously or to no catalog record (only when that observed
+ * language was kept), right-to-left paragraphs under a left-to-right
+ * language, and theme East Asian/complex-script fonts the document does not
+ * reproduce.
+ */
+export function languageDiagnostics(imported, observed, report) {
+  if (!report) return;
+  const {lang, match, ranked, rtlParagraphs, theme} = observed;
+  if (lang === undefined) {
+    if (rtlParagraphs) report({code: "rtl-language-mismatch", path: "language", message: `${rtlParagraphs} right-to-left paragraph(s) carry no run language, so no presentation language was imported.`});
+    return;
   }
-  const lang = ranked[0][0];
   if (ranked.length > 1) {
-    report?.({code: "mixed-run-languages", path: "language",
+    report({code: "mixed-run-languages", path: "language",
       message: `Runs use ${ranked.length} languages (${ranked.map(([tag, count]) => `${tag} x${count}`).join(", ")}). OPF has one presentation language, so ${lang} was imported.`});
   }
-  const match = matchCatalogLanguage(lang, catalogs);
-  if (!match) report?.({code: "language-uncatalogued", path: "language", message: `Run language ${lang} matches no languages catalog record; it was imported as a BCP-47 tag.`});
-  else if (match.shared.length > 1 && !match.shared.some(record => record.bcp47?.toLowerCase() === lang.toLowerCase())) {
-    report?.({code: "language-ambiguous", path: "language",
+  const kept = imported.language === observed.language;
+  if (kept && !match) report({code: "language-uncatalogued", path: "language", message: `Run language ${lang} matches no languages catalog record; it was imported as a BCP-47 tag.`});
+  else if (kept && match.shared.length > 1 && !match.shared.some(record => record.bcp47?.toLowerCase() === lang.toLowerCase())) {
+    report({code: "language-ambiguous", path: "language",
       message: `Run language ${lang} is the OOXML tag of ${match.shared.map(record => record.id).join(", ")}; ${match.language} was imported.`});
   }
-  const language = match?.language ?? lang;
-  const resolved = resolver ? resolver({language}) : null;
+  const resolved = resolver ? resolver(imported) : null;
   const rtl = resolved ? resolved.rtl : match?.record.direction === "rtl";
   if (rtlParagraphs && !rtl) {
-    report?.({code: "rtl-language-mismatch", path: "language", message: `${rtlParagraphs} right-to-left paragraph(s) do not match the left-to-right language ${language}; paragraph direction is not imported separately.`});
+    report({code: "rtl-language-mismatch", path: "language", message: `${rtlParagraphs} right-to-left paragraph(s) do not match the left-to-right language ${typeof imported.language === "string" ? imported.language : lang}; paragraph direction is not imported separately.`});
   }
   if (theme && resolved) {
     for (const [tag, role] of [["majorFont", "heading"], ["minorFont", "body"]]) {
@@ -249,10 +282,9 @@ export function importLanguage({slides, theme, catalogs}, report) {
       for (const [element, slot] of SCRIPT_SLOTS) {
         const face = attribute(new RegExp(`<a:${element}\\b[^>]*/>`).exec(block)?.[0] ?? "", "typeface");
         if (!face || face.startsWith("+") || face === latin || face === escapeAttribute(resolved[role][slot])) continue;
-        report?.({code: "script-font-not-imported", path: "design.fontScheme",
-          message: `Theme ${tag} ${slot} font "${face}" differs from both its latin font and the ${language} default, and is not represented in the imported OPF.`});
+        report({code: "script-font-not-imported", path: "design.fontScheme",
+          message: `Theme ${tag} ${slot} font "${face}" differs from both its latin font and what the imported document resolves, and is not represented in the imported OPF.`});
       }
     }
   }
-  return language;
 }

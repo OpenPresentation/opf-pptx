@@ -13,7 +13,7 @@ import {importImageOrientation} from './image-import.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
-import {importLanguage, partScriptFonts, planScriptFonts} from './script-fonts.js';
+import {languageDiagnostics, observeLanguage, partScriptFonts, planScriptFonts, reconcileLanguage} from './script-fonts.js';
 import { webpToPng } from '#image-fallback';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import { layoutTable, composeSlide, fitText, fitRichText, textWidthMeasurer, resolveCanvasDimensions, resolveFontFamilies, resolveTextStyle, textColorForFill, chartColorForFill } from "@openpresentation/opf/composition";
@@ -258,12 +258,13 @@ export async function fromPptx(input, options = {}) {
     slides: []
   };
 
-  const language = importLanguage({
+  // FF-07: the language the runs carry. A stored FF-32 reference can still win below.
+  const observedLanguage = observeLanguage({
     slides: slidePaths.map(path => decodeText(entries[path])),
     theme: (path => path && entries[path] ? decodeText(entries[path]) : null)(presentationThemePath(presentationRoot, presentationRels, path => parseRelationships(entries, path), entries)),
     catalogs: bundledCatalogs
-  }, diagnostic => options.onDiagnostic?.(diagnostic));
-  if (language !== undefined) imported.language = language;
+  });
+  if (observedLanguage.language !== undefined) imported.language = observedLanguage.language;
   if (core.description) imported.description = core.description;
   if (core.author) imported.author = core.author;
   const themeDesign = importThemeDesign(entries, presentationRoot, presentationRels);
@@ -303,6 +304,8 @@ export async function fromPptx(input, options = {}) {
   try {
     const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true,
       slides: slidePaths.map((path, index) => ({path, root: furnitureContexts[index].root, relationships: furnitureContexts[index].relationships}))}, report);
+    // The stored language wins while the runs still carry its tag (FF-07).
+    restored.groups = reconcileLanguage(restored.groups, observedLanguage, report);
     imported = applyDocumentProvenance(imported, restored, validatePresentation, report);
     slideProvenance = restored.slides;
   } catch (error) {
@@ -310,6 +313,7 @@ export async function fromPptx(input, options = {}) {
   }
   if (slideProvenance.length !== imported.slides.length) throw new OPFPptxError("invalid-import-opf", "Slide provenance does not match the imported slides.");
   if (imported.design?.theme === undefined) for (const diagnostic of themeDesign.diagnostics) if (diagnostic.code === "theme-unverified") report(diagnostic);
+  languageDiagnostics(imported, observedLanguage, options.onDiagnostic && report);
 
   const result = validatePresentation(imported);
   if (!result.valid) {

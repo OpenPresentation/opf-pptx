@@ -165,23 +165,30 @@ for (const expected of cases) {
 }
 
 // An explicit eastAsian slot on the design font scheme fills ea in a Latin deck
-// (CJK inside a Latin deck); the importer reports it cannot carry that slot.
+// (CJK inside a Latin deck). The FF-32 stored font scheme restores that slot;
+// without provenance the importer reports it cannot carry it.
 {
   const fontScheme = {id: 'aptos', eastAsian: {major: 'Noto Sans JP', minor: 'Noto Sans JP'}};
   const {xml, bytes} = await read(deck('english-us', {design: {fontScheme}}));
+  const stored = [];
+  const restoredScheme = await fromPptx(bytes, {onDiagnostic: diagnostic => stored.push(diagnostic.code)});
+  assert.deepEqual(restoredScheme.design.fontScheme, fontScheme);
+  assert.ok(!stored.includes('script-font-not-imported'), 'the restored scheme reproduces the theme ea');
+  const observedOnly = (await read(deck('english-us', {design: {fontScheme}}), {provenance: false})).bytes;
   assert.equal(themeFonts(xml, 'minorFont').ea, 'Noto Sans JP');
   assert.equal(themeFonts(xml, 'minorFont').cs, '', 'only the explicit slot fills');
   assert.deepEqual(runFaces(xml, 'ea'), new Set(['Noto Sans JP']));
   assert.deepEqual([...langs(xml)], ['en-US']);
   const diagnostics = [];
-  await fromPptx(bytes, {onDiagnostic: diagnostic => diagnostics.push(diagnostic.code)});
+  await fromPptx(observedOnly, {onDiagnostic: diagnostic => diagnostics.push(diagnostic.code)});
   assert.ok(diagnostics.includes('script-font-not-imported'));
 }
 
 // Authored tags: a region tag is used as written and imports as that tag (it
 // still resolves to the English record); an uncatalogued tag round-trips as a
-// tag with a diagnostic. Records sharing one curated OOXML tag import as the
-// record of the same primary language, with a diagnostic.
+// tag with a diagnostic. Without FF-32 provenance, records sharing one
+// curated OOXML tag import as the record of the same primary language, with a
+// diagnostic; with it, the stored id wins and nothing is ambiguous.
 {
   const nz = await read(deck('en-NZ'));
   assert.deepEqual([...langs(nz.xml)], ['en-NZ']);
@@ -190,10 +197,13 @@ for (const expected of cases) {
   assert.deepEqual(nzDiagnostics.filter(code => code.startsWith('language')), []);
   for (const [id, imported] of [['chittagonian', 'bengali'], ['tagalog', 'filipino'], ['english', 'english-us']]) {
     const diagnostics = [];
-    const restored = await fromPptx((await read(deck(id))).bytes, {onDiagnostic: diagnostic => diagnostics.push(diagnostic.code)});
+    const restored = await fromPptx((await read(deck(id), {provenance: false})).bytes, {onDiagnostic: diagnostic => diagnostics.push(diagnostic.code)});
     assert.equal(restored.language, imported, `${id} imports as ${imported}`);
     // en is en-US for OOXML: english-us carries that exact tag, so nothing is ambiguous.
     assert.equal(diagnostics.includes('language-ambiguous'), id !== 'english', `${id} ambiguity diagnostic`);
+    const withStored = [];
+    assert.equal((await fromPptx((await read(deck(id))).bytes, {onDiagnostic: diagnostic => withStored.push(diagnostic.code)})).language, id, `${id} stored reference wins`);
+    assert.deepEqual(withStored.filter(code => /language|metadata-reference/.test(code)), [], `${id} no duplicate language diagnostics`);
   }
   const {bytes} = await read(deck('haw-US'));
   const diagnostics = [];
@@ -209,10 +219,27 @@ for (const expected of cases) {
   assert.ok(diagnostics.some(diagnostic => diagnostic.code === 'language-unresolved'));
 }
 
-// Import of mixed run languages keeps the dominant one and reports the rest;
-// RTL paragraphs under a left-to-right language are reported.
+// FF-32 x FF-07: a stored language wins while the runs still carry its tag;
+// runs retagged to another language keep the observed language and name the
+// stored reference once.
 {
-  const {bytes} = await read(deck('arabic', {}, 'مرحبا'));
+  const {bytes} = await read(deck('japanese'));
+  const entries = unzipSync(new Uint8Array(bytes));
+  for (const [name, value] of Object.entries(entries)) {
+    if (/^ppt\/slides\/slide\d+\.xml$/.test(name)) entries[name] = new TextEncoder().encode(strFromU8(value).replace(/(\slang=")ja-JP"/g, '$1fr-FR"'));
+  }
+  const {zipSync} = await import('fflate');
+  const diagnostics = [];
+  const restored = await fromPptx(zipSync(entries), {onDiagnostic: diagnostic => diagnostics.push(diagnostic.code)});
+  assert.equal(restored.language, 'french');
+  assert.deepEqual(diagnostics.filter(code => code === 'metadata-reference-changed'), ['metadata-reference-changed']);
+}
+
+// Import of mixed run languages keeps the dominant one and reports the rest;
+// RTL paragraphs under a left-to-right language are reported. These packages
+// carry no FF-32 provenance, so only the runs decide.
+{
+  const {bytes} = await read(deck('arabic', {}, 'مرحبا'), {provenance: false});
   const entries = unzipSync(new Uint8Array(bytes));
   const slide = strFromU8(entries['ppt/slides/slide1.xml']);
   let first = true;
