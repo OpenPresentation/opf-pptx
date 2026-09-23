@@ -45,6 +45,87 @@ export function auditEmbedVerifierSource(sourceText, {label = 'native-font-embed
   for (const required of ['nativeFontsGate', 'blockedByNativeFontsGate', 'edited.presentation.native-fonts-gate']) {
     if (!sourceText.includes(required)) failures.push({code: 'missing-native-font-gate', message: `${label} lacks ${required}`});
   }
+  const gateInputs = [...stripPowerShellLiteralsForScan(sourceText).matchAll(/Get-FontEmbedNativeFontsGate\s+(\$[\w:.]+)/g)].map(match => match[1]);
+  if (JSON.stringify(gateInputs) !== JSON.stringify(['$report.nativeFontsObservation'])) failures.push({code: 'native-font-gate-input', message: `${label} must gate SaveAs on exactly one post-edit $report.nativeFontsObservation; found ${gateInputs.join(', ') || 'none'}`});
+  for (const required of ['preEditFontsObservation', 'postTextFontsObservations', 'fontSlotObservations', 'Get-FontEmbedFontsInventory', 'Get-FontEmbedPostTextObservation', 'Get-FontEmbedFontSlotObservations']) {
+    if (!sourceText.includes(required)) failures.push({code: 'missing-diagnostic-observation', message: `${label} lacks ${required}`});
+  }
+  return failures;
+}
+
+export const FONT_SLOT_KEYS = Object.freeze(['name', 'nameAscii', 'nameOther', 'nameFarEast', 'nameComplexScript']);
+export const FONT_SLOT_PROPERTIES = Object.freeze(['Name', 'NameAscii', 'NameOther', 'NameFarEast', 'NameComplexScript']);
+export const DIAGNOSTIC_PHASES = Object.freeze({preEdit: 'pre-edit', postText: 'post-text', postEdit: 'post-edit'});
+export const POST_TEXT_RANGES = Object.freeze(['title', 'body']);
+const FONT_SLOT_STAGE_SUFFIXES = Object.freeze(['font.get', ...FONT_SLOT_KEYS.map(key => `font.${key}.get`)]);
+const WHOLE_RANGES = new Set(['title', 'body']);
+
+// Stage names emitted by Get-FontEmbedFontsInventory for one phase; entries are enumerated only for a 1..64 count.
+export function expectedFontsInventoryStageNames(phase, count) {
+  const names = [`${phase}.presentation.fonts.get`, `${phase}.presentation.fonts.count.get`];
+  if (isPlainInteger(count) && count >= 1 && count <= 64) for (let index = 1; index <= count; index++) for (const suffix of ['get', 'name.get', 'embedded.get', 'embeddable.get']) names.push(`${phase}.presentation.fonts.item-${index}.${suffix}`);
+  return names;
+}
+
+// Stage names emitted by Get-FontEmbedFontSlotObservations for one phase; unobserved spans are never read.
+export function expectedFontSlotStageNames(phase, records) {
+  const names = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    const range = record?.range;
+    if (typeof range !== 'string') continue;
+    if (WHOLE_RANGES.has(range)) names.push(`${phase}.${range}.textRange2.get`, `${phase}.${range}.length.get`);
+    else if (record?.observed === true) names.push(`${phase}.${range}.get`);
+    else continue;
+    names.push(...FONT_SLOT_STAGE_SUFFIXES.map(suffix => `${phase}.${range}.${suffix}`));
+  }
+  return names;
+}
+
+// Stage names emitted by Get-FontEmbedPostTextObservation right after one range's .Text set: Fonts inventory, then that whole range's slots.
+export function expectedPostTextStageNames(range, count) {
+  return [...expectedFontsInventoryStageNames(`${DIAGNOSTIC_PHASES.postText}.${range}`, count), ...expectedFontSlotStageNames(DIAGNOSTIC_PHASES.postText, [{range, observed: true}])];
+}
+
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const nonNegativeInteger = value => isPlainInteger(value) && value >= 0;
+const validInventory = observation => {
+  const expectedEntries = isPlainInteger(observation?.count) && observation.count >= 1 && observation.count <= 64 ? observation.count : 0;
+  return isRecord(observation) && nonNegativeInteger(observation.count) && Array.isArray(observation.entries) && observation.entries.length === expectedEntries && observation.entries.every((entry, index) => isRecord(entry) && entry.index === index + 1 && typeof entry.name === 'string' && isPlainInteger(entry.embedded) && isPlainInteger(entry.embeddable));
+};
+
+function validSlotRecord(record, expected, records, phaseKey) {
+  if (!isRecord(record) || record.range !== expected.range || typeof record.observed !== 'boolean') return false;
+  if (![record.start, record.length, record.textLength].every(nonNegativeInteger)) return false;
+  if (expected.whole) {
+    if (record.start !== 1 || record.length !== record.textLength || record.observed !== true) return false;
+  } else {
+    if (record.start !== expected.start || record.length !== expected.length || record.textLength !== records[1]?.textLength) return false;
+    const inside = record.start >= 1 && record.length >= 1 && record.start + record.length - 1 <= record.textLength;
+    if (record.observed !== inside || (phaseKey === 'postEdit' && !inside)) return false;
+  }
+  if (!record.observed) return record.slots === null;
+  return isRecord(record.slots) && FONT_SLOT_KEYS.every(key => Object.hasOwn(record.slots, key) && (record.slots[key] === null || typeof record.slots[key] === 'string'));
+}
+
+// Diagnostic observations are bound for presence and type only. Their font names are never allowlisted: only nativeFontsObservation is a gate.
+export function auditDiagnosticObservations(report) {
+  const failures = [];
+  const need = (condition, code, message) => { if (!condition) failures.push({code, message}); };
+  need(validInventory(report?.preEditFontsObservation), 'report-pre-edit-fonts', 'preEditFontsObservation must record a non-negative integer count and, for 1..64, exactly that many indexed string/integer entries');
+  const postText = report?.postTextFontsObservations;
+  need(isRecord(postText) && POST_TEXT_RANGES.every(range => validInventory(postText[range])), 'report-post-text-fonts', 'postTextFontsObservations.title and .body must each record a bounded, typed Fonts inventory');
+  const observations = report?.fontSlotObservations;
+  const postTextSlots = observations?.postText;
+  need(Array.isArray(postTextSlots) && postTextSlots.length === POST_TEXT_RANGES.length && postTextSlots.every((record, index) => validSlotRecord(record, {range: POST_TEXT_RANGES[index], whole: true}, postTextSlots, 'postText')), 'report-font-slots', 'fontSlotObservations.postText must record the title then body whole-range slots read right after each .Text set');
+  const runs = report?.requested?.body?.runs;
+  const runsValid = Array.isArray(runs) && runs.every(run => isPlainInteger(run?.start) && isPlainInteger(run?.length) && run.start >= 1 && run.length >= 1);
+  need(runsValid, 'report-font-slots', 'report.requested.body.runs must be positive integer spans to bind font-slot observations');
+  need(isRecord(observations) && JSON.stringify(observations.properties) === JSON.stringify(FONT_SLOT_PROPERTIES), 'report-font-slots', 'fontSlotObservations.properties must list the five TextRange2.Font slot properties');
+  const expected = [{range: 'title', whole: true}, {range: 'body', whole: true}, ...(runsValid ? runs.map(run => ({range: `body.run-${run.start}-${run.length}`, start: run.start, length: run.length, whole: false})) : [])];
+  for (const phaseKey of ['preEdit', 'postEdit']) {
+    const records = observations?.[phaseKey];
+    need(runsValid && Array.isArray(records) && records.length === expected.length && records.every((record, index) => validSlotRecord(record, expected[index], records, phaseKey)), 'report-font-slots', `fontSlotObservations.${phaseKey} must record title, body and each requested span with integer bounds and string/null slot names`);
+  }
   return failures;
 }
 
@@ -248,16 +329,42 @@ function auditLifecycle({report, supervisor, worker, progress, stages, registrat
   };
   const initialized = singleton('worker.initialize', null);
   const opened = paired('input.presentation.open', sourcePath);
+  // Diagnostic observation stages: pre-edit Fonts inventory and font slots before any edit set, post-edit slots after the gated inventory.
+  const preEditRecords = report?.fontSlotObservations?.preEdit, postEditRecords = report?.fontSlotObservations?.postEdit;
+  const diagnosticNames = [
+    ...expectedFontsInventoryStageNames(DIAGNOSTIC_PHASES.preEdit, report?.preEditFontsObservation?.count),
+    ...expectedFontSlotStageNames(DIAGNOSTIC_PHASES.preEdit, preEditRecords),
+  ];
+  const postEditNames = expectedFontSlotStageNames(DIAGNOSTIC_PHASES.postEdit, postEditRecords);
+  const postTextNames = Object.fromEntries(POST_TEXT_RANGES.map(range => [range, expectedPostTextStageNames(range, report?.postTextFontsObservations?.[range]?.count)]));
+  const expectedDiagnostic = new Set([...diagnosticNames, ...Object.values(postTextNames).flat(), ...postEditNames]);
+  const unexpectedDiagnostic = stages.filter(row => typeof row?.stage === 'string' && /^(?:pre-edit|post-text|post-edit)\./.test(row.stage) && !expectedDiagnostic.has(row.stage)).map(row => row.stage);
+  need(unexpectedDiagnostic.length === 0, 'stage-diagnostic-bound', `Diagnostic stages outside the bounded observation set: ${[...new Set(unexpectedDiagnostic)].join(', ')}`);
+  const preEditObserved = diagnosticNames.map(name => paired(name, sourcePath));
+  const editSets = stages.filter(row => typeof row?.stage === 'string' && /^edit\..+\.set$/.test(row.stage));
+  // Each range: .Text set, then its post-text snapshot, then every other set on that range (its Font2 property sets).
+  const editRange = range => {
+    const textSet = paired(`edit.${range}.text.set`, sourcePath);
+    const snapshot = postTextNames[range].map(name => paired(name, sourcePath));
+    const laterSets = editSets.filter(row => row.stage.startsWith(`edit.${range}.`) && row.stage !== `edit.${range}.text.set`);
+    need(laterSets.length > 0 && isPlainInteger(snapshot.at(-1)) && laterSets.every(row => row.sequence > snapshot.at(-1)), 'stage-diagnostic-order', `Every edit.${range} Font2 set must follow its post-text snapshot`);
+    return [textSet, ...snapshot, paired(`edit.${range}.font.name.set`, sourcePath)];
+  };
+  const [editTitleText, ...titleAfterText] = editRange('title');
+  const [editBodyText, ...bodyAfterText] = editRange('body');
   const fontsRead = [paired('edited.presentation.fonts.get', sourcePath), paired('edited.presentation.fonts.count.get', sourcePath)];
   if (Array.isArray(entries)) for (let index = 1; index <= entries.length; index++) for (const suffix of ['get', 'name.get', 'embedded.get', 'embeddable.get']) fontsRead.push(paired(`edited.presentation.fonts.item-${index}.${suffix}`, sourcePath));
+  const lastPreEdit = preEditObserved.length ? preEditObserved.at(-1) : undefined;
+  need(editSets.length > 0 && isPlainInteger(lastPreEdit) && isPlainInteger(fontsRead[0]) && editSets.every(row => row.sequence > lastPreEdit && row.sequence < fontsRead[0] - 1), 'stage-diagnostic-order', 'Every edit set must follow all pre-edit observations and precede the post-edit Fonts inventory');
+  const postEditObserved = postEditNames.map(name => paired(name, sourcePath));
   const gateSequence = singleton('edited.presentation.native-fonts-gate', sourcePath);
   const saved = paired('edited.presentation.saveAs-owned-copy-embed-fonts', sourcePath);
   const confirmed = paired('edited.presentation.fullName.get', savedPath);
   const closed = paired('edited.presentation.close', savedPath);
   const cleaned = singleton('edited.presentation.cleanup', null);
   const complete = singleton('worker.complete', null);
-  const milestones = [initialized, opened, ...fontsRead, gateSequence, saved, confirmed, closed, cleaned, complete];
-  need(initialized === 1 && milestones.every(isPlainInteger) && milestones.every((value, index) => index === 0 || value > milestones[index - 1]), 'stage-order', 'Required initialization, open, font inventory, gate, save, close, cleanup, and completion are missing or out of order');
+  const milestones = [initialized, opened, ...preEditObserved, editTitleText, ...titleAfterText, editBodyText, ...bodyAfterText, ...fontsRead, ...postEditObserved, gateSequence, saved, confirmed, closed, cleaned, complete];
+  need(initialized === 1 && milestones.every(isPlainInteger) && milestones.every((value, index) => index === 0 || value > milestones[index - 1]), 'stage-order', 'Required initialization, open, pre-edit observations, per-range .Text set and post-text snapshot, edits, font inventory, post-edit observations, gate, save, close, cleanup, and completion are missing or out of order');
   need(stages.filter(row => typeof row?.stage === 'string' && row.stage.endsWith('.close') && row?.status === 'success').length === 1, 'stage-close', 'Exactly one owned close is permitted');
   const final = stages.at(-1);
   need(complete === stages.length && final?.cleanupConfirmed === true && final?.ownedPresentationPath === null && JSON.stringify(progress) === JSON.stringify(final), 'stage-terminal', 'worker.complete must be the final durable stage and match progress.json exactly');
@@ -266,7 +373,7 @@ function auditLifecycle({report, supervisor, worker, progress, stages, registrat
 }
 
 export function auditSavedEmbedPresentation(evidence) {
-  const failures = [...auditCanonicalFixtureManifest(evidence.generation), ...auditLifecycle(evidence), ...(evidence.inputBindingFailures ?? [])];
+  const failures = [...auditCanonicalFixtureManifest(evidence.generation), ...auditLifecycle(evidence), ...auditDiagnosticObservations(evidence.report), ...(evidence.inputBindingFailures ?? [])];
   const opc = inspectFontEmbeddingPackage(evidence.pptxBytes);
   failures.push(...opc.failures);
   if (evidence.report?.saved?.sha256 !== opc.packageSha256) failures.push({code: 'saved-hash', message: 'report.saved.sha256 does not match native-font-embed.pptx'});

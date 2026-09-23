@@ -9,7 +9,11 @@ import {fileURLToPath} from 'node:url';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {
   auditCanonicalFixtureManifest,
+  auditDiagnosticObservations,
   auditEmbedVerifierSource,
+  expectedFontSlotStageNames,
+  expectedFontsInventoryStageNames,
+  expectedPostTextStageNames,
   auditEvidenceDirectory,
   auditSavedEmbedPresentation,
   hasOfficeQuitInvocation,
@@ -44,6 +48,7 @@ assert.match(editSource, /tolerancePoints=0\.02/, 'Gate E native-font-edit must 
 record('gate-e-remains-no-embed');
 
 const ps = path.join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+let pureRegression = null;
 if (process.platform === 'win32') {
   const child = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', embedVerifier, '-PureRegression'], spawnOptions);
   assert.equal(child.status, 0, child.stderr || child.stdout);
@@ -51,7 +56,26 @@ if (process.platform === 'win32') {
   assert.equal(pure.officeOrComCalls, 0);
   assert.equal(pure.canonicalHashRejected, true); assert.equal(pure.wrongLicenseRejected, true);
   assert.equal(pure.carlitoAptosGateRejected, true); assert.equal(pure.stopLatchPassed, true);
+  assert.equal(pure.observationHelpersPassed, true); assert.ok(Array.isArray(pure.observationStageNames) && pure.observationStageNames.length > 0);
+  pureRegression = pure;
   record('embed-pure-regression');
+  // The pure regression's AST policy rejects a copy whose only gate reads the pre-edit observation, or that kills a process.
+  const astRoot = await mkdtemp(path.join(path.resolve(os.tmpdir()), 'opf-font-embed-ast-'));
+  try {
+    const astNegatives = [
+      ['gate-on-pre-edit', embedSource.replace('$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation', '$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.preEditFontsObservation'), /post-edit \$report\.nativeFontsObservation/],
+      ['kill', embedSource.replace('function Get-FontEmbedSha256(', 'function Invoke-FontEmbedForbiddenKill($Target) { $Target.Kill() }\r\nfunction Get-FontEmbedSha256('), /must not invoke \.Kill/],
+      ['stop-process', embedSource.replace('function Get-FontEmbedSha256(', 'function Invoke-FontEmbedForbiddenStop($Target) { Stop-Process -Id $Target }\r\nfunction Get-FontEmbedSha256('), /must not stop processes/],
+    ];
+    for (const [name, text, message] of astNegatives) {
+      assert.notEqual(text, embedSource, name);
+      const copy = path.join(astRoot, `${name}.ps1`); await writeFile(copy, text);
+      const negative = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-File', copy, '-PureRegression'], spawnOptions);
+      assert.notEqual(negative.status, 0, `${name} unexpectedly passed`);
+      assert.match(negative.stderr + negative.stdout, message, name);
+    }
+  } finally { await rm(astRoot, {recursive: true, force: true}); }
+  record('embed-ast-policy-negatives');
 } else outcomes.push({name: 'embed-pure-regression', passed: true, skipped: 'non-Windows runner'});
 
 assert.ok(auditEmbedVerifierSource('$script:presentation.SaveAs($savedPath,24,0)', {label: 'negative'}).some(item => item.code === 'embed-forced-off'));
@@ -132,14 +156,68 @@ const positivePptx = makeOpc();
 assert.deepEqual(inspectFontEmbeddingPackage(positivePptx).failures, []);
 record('font-opc-positive-structure');
 
-function makeLifecycle(pptxBytes, sourcePath, savedPath, sourceHash = '0'.repeat(64)) {
+// The four Gate E body spans, as in the worker's request expectations.
+const SYNTHETIC_RUNS = [
+  {start: 1, length: 10, text: 'Regular 18', size: 18, bold: false, italic: false},
+  {start: 14, length: 7, text: 'Bold 20', size: 20, bold: true, italic: false},
+  {start: 24, length: 9, text: 'Italic 22', size: 22, bold: false, italic: true},
+  {start: 36, length: 13, text: 'BoldItalic 24', size: 24, bold: true, italic: true},
+];
+const SLOT_STAGE_SUFFIXES = ['font.get', 'font.name.get', 'font.nameAscii.get', 'font.nameOther.get', 'font.nameFarEast.get', 'font.nameComplexScript.get'];
+const slotValues = ({farEast = '', complex = ''} = {}) => ({name: 'Carlito', nameAscii: 'Carlito', nameOther: 'Carlito', nameFarEast: farEast, nameComplexScript: complex});
+// Mirrors what the worker records: pre-edit fixture text is "Plain control"/"Current content" (13/15), post-edit text is 16/48 characters.
+function slotRecords(titleLength, bodyLength, slotOptions) {
+  const records = [
+    {range: 'title', start: 1, length: titleLength, textLength: titleLength, observed: true, slots: slotValues(slotOptions)},
+    {range: 'body', start: 1, length: bodyLength, textLength: bodyLength, observed: true, slots: slotValues(slotOptions)},
+  ];
+  for (const run of SYNTHETIC_RUNS) {
+    const observed = run.start + run.length - 1 <= bodyLength;
+    records.push({range: `body.run-${run.start}-${run.length}`, start: run.start, length: run.length, textLength: bodyLength, observed, slots: observed ? slotValues(slotOptions) : null});
+  }
+  return records;
+}
+// Hand-written stage expectation, kept independent of the auditor's expectedFontSlotStageNames.
+function slotStageNames(phase, records) {
+  return records.flatMap(record => {
+    if (record.range === 'title' || record.range === 'body') return [`${phase}.${record.range}.textRange2.get`, `${phase}.${record.range}.length.get`, ...SLOT_STAGE_SUFFIXES.map(suffix => `${phase}.${record.range}.${suffix}`)];
+    if (!record.observed) return [];
+    return [`${phase}.${record.range}.get`, ...SLOT_STAGE_SUFFIXES.map(suffix => `${phase}.${record.range}.${suffix}`)];
+  });
+}
+function inventoryStageNames(phase, count) {
+  const names = [`${phase}.presentation.fonts.get`, `${phase}.presentation.fonts.count.get`];
+  for (let index = 1; index <= count; index++) for (const suffix of ['get', 'name.get', 'embedded.get', 'embeddable.get']) names.push(`${phase}.presentation.fonts.item-${index}.${suffix}`);
+  return names;
+}
+
+function postTextStageNames(range, count) {
+  return [...inventoryStageNames(`post-text.${range}`, count), `post-text.${range}.textRange2.get`, `post-text.${range}.length.get`, ...SLOT_STAGE_SUFFIXES.map(suffix => `post-text.${range}.${suffix}`)];
+}
+const inventory = names => ({count: names.length, entries: names.map((name, index) => ({index: index + 1, name, embedded: 0, embeddable: -1}))});
+
+function makeLifecycle(pptxBytes, sourcePath, savedPath, sourceHash = '0'.repeat(64), {preEditFonts = ['Carlito'], postTextFonts = ['Carlito'], postTextSlots = {}, postEditSlots = {}} = {}) {
   const stages = []; const base = Date.parse('2026-09-22T12:00:00.000Z');
   const add = (stage, status, ownedPresentationPath, cleanupConfirmed) => stages.push({sequence: stages.length + 1, timestamp: new Date(base + stages.length * 1000).toISOString(), stage, status, error: null, cleanupConfirmed, officeOperationsStopped: false, ownedPresentationPath});
   const pair = (stage, ownedPresentationPath, cleanupConfirmed = false) => { add(stage, 'begin', ownedPresentationPath, cleanupConfirmed); add(stage, 'success', ownedPresentationPath, cleanupConfirmed); };
+  const preEditFontsObservation = inventory(preEditFonts);
+  const postTextFontsObservations = {title: inventory(postTextFonts), body: inventory(postTextFonts)};
+  const postTextWhole = slotRecords(16, 48, postTextSlots).slice(0, 2);
+  const fontSlotObservations = {properties: ['Name', 'NameAscii', 'NameOther', 'NameFarEast', 'NameComplexScript'], preEdit: slotRecords(13, 15), postText: postTextWhole, postEdit: slotRecords(16, 48, postEditSlots)};
   add('worker.initialize', 'success', null, true);
   pair('input.presentation.open', sourcePath);
+  for (const stage of inventoryStageNames('pre-edit', preEditFonts.length)) pair(stage, sourcePath);
+  pair('edit.slides.get', sourcePath); pair('edit.title.textRange2.get', sourcePath); pair('edit.body.textRange2.get', sourcePath);
+  for (const stage of slotStageNames('pre-edit', fontSlotObservations.preEdit)) pair(stage, sourcePath);
+  pair('edit.title.text.set', sourcePath);
+  for (const stage of postTextStageNames('title', postTextFonts.length)) pair(stage, sourcePath);
+  pair('edit.title.font.get', sourcePath); pair('edit.title.font.name.set', sourcePath); pair('edit.title.font.italic.set', sourcePath);
+  pair('edit.body.text.set', sourcePath);
+  for (const stage of postTextStageNames('body', postTextFonts.length)) pair(stage, sourcePath);
+  pair('edit.body.font.name.set', sourcePath); pair('edit.body.run-36-13.font.italic.set', sourcePath);
   pair('edited.presentation.fonts.get', sourcePath); pair('edited.presentation.fonts.count.get', sourcePath);
   for (const suffix of ['get', 'name.get', 'embedded.get', 'embeddable.get']) pair(`edited.presentation.fonts.item-1.${suffix}`, sourcePath);
+  for (const stage of slotStageNames('post-edit', fontSlotObservations.postEdit)) pair(stage, sourcePath);
   add('edited.presentation.native-fonts-gate', 'success', sourcePath, false);
   pair('edited.presentation.saveAs-owned-copy-embed-fonts', sourcePath);
   pair('edited.presentation.fullName.get', savedPath);
@@ -152,6 +230,8 @@ function makeLifecycle(pptxBytes, sourcePath, savedPath, sourceHash = '0'.repeat
     kind: 'native-font-embed', error: null, cleanupConfirmed: true, officeOperationsStopped: false, ownedCloseCount: 1, lastStage: 'worker.complete', lastStatus: 'success',
     source: {path: sourcePath, sha256: sourceHash, snapshotPath: sourcePath, snapshotSha256: sourceHash}, saved: {path: savedPath, sha256: sha(pptxBytes)},
     embedFonts: {saveFormat: 24, saveArgument: -1, stage: 'edited.presentation.saveAs-owned-copy-embed-fonts', attempted: true, completed: true, blockedByNativeFontsGate: false},
+    requested: {body: {runs: structuredClone(SYNTHETIC_RUNS)}},
+    preEditFontsObservation, postTextFontsObservations, fontSlotObservations,
     nativeFontsObservation: {count: 1, entries}, nativeFontsGate: gate,
   };
   const final = stages.at(-1);
@@ -184,6 +264,146 @@ assert.ok(failureCodes(orphanSuccess).has('stage-pair'));
 const extraClose = structuredClone(positiveEvidence); const cleanupIndex = extraClose.stages.findIndex(row => row.stage === 'edited.presentation.cleanup'); const duplicateClose = extraClose.stages.filter(row => row.stage === 'edited.presentation.close').map(row => ({...row})); extraClose.stages.splice(cleanupIndex, 0, ...duplicateClose); extraClose.stages.forEach((row, index) => { row.sequence = index + 1; row.timestamp = new Date(Date.parse('2026-09-22T12:00:00.000Z') + index * 1000).toISOString(); }); extraClose.progress = structuredClone(extraClose.stages.at(-1));
 assert.ok([...failureCodes(extraClose)].some(code => ['stage-duplicate', 'stage-close'].includes(code)));
 record('lifecycle-inventory-ledger-stage-hash-negatives');
+
+// Diagnostic observations: bound for presence, type and stage pairing, but never allowlisted.
+function resequence(evidence) {
+  evidence.stages.forEach((row, index) => { row.sequence = index + 1; row.timestamp = new Date(Date.parse('2026-09-22T12:00:00.000Z') + index * 1000).toISOString(); });
+  evidence.progress = structuredClone(evidence.stages.at(-1));
+  evidence.supervisor.timestamp = new Date(Date.parse(evidence.progress.timestamp) + 1000).toISOString();
+  return evidence;
+}
+const stageIndex = (evidence, stage, status = 'begin') => evidence.stages.findIndex(row => row.stage === stage && row.status === status);
+function movePair(evidence, stage, beforeStage) {
+  const from = stageIndex(evidence, stage); const moved = evidence.stages.splice(from, 2);
+  evidence.stages.splice(stageIndex(evidence, beforeStage), 0, ...moved);
+  return resequence(evidence);
+}
+{
+  assert.deepEqual(auditDiagnosticObservations(positiveEvidence.report), []);
+  const auditStageNames = [
+    ...expectedFontsInventoryStageNames('pre-edit', positiveEvidence.report.preEditFontsObservation.count),
+    ...expectedFontSlotStageNames('pre-edit', positiveEvidence.report.fontSlotObservations.preEdit),
+    ...expectedPostTextStageNames('title', positiveEvidence.report.postTextFontsObservations.title.count),
+    ...expectedPostTextStageNames('body', positiveEvidence.report.postTextFontsObservations.body.count),
+    ...expectedFontSlotStageNames('post-edit', positiveEvidence.report.fontSlotObservations.postEdit),
+  ];
+  assert.deepEqual(auditStageNames, [...inventoryStageNames('pre-edit', 1), ...slotStageNames('pre-edit', slotRecords(13, 15)), ...postTextStageNames('title', 1), ...postTextStageNames('body', 1), ...slotStageNames('post-edit', slotRecords(16, 48))]);
+  assert.deepEqual(positiveEvidence.report.fontSlotObservations.preEdit.map(item => item.observed), [true, true, true, false, false, false]);
+  // Stage names emitted by the PowerShell helpers (pure regression with plain stand-in objects: pre-edit and post-text.title
+  // inventories of 2, post-text.body inventory of 0) match the auditor's expectation exactly.
+  if (pureRegression) {
+    assert.deepEqual(pureRegression.observationStageNames, [
+      ...expectedFontsInventoryStageNames('pre-edit', 2),
+      ...expectedFontSlotStageNames('pre-edit', slotRecords(13, 15)),
+      ...expectedPostTextStageNames('title', 2),
+      ...expectedPostTextStageNames('body', 0),
+      ...expectedFontSlotStageNames('post-edit', slotRecords(16, 48)),
+    ]);
+  }
+  record('diagnostic-observations-positive-and-stage-names');
+
+  // Aptos in the pre-edit inventory or in an East Asian/complex-script slot is an observation, not a failure.
+  const aptosObserved = makeLifecycle(positivePptx, syntheticSourcePath, syntheticSavedPath, '0'.repeat(64), {preEditFonts: ['Carlito', 'Aptos'], postTextFonts: ['Aptos', 'Carlito'], postTextSlots: {farEast: 'Aptos', complex: ''}, postEditSlots: {farEast: 'Aptos', complex: null}});
+  const aptosObservedResult = auditSavedEmbedPresentation(aptosObserved);
+  assert.equal(aptosObservedResult.passed, true, JSON.stringify(aptosObservedResult.failures));
+  // ...while Aptos in the post-edit gated inventory still fails closed, with or without the observations.
+  const aptosGated = structuredClone(aptosObserved);
+  aptosGated.report.nativeFontsObservation = {count: 2, entries: [{index: 1, name: 'Carlito', embedded: 0, embeddable: -1}, {index: 2, name: 'Aptos', embedded: 0, embeddable: -1}]};
+  aptosGated.report.nativeFontsGate = {...aptosGated.report.nativeFontsGate, passed: false, reportedCount: 2, entryCount: 2, unexpectedNames: ['Aptos'], entries: aptosGated.report.nativeFontsObservation.entries};
+  assert.ok(failureCodes(aptosGated).has('native-font-inventory'));
+  assert.ok(failureCodes(aptosGated).has('report-native-font-gate'));
+  const aptosGateOnly = structuredClone(positiveEvidence); aptosGateOnly.report.nativeFontsGate = {...aptosGateOnly.report.nativeFontsGate, passed: false, unexpectedNames: ['Aptos']};
+  assert.ok(failureCodes(aptosGateOnly).has('report-native-font-gate'));
+  record('diagnostic-observations-are-not-gates-post-edit-aptos-fails-closed');
+
+  // Evidence without the new fields (as from the attempt-01 harness) is rejected.
+  const withoutPre = structuredClone(positiveEvidence); delete withoutPre.report.preEditFontsObservation;
+  assert.ok(failureCodes(withoutPre).has('report-pre-edit-fonts'));
+  const withoutSlots = structuredClone(positiveEvidence); delete withoutSlots.report.fontSlotObservations;
+  assert.ok(failureCodes(withoutSlots).has('report-font-slots'));
+  const withoutPostEdit = structuredClone(positiveEvidence); withoutPostEdit.report.fontSlotObservations.postEdit = [];
+  assert.ok(failureCodes(withoutPostEdit).has('report-font-slots'));
+  const withoutPostText = structuredClone(positiveEvidence); delete withoutPostText.report.postTextFontsObservations;
+  assert.ok(failureCodes(withoutPostText).has('report-post-text-fonts'));
+  const withoutPostTextBody = structuredClone(positiveEvidence); withoutPostTextBody.report.postTextFontsObservations.body = null;
+  assert.ok(failureCodes(withoutPostTextBody).has('report-post-text-fonts'));
+  const withoutPostTextSlots = structuredClone(positiveEvidence); withoutPostTextSlots.report.fontSlotObservations.postText = withoutPostTextSlots.report.fontSlotObservations.postText.slice(0, 1);
+  assert.ok(failureCodes(withoutPostTextSlots).has('report-font-slots'));
+  const legacy = structuredClone(positiveEvidence); delete legacy.report.preEditFontsObservation; delete legacy.report.postTextFontsObservations; delete legacy.report.fontSlotObservations;
+  legacy.stages = legacy.stages.filter(row => !/^(?:pre-edit|post-text|post-edit)\./.test(row.stage)); resequence(legacy);
+  const legacyCodes = failureCodes(legacy);
+  assert.ok(legacyCodes.has('report-pre-edit-fonts') && legacyCodes.has('report-post-text-fonts') && legacyCodes.has('report-font-slots') && legacyCodes.has('stage-required'), [...legacyCodes].join(','));
+  record('diagnostic-observations-required');
+
+  // Present, finite and well-typed.
+  const typeNegatives = [
+    ['string-count', evidence => { evidence.report.preEditFontsObservation.count = '1'; }, 'report-pre-edit-fonts'],
+    ['nan-count', evidence => { evidence.report.preEditFontsObservation.count = Number.NaN; }, 'report-pre-edit-fonts'],
+    ['infinite-count', evidence => { evidence.report.preEditFontsObservation.count = Number.POSITIVE_INFINITY; }, 'report-pre-edit-fonts'],
+    ['entry-count-mismatch', evidence => { evidence.report.preEditFontsObservation.entries = []; }, 'report-pre-edit-fonts'],
+    ['string-embeddable', evidence => { evidence.report.preEditFontsObservation.entries[0].embeddable = '-1'; }, 'report-pre-edit-fonts'],
+    ['numeric-name', evidence => { evidence.report.preEditFontsObservation.entries[0].name = 7; }, 'report-pre-edit-fonts'],
+    ['numeric-slot', evidence => { evidence.report.fontSlotObservations.postEdit[0].slots.nameFarEast = 42; }, 'report-font-slots'],
+    ['missing-slot-key', evidence => { delete evidence.report.fontSlotObservations.preEdit[1].slots.nameComplexScript; }, 'report-font-slots'],
+    ['string-observed', evidence => { evidence.report.fontSlotObservations.preEdit[2].observed = 'true'; }, 'report-font-slots'],
+    ['infinite-text-length', evidence => { evidence.report.fontSlotObservations.postEdit[1].textLength = Number.POSITIVE_INFINITY; }, 'report-font-slots'],
+    ['negative-text-length', evidence => { evidence.report.fontSlotObservations.preEdit[0].textLength = -1; }, 'report-font-slots'],
+    ['outside-span-claimed-observed', evidence => { const item = evidence.report.fontSlotObservations.preEdit[3]; item.observed = true; item.slots = slotValues(); }, 'report-font-slots'],
+    ['post-edit-span-unobserved', evidence => { const item = evidence.report.fontSlotObservations.postEdit[5]; item.observed = false; item.slots = null; }, 'report-font-slots'],
+    ['span-label-mismatch', evidence => { evidence.report.fontSlotObservations.postEdit[2].range = 'body.run-2-10'; }, 'report-font-slots'],
+    ['wrong-properties', evidence => { evidence.report.fontSlotObservations.properties = ['Name']; }, 'report-font-slots'],
+    ['post-text-string-count', evidence => { evidence.report.postTextFontsObservations.title.count = '1'; }, 'report-post-text-fonts'],
+    ['post-text-nan-embedded', evidence => { evidence.report.postTextFontsObservations.body.entries[0].embedded = Number.NaN; }, 'report-post-text-fonts'],
+    ['post-text-slots-order', evidence => { evidence.report.fontSlotObservations.postText.reverse(); }, 'report-font-slots'],
+    ['post-text-numeric-slot', evidence => { evidence.report.fontSlotObservations.postText[0].slots.nameComplexScript = 0; }, 'report-font-slots'],
+  ];
+  for (const [name, mutate, code] of typeNegatives) {
+    const evidence = structuredClone(positiveEvidence); mutate(evidence);
+    assert.ok(failureCodes(evidence).has(code), `${name}: ${[...failureCodes(evidence)].join(',')}`);
+  }
+  record('diagnostic-observations-typed-and-finite');
+
+  // Stage pairing, bounds and ordering.
+  const unpaired = structuredClone(positiveEvidence); unpaired.stages.splice(stageIndex(unpaired, 'pre-edit.title.font.nameFarEast.get'), 1); resequence(unpaired);
+  assert.ok(failureCodes(unpaired).has('stage-pair'));
+  const missingPost = structuredClone(positiveEvidence); missingPost.stages.splice(stageIndex(missingPost, 'post-edit.body.run-36-13.font.nameComplexScript.get'), 2); resequence(missingPost);
+  assert.ok(failureCodes(missingPost).has('stage-required'));
+  const duplicated = structuredClone(positiveEvidence); const duplicateAt = stageIndex(duplicated, 'pre-edit.body.font.name.get');
+  duplicated.stages.splice(duplicateAt + 2, 0, ...duplicated.stages.slice(duplicateAt, duplicateAt + 2).map(row => ({...row}))); resequence(duplicated);
+  assert.ok(failureCodes(duplicated).has('stage-duplicate'));
+  const unobservedRead = structuredClone(positiveEvidence); const injectAt = stageIndex(unobservedRead, 'edit.title.text.set');
+  unobservedRead.stages.splice(injectAt, 0, {...unobservedRead.stages[injectAt], stage: 'pre-edit.body.run-14-7.get', status: 'begin'}, {...unobservedRead.stages[injectAt], stage: 'pre-edit.body.run-14-7.get', status: 'success'}); resequence(unobservedRead);
+  assert.ok(failureCodes(unobservedRead).has('stage-diagnostic-bound'));
+  const preAfterEdit = movePair(structuredClone(positiveEvidence), 'pre-edit.title.font.nameFarEast.get', 'edit.body.text.set');
+  assert.ok([...failureCodes(preAfterEdit)].some(code => ['stage-order', 'stage-diagnostic-order'].includes(code)));
+  const inventoryAfterEdit = movePair(structuredClone(positiveEvidence), 'pre-edit.presentation.fonts.get', 'edited.presentation.fonts.get');
+  assert.ok([...failureCodes(inventoryAfterEdit)].some(code => ['stage-order', 'stage-diagnostic-order'].includes(code)));
+  const editAfterInventory = movePair(structuredClone(positiveEvidence), 'edit.body.run-36-13.font.italic.set', 'post-edit.title.textRange2.get');
+  assert.ok(failureCodes(editAfterInventory).has('stage-diagnostic-order'));
+  const postBeforeInventory = movePair(structuredClone(positiveEvidence), 'post-edit.title.font.nameFarEast.get', 'edited.presentation.fonts.get');
+  assert.ok(failureCodes(postBeforeInventory).has('stage-order'));
+  const postAfterGate = movePair(structuredClone(positiveEvidence), 'post-edit.body.font.nameFarEast.get', 'edited.presentation.saveAs-owned-copy-embed-fonts');
+  assert.ok(failureCodes(postAfterGate).has('stage-order'));
+  const postTextBeforeText = movePair(structuredClone(positiveEvidence), 'post-text.title.presentation.fonts.get', 'edit.title.text.set');
+  assert.ok(failureCodes(postTextBeforeText).has('stage-order'));
+  const fontSetBeforePostText = movePair(structuredClone(positiveEvidence), 'edit.title.font.italic.set', 'post-text.title.presentation.fonts.get');
+  assert.ok(failureCodes(fontSetBeforePostText).has('stage-diagnostic-order'));
+  const bodySnapshotInTitle = movePair(structuredClone(positiveEvidence), 'post-text.body.font.nameFarEast.get', 'edit.title.font.name.set');
+  assert.ok(failureCodes(bodySnapshotInTitle).has('stage-order'));
+  const unpairedPostText = structuredClone(positiveEvidence); unpairedPostText.stages.splice(stageIndex(unpairedPostText, 'post-text.body.presentation.fonts.item-1.name.get', 'success'), 1); resequence(unpairedPostText);
+  assert.ok(failureCodes(unpairedPostText).has('stage-pair'));
+  record('diagnostic-stage-pairing-bounds-and-order');
+
+  // Source policy: the one worker gate must still read the post-edit inventory.
+  const gateOnPreEdit = embedSource.replace('$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation', '$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.preEditFontsObservation');
+  assert.notEqual(gateOnPreEdit, embedSource);
+  assert.ok(auditEmbedVerifierSource(gateOnPreEdit).some(item => item.code === 'native-font-gate-input'));
+  const secondGate = embedSource.replace('$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation', '$report.nativeFontsGate=Get-FontEmbedNativeFontsGate $report.nativeFontsObservation; $null=Get-FontEmbedNativeFontsGate $report.preEditFontsObservation');
+  assert.notEqual(secondGate, embedSource);
+  assert.ok(auditEmbedVerifierSource(secondGate).some(item => item.code === 'native-font-gate-input'));
+  assert.ok(auditEmbedVerifierSource(embedSource.replaceAll('preEditFontsObservation', 'preEditFontsRemoved')).some(item => item.code === 'missing-diagnostic-observation'));
+  record('source-policy-gate-input-and-observations');
+}
 
 const opcNegatives = [
   ['extra-font-part', makeOpc({extraParts: {'ppt/fonts/extra.fntdata': new Uint8Array([9])}}), ['opc-font-part-count', 'opc-font-part-extra']],
@@ -248,7 +468,7 @@ try {
   const generationBytes = await readFile(path.join(inputs, 'generation.json'));
   const expectations = {
     title: {text: 'Gate E - Carlito', family: 'Carlito', size: 30, bold: true, italic: false},
-    body: {text: 'Regular 18 | Bold 20 | Italic 22 | BoldItalic 24', family: 'Carlito', defaultSize: 18, runs: []},
+    body: {text: 'Regular 18 | Bold 20 | Italic 22 | BoldItalic 24', family: 'Carlito', defaultSize: 18, runs: structuredClone(SYNTHETIC_RUNS)},
     embedFonts: {saveFormat: 24, saveArgument: -1, meaning: 'synthetic structural control'},
     nativeFonts: {allowedNames: [...PERMITTED_NATIVE_FONT_NAMES], maxEntries: 64, unexpectedNamesBlockSave: true, requireEmbeddable: true},
   };
@@ -323,7 +543,7 @@ try {
 
 const suite = {
   passed: outcomes.every(item => item.passed),
-  scope: 'Offline controls for canonical pre-registration provenance, fail-closed native Fonts gating, lifecycle-bound font OPC structure, and immutable CLI output. No Office or font API was called.',
+  scope: 'Offline controls for canonical pre-registration provenance, fail-closed native Fonts gating, bounded pre-edit/post-text/post-edit diagnostic observations (never gates), lifecycle-bound font OPC structure, and immutable CLI output. No Office or font API was called.',
   node: process.version,
   embedVerifier,
   embedVerifierSha256: sha(Buffer.from(embedSource)),
