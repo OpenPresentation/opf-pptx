@@ -94,7 +94,7 @@ record('canonical-manifest-negatives');
   record('carlito-only-fixture-typefaces');
 }
 
-const relXml =({extra = '', target = null, duplicateId = false, external = false} = {}) => `<?xml version="1.0" encoding="UTF-8"?>
+const relXml = ({extra = '', target = null, duplicateId = false, external = false} = {}) => `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 ${[1, 2, 3, 4].map(index => `<Relationship Id="rId${duplicateId && index === 2 ? 1 : index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="${target && index === 1 ? target : `fonts/font${index}.fntdata`}"${external && index === 1 ? ' TargetMode="External"' : ''}/>`).join('')}${extra}
 </Relationships>`;

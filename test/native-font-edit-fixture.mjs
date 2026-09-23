@@ -17,6 +17,8 @@ assert.ok(!harnessBulletFont || carlitoOnly, '--harness-master-bullet-font requi
 const output = path.resolve(outputArgument), consumer = await realpath(consumerArgument);
 const requireConsumer = createRequire(path.join(consumer, 'package.json'));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+// Source-file provenance independent of core.autocrlf: hash the text with CRLF normalized to LF.
+const lfSha = bytes => sha(Buffer.from(bytes.toString('utf8').replace(/\r\n/g, '\n')));
 const json = bytes => JSON.parse(bytes.toString('utf8'));
 const withinConsumer = async file => {
   const resolved = await realpath(file), relative = path.relative(consumer, resolved);
@@ -90,7 +92,7 @@ if (carlitoOnly) {
   assert.deepEqual(failures, [], 'Carlito-only fixture contains a non-Carlito text typeface');
   carlitoFixture = {
     variant: harnessBulletFont ? 'carlito-only+harness-master-bullet-font' : 'carlito-only',
-    helper: {file: 'test/native-font-embed-fixture-source.mjs', sha256: sha(await readFile(fileURLToPath(new URL('./native-font-embed-fixture-source.mjs', import.meta.url))))},
+    helper: {file: 'test/native-font-embed-fixture-source.mjs', sha256Lf: lfSha(await readFile(fileURLToPath(new URL('./native-font-embed-fixture-source.mjs', import.meta.url))))},
     exporterOutput: {file: harnessBulletFont ? 'exporter-output.pptx' : 'source.pptx', sha256: sha(exported)},
     harnessTransforms: transforms, themeFontSlots: themeSlots, typefaceInventory: typefaces,
     residualNonCarlito: residual.map(({code, row}) => ({code, element: row.element, script: row.script, typeface: row.typeface, parts: row.parts})),
@@ -107,7 +109,7 @@ for (const font of fonts) await writeFile(path.join(output, font.file), font.byt
 const spans = [[1, 10, 18, false, false], [14, 7, 20, true, false], [24, 9, 22, false, true], [36, 13, 24, true, true]].map(([start, length, size, bold, italic]) => ({start, length, size, bold, italic}));
 const generation = {
   schemaVersion: 1, kind: 'native-font-edit-fixture', node: process.version,
-  generatorSha256: sha(await readFile(fileURLToPath(import.meta.url))), registryLockSha256: sha(lock), bindings,
+  generatorSha256: sha(await readFile(fileURLToPath(import.meta.url))), generatorSha256Lf: lfSha(await readFile(fileURLToPath(import.meta.url))), registryLockSha256: sha(lock), bindings,
   bindingScope: 'Manifest and resolved public entry hashes plus registry lock. This does not bind every transitive installed byte.',
   source: {file: 'source.pptx', sha256: sha(presentation)},
   package: {name: '@expo-google-fonts/carlito', version: '0.4.1', manifestSha256: sha(fontManifestBytes), resolved: fontLock.resolved, integrity: fontLock.integrity, link: false},

@@ -34,7 +34,11 @@ export function applyMasterBulletFontTransform(pptxBytes) {
   if (/typeface="Arial"/.test(after)) throw new Error('Arial remains in the slide master after the bullet-font transform');
   const rebuilt = {};
   for (const [name, bytes] of Object.entries(entries)) rebuilt[name] = name === part ? strToU8(after) : bytes;
-  return {bytes: Buffer.from(zipSync(rebuilt, {level: 6, mtime: FIXED_ZIP_MTIME})), replacements: count};
+  const bytes = Buffer.from(zipSync(rebuilt, {level: 6, mtime: FIXED_ZIP_MTIME}));
+  const reread = unzipSync(new Uint8Array(bytes)), names = Object.keys(entries);
+  if (Object.keys(reread).join('\n') !== names.join('\n')) throw new Error('Bullet-font transform changed the package entry list or order');
+  for (const name of names) if (name !== part && Buffer.compare(Buffer.from(reread[name]), Buffer.from(entries[name])) !== 0) throw new Error(`Bullet-font transform changed an unrelated part: ${name}`);
+  return {bytes, replacements: count};
 }
 
 const TAG = /<([A-Za-z][\w.-]*:[\w.-]+|[\w.-]+)\b([^>]*?)\btypeface="([^"]*)"([^>]*)>/g;
