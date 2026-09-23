@@ -10,7 +10,7 @@ import {attachFurnitureTags, furnitureManifest, importFurniture} from './furnitu
 import {importImageOrientation} from './image-import.js';
 import {nativeBackgroundFill} from './background.js';
 import {importBackground} from './background-import.js';
-import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
+import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
 import { webpToPng } from '#image-fallback';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import { layoutTable, composeSlide, fitText, fitRichText, textWidthMeasurer, resolveCanvasDimensions, resolveFontFamilies, resolveTextStyle, textColorForFill, chartColorForFill } from "@openpresentation/opf/composition";
@@ -192,6 +192,7 @@ export async function toPptx(input, options = {}) {
   context.chartHeadings = new Map();
   context.imageFormat = options.imageFormat ?? "compatible";
   Object.assign(context, exportTheme(presentation, context));
+  context.masterBackground = masterBackground(context);
   const pptx = new PptxGenJS();
   configurePresentation(pptx, presentation, {...context,fonts:resolveSlideContext(presentation,presentation.slides[0],context,options).fonts});
 
@@ -928,8 +929,25 @@ function exportColor(entry, context, fallback) {
 // PptxGenJS color for a document color reference: a theme scheme value when the
 // reference names a scheme slot or role that the deck theme holds exactly,
 // otherwise the resolved literal RRGGBB. Alpha stays in the caller's transparency.
-function nativeColor(reference, hex, context) {
+function nativeColor(reference, hex, context, fallback) {
+  if (fallback !== undefined && (reference === undefined || reference === null || reference === '')) return pptxColor(fallback);
   return schemeColorValue(reference, hex, context, {vendor: true}) ?? normalizeHex(hex);
+}
+
+// PptxGenJS color option: a scheme value it can emit (tx1, bg2, ...) or RRGGBB.
+function pptxColor(value) {
+  return /^(?:tx[12]|bg[12])$/.test(value) ? value : normalizeHex(value);
+}
+
+// Deck-level theme background for the slide master, so slides added in
+// PowerPoint match. The vendored layout already uses bg1, so only a theme
+// background on another slot (dark themes, light2, accents) changes the master.
+function masterBackground(context) {
+  const deck = {...context, schemeOverride: false};
+  const value = schemeBackgroundValue(deck.backgroundDefinition, deck);
+  const fill = schemeBackgroundFill(deck.backgroundDefinition, deck);
+  if (!value || value === 'bg1' || !fill || fill.includes('<a:alpha')) return null;
+  return {fill, text: defaultTextSchemeValues(deck).text ?? normalizeHex(context.colors.text)};
 }
 
 // The theme part carries the deck-level scheme (slide overrides stay literal)
@@ -1000,7 +1018,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
     width: slideContext.dimensions.widthInches, height: slideContext.dimensions.heightInches
   }, slideContext.colors.background);
   if (backgroundFill) context.backgroundFills.set(`ppt/slides/slide${slideIndex + 1}.xml`, backgroundFill);
-  slide.color = slideContext.colors.text;
+  slide.color = slideContext.textColor;
   if (opfSlide.hidden === true) slide.hidden = true;
 
   const { widthInches, heightInches } = slideContext.dimensions;
@@ -1010,48 +1028,50 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   await addFurniture(slide,presentation,opfSlide,geometry.furniture,slideContext,options,slideIndex);
   for (const item of geometry.items) {
+    // Card text sits on a literal card fill, not the slide background: keep it literal.
+    const itemContext = item.frameBox ? {...slideContext, textColor: slideContext.colors.text, mutedColor: slideContext.colors.mutedText} : slideContext;
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };
     if (item.frameBox) {
       const frame=item.frameBox;
       context.cardTags.set(`OPF card ${item.path}`,item.path);
       const paint=value=>({color:normalizeHex(value),transparency:/^#[0-9a-f]{8}$/i.test(value)?(1-parseInt(value.slice(7),16)/255)*100:0});
-      const surface=slideContext.colorScheme[isDarkHex(slideContext.colors.background)?'dark2':'light2']??`#${slideContext.colors.surface}`;
+      const surface=itemContext.colorScheme[isDarkHex(itemContext.colors.background)?'dark2':'light2']??`#${itemContext.colors.surface}`;
       slide.addShape('roundRect',{x:frame.x/96,y:frame.y/96,w:frame.width/96,h:frame.height/96,
         rectRadius:8*Math.min(widthInches,heightInches)/720,
-        fill:paint(surface),line:{...paint(slideContext.colorScheme.accent5??`#${slideContext.colors.border}`),pt:.75},objectName:`OPF card ${item.path}`});
+        fill:paint(surface),line:{...paint(itemContext.colorScheme.accent5??`#${itemContext.colors.border}`),pt:.75},objectName:`OPF card ${item.path}`});
     }
     if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
-      addMeasuredPayloadText(slide,item.value,item.box,slideContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?slideContext.colors.accent:slideContext.colors.text});
+      addMeasuredPayloadText(slide,item.value,item.box,itemContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?itemContext.colors.accent:itemContext.textColor});
     } else if (["title", "subtitle", "tag"].includes(item.field)) {
       // Estimated-font headings use one native text box, which still needs a
       // role tag. Role recovery must not depend on outline measurement support.
       const objectName = `OPF heading ${item.path} line 0`;
       context.headingTags.set(objectName,{v:1,group:item.path,field:item.field,line:0,count:1});
       slide.addText(item.text.lines.join("\n"), {
-        ...textBoxOptions(region, slideContext, item.text.fontSize * 0.75),
+        ...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),
         ...nativeFontOptions(item.textStyle),
-        color: item.field === "tag" ? slideContext.colors.accent : slideContext.colors.text,
+        color: item.field === "tag" ? itemContext.colors.accent : itemContext.textColor,
         objectName,
         breakLine: false
       });
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
-      addMeasuredList(slide,item.text,slideContext);
+      addMeasuredList(slide,item.text,itemContext);
     } else if (item.field === "text" && item.text?.richLines) {
       const alignment=item.text.placement?.alignment??opfSlide.design?.contentAlignment??presentation.design?.contentAlignment??'left';
       for(const [index,line] of item.text.richLines.entries()){
         const runs=line.fragments.map(fragment=>{
-          const runColor=exportColor(fragment.run.color,slideContext,slideContext.colors.text);
-          const color=nativeColor(fragment.run.color,runColor,slideContext);
+          const runColor=exportColor(fragment.run.color,itemContext,itemContext.colors.text);
+          const color=nativeColor(fragment.run.color,runColor,itemContext,itemContext.textColor);
           return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:fragment.fontSize*.75,color,underline:fragment.run.underline?{color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
         });
         const placed=item.text.placement?.lines[index],factor=alignment==='right'?1:alignment==='center'?.5:0;
         const area=placed?{...region,x:(placed.x+line.width*factor-item.box.width*factor)/96,y:placed.y/96,h:placed.height/96}:{...region,y:region.y+line.y/96,h:line.height/96};
-        if(runs.length)slide.addText(runs,{...textBoxOptions(area,slideContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1});
+        if(runs.length)slide.addText(runs,{...textBoxOptions(area,itemContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1});
       }
     } else if (item.field === "text" && typeof item.value === "string") {
-      slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, slideContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle)});
+      slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle)});
     } else {
-      await addPayload(slide, presentation, item.payload, region, item.path, { ...slideContext, composition: item.composition, contentAlignment: opfSlide.design?.contentAlignment ?? presentation.design?.contentAlignment ?? "left" }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
+      await addPayload(slide, presentation, item.payload, region, item.path, { ...itemContext, composition: item.composition, contentAlignment: opfSlide.design?.contentAlignment ?? presentation.design?.contentAlignment ?? "left" }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
     }
   }
 
@@ -1065,7 +1085,17 @@ function resolveSlideContext(presentation, slide, baseContext, options) {
     || Math.abs(resolved.dimensions.heightInches - baseContext.dimensions.heightInches) > 1e-6) {
     throw new OPFPptxError("mixed-slide-dimensions", "PowerPoint requires one canvas size per presentation. Set dimensions on the deck or export this slide separately.");
   }
-  return { ...baseContext, backgroundDefinition: resolved.backgroundDefinition, colorScheme: resolved.colorScheme, fonts: resolved.fonts, colors: resolved.colors, variables: resolved.variables, imageFill: effective.design.imageFill ?? "fit" };
+  const slideContext = { ...baseContext, backgroundDefinition: resolved.backgroundDefinition, colorScheme: resolved.colorScheme, fonts: resolved.fonts, colors: resolved.colors, variables: resolved.variables, imageFill: effective.design.imageFill ?? "fit" };
+  // A slide-level color scheme (directly or through a slide theme) pins every
+  // named color on that slide to literal sRGB; see schemeColorValue().
+  const slideScheme = themeSlotColors(resolved.colorScheme), deckScheme = baseContext.themeColors ?? {};
+  slideContext.schemeOverride = slide.design?.colorScheme !== undefined
+    || Object.keys({...slideScheme, ...deckScheme}).some(slot => slideScheme[slot] !== deckScheme[slot]);
+  // Default and muted text follow the theme only where the background does.
+  const text = defaultTextSchemeValues(slideContext);
+  slideContext.textColor = text.text ?? resolved.colors.text;
+  slideContext.mutedColor = text.muted ?? resolved.colors.mutedText;
+  return slideContext;
 }
 
 function fieldToType(field) {
@@ -1132,23 +1162,23 @@ function addTextPayload(slide, value, region, context) {
   slide.addText(stringifyText(value), textBoxOptions(region, context, 18));
 }
 
-function richLineRuns(line,color,context) {
+function richLineRuns(line,color,native,context) {
   const fallback=color.replace(/^#/,'');
   return line.fragments.map(fragment=>{
-    const runColor=exportColor(fragment.run.color,context,fallback),color=nativeColor(fragment.run.color,runColor,context);
+    const runColor=exportColor(fragment.run.color,context,fallback),color=nativeColor(fragment.run.color,runColor,context,native);
     return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:fragment.fontSize*.75,color,underline:fragment.run.underline?{color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
   });
 }
 function addMeasuredList(slide,fit,context) {
   for(const entry of fit.listEntries){
-    const addLines=(text,box,color,withBullet)=>{
+    const addLines=(text,box,color,native,withBullet)=>{
       text.richLines.forEach((line,index)=>{
         const first=withBullet&&index===0,level=Math.min(8,entry.level),inset=first?entry.marker.indent*(level+1):0;
         const region={x:(box.x-inset)/96,y:(box.y+line.y)/96,w:(box.width+inset)/96,h:line.height/96};
         const objectName=first?`OPF list paragraph ${context.listMarkers.size+1}`:undefined;
-        if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:normalizeHex(context.colors.text)});
+        if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:pptxColor(context.textColor)});
         const paragraph=first?{bullet:{characterCode:entry.marker.text.codePointAt(0).toString(16).padStart(4,'0'),indent:entry.marker.indent*.75},indentLevel:level}:{bullet:false};
-        const runs=richLineRuns(line,color,context);
+        const runs=richLineRuns(line,color,native,context);
         if(!runs.length)runs.push({text:'',options:{}});
         // Keep paragraph intent identical across runs. ZIP normalization below
         // removes the duplicate paragraph-property nodes emitted by PptxGenJS.
@@ -1156,8 +1186,8 @@ function addMeasuredList(slide,fit,context) {
         slide.addText(runs,{...textBoxOptions(region,context,text.fontSize*.75),fontFace:nativeFontOptions(entry.marker.style).fontFace,objectName,align:'left',fit:'none',wrap:false,lineSpacingMultiple:1,...paragraph});
       });
     };
-    addLines(entry.text,entry.textBox,context.colors.text,true);
-    if(entry.description)addLines(entry.description,entry.descriptionBox,context.colors.mutedText,false);
+    addLines(entry.text,entry.textBox,context.colors.text,context.textColor,true);
+    if(entry.description)addLines(entry.description,entry.descriptionBox,context.colors.mutedText,context.mutedColor,false);
   }
 }
 
@@ -1177,7 +1207,7 @@ function addListPayload(slide, items, region, context) {
       options: {
         bullet: { type: "bullet", indent: 14 + level * 14 },
         breakLine: index < list.length - 1 || Boolean(isPlainObject(item) && item.description),
-        color: context.colors.text,
+        color: context.textColor,
         fontFace: context.fonts.body,
         fontSize: 15,
         hanging: 4 + level * 10
@@ -1188,7 +1218,7 @@ function addListPayload(slide, items, region, context) {
         text: stringifyText(item.description),
         options: {
           breakLine: index < list.length - 1,
-          color: context.colors.mutedText,
+          color: context.mutedColor,
           fontFace: context.fonts.body,
           fontSize: 11,
           margin: [0, 0, 0, 18 + level * 14]
@@ -1381,7 +1411,7 @@ function addMeasuredPayloadText(slide, text, box, context, options, config) {
     slide.addText(line, {
       ...textBoxOptions(area, context, fit.fontSize * .75),
       ...nativeFontOptions(style),
-      color: normalizeHex(config.color ?? context.colors.text), align: alignment,
+      color: pptxColor(config.color ?? context.textColor), align: alignment,
       tabStops:sourceLine?.segments.filter(segment=>segment.kind==='tab').map(segment=>({position:(segment.x+segment.width)/96,alignment:'l'})),
       objectName,
       fit: 'none', wrap: false, lineSpacingMultiple: 1,
@@ -1403,7 +1433,7 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
       if (objectName) context.furnitureTags.set(objectName, {v:1, role:'image', group:String(slideIndex), part:index});
     }else{
       if(!part.fit?.sourceLines)throw new OPFPptxError('missing-furniture-layout','Repeated text requires accepted source lines from core.',{path:part.path});
-      addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,color:context.colors.mutedText,keepEmpty:true,objectName:`OPF furniture ${slideIndex} part ${index}`,furniture:{group:String(slideIndex),part:index}});
+      addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,color:context.mutedColor,keepEmpty:true,objectName:`OPF furniture ${slideIndex} part ${index}`,furniture:{group:String(slideIndex),part:index}});
     }
   }
   const manifest = furnitureManifest(presentation, source, layout, slideIndex);
@@ -1458,7 +1488,7 @@ function addMetricPayload(slide,value,layout,context,path) {
       slide.addText(part.text.slice(line.start,line.end),{
         ...textBoxOptions({x:(anchor-part.box.width*factor)/96,y:(origin.baseline-part.fit.fontSize)/96,w:part.box.width/96,h:part.fit.lineHeight/96},context,part.fit.fontSize*.75),
         ...nativeFontOptions(part.style),
-        color:part.role==='value'?context.colors.accent:context.colors.text,align:layout.alignment,fit:'none',wrap:false,lineSpacingMultiple:1,
+        color:part.role==='value'?context.colors.accent:context.textColor,align:layout.alignment,fit:'none',wrap:false,lineSpacingMultiple:1,
         tabStops:tabStops.length?tabStops:undefined,objectName,
       });
     }
@@ -1471,7 +1501,7 @@ function addQuotePayload(slide, layout, context, options, path) {
     if (!part.fit) throw new OPFPptxError('layout-overflow', 'Quote content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
     addMeasuredPayloadText(slide,part.text,part.box,context,options,{
       path:part.path,fit:part.fit,textStyle:part.style,diagnosticsHandled:true,
-      color:part.role==='footer'?context.colors.mutedText:context.colors.text,
+      color:part.role==='footer'?context.mutedColor:context.textColor,
     });
   }
 }
@@ -1513,7 +1543,7 @@ function addPlaceholderPayload(slide, label, value, region, context) {
     margin: 0,
     fontFace: context.fonts.body,
     fontSize: 11,
-    color: context.colors.mutedText,
+    color: context.mutedColor,
     fit: "shrink",
     valign: "mid",
     align: "center"
@@ -1541,7 +1571,7 @@ function textBoxOptions(region, context, fontSize) {
     lineSpacingMultiple: 1.22,
     fontFace: context.fonts.body,
     fontSize,
-    color: context.colors.text,
+    color: context.textColor,
     breakLine: false,
     fit: "shrink",
     valign: "top"
@@ -1555,7 +1585,7 @@ function textRuns(value, context, fallbackFontSize) {
       return {
         text: run,
         options: {
-          color: context.colors.text,
+          color: context.textColor,
           fontFace: context.fonts.body,
           fontSize: fallbackFontSize
         }
@@ -1566,9 +1596,9 @@ function textRuns(value, context, fallbackFontSize) {
       options: {
         bold: run?.bold,
         italic: run?.italic,
-        underline: run?.underline ? { color: nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context) } : undefined,
+        underline: run?.underline ? { color: nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context, context.textColor) } : undefined,
         strike: run?.strikethrough ? "sngStrike" : undefined,
-        color: nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context),
+        color: nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context, context.textColor),
         fontFace: run?.fontFamily ?? context.fonts.body,
         fontSize: run?.fontSize ?? fallbackFontSize,
         superscript: run?.superscript,
@@ -1909,6 +1939,8 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
       xml = xml.replace('</Types>', `${overrides}</Types>`);
     }
     if (/^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(path)) xml = themeMasterBulletFonts(xml);
+    if (context.masterBackground && path === 'ppt/slideMasters/slideMaster1.xml') xml = writeMasterBackground(xml, context.masterBackground);
+    if (context.masterBackground && /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(path)) xml = inheritLayoutBackground(xml);
     if (path === 'ppt/theme/theme1.xml') xml = writeThemeColors(xml, {colors: context.themeColors, schemeName: context.schemeName, themeName: context.themeName});
     if (/^ppt\/slides\/slide\d+\.xml$/.test(path)) {
       const fill = context.backgroundFills.get(path);
@@ -2009,7 +2041,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
         const marker=context.listMarkers.get(shape.match(/name="(OPF list paragraph \d+)"/)?.[1]);
         if(!marker)return shape;
         const family=marker.fontFamily.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
-        return shape.replace(/<a:buSzPct val="100000"\/>/g,`<a:buClr><a:srgbClr val="${marker.color}"/></a:buClr><a:buSzPts val="${Math.round(marker.fontSize*100)}"/><a:buFont typeface="${family}"/>`);
+        return shape.replace(/<a:buSzPct val="100000"\/>/g,`<a:buClr>${solidColorXml(marker.color)}</a:buClr><a:buSzPts val="${Math.round(marker.fontSize*100)}"/><a:buFont typeface="${family}"/>`);
       });
       // PptxGenJS 4 emits pPr before each rich run. OOXML allows one pPr,
       // before all runs. Paragraph options belong to the first run.
