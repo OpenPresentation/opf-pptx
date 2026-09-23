@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {unzipSync, zipSync} from 'fflate';
 import {toPptx, fromPptx} from '../dist/index.js';
+import {attachFurnitureFields} from '../dist/furniture-fields.js';
 import {validatePresentation, catalogs, schemas} from '@openpresentation/opf';
 import {resolvePresentation} from '@openpresentation/opf-render';
 
@@ -102,5 +103,30 @@ const keyPattern = new RegExp(schemas.presentation.$defs.Socials.propertyNames.p
 assert.equal(keyPattern.test('my_site'), false, 'Underscored keys are not valid Socials keys.');
 const keyed = {...source, organization: {id: 'acme', name: 'Acme', socials: {'my-site2': 'Visit us', x9: '@acme'}}, slides: [{text: 'Body'}]};
 assert.deepEqual((await read(await toPptx(keyed, {provenance: false}))).deck.organization.socials, {'my-site2': 'Visit us', x9: '@acme'});
+
+// FF-27 + FF-34: one footer with a live slide-number field and linked socials in
+// the same zone exports <a:fld type="slidenum"> and <a:hlinkClick> side by side and
+// re-imports both, with and without FF-32 document provenance.
+const mixed = {organization: {id: 'acme', name: 'Acme', socials: {x: '@acme', custom: 'Visit us'}},
+  design: {footer: {left: {organization: true, slideNumber: true, slideNumberFormat: 'Slide {current} of {total}'}, right: {socials: true, slideNumber: true}}},
+  slides: [{text: 'One'}, {text: 'Two'}]};
+const mixedBytes = await toPptx(mixed), mixedXml = slideXml(unzipSync(mixedBytes), 2);
+assert.ok(/<a:fld [^>]*type="slidenum"[^>]*>(?:(?!<\/a:fld>).)*<a:t>2<\/a:t><\/a:fld>/.test(mixedXml), 'Live slide-number field.');
+assert.ok(mixedXml.includes('<a:t>Slide </a:t>') && mixedXml.includes('<a:t> of 2</a:t>'), 'Fixed text around the field.');
+assert.ok(/<a:hlinkClick [^>]*>(?:(?!<\/a:r>).)*<\/a:rPr><a:t>x\.com\/acme<\/a:t>/.test(mixedXml), 'Linked profile line.');
+assert.ok(mixedXml.includes('<a:t>Visit us</a:t>'));
+for (const provenance of [true, false]) {
+  const {deck: back, issues: mixedIssues} = await read(await toPptx(mixed, provenance ? {} : {provenance: false}));
+  assert.deepEqual(back.design.footer, mixed.design.footer, `footer, provenance ${provenance}`);
+  assert.deepEqual(back.organization.socials, provenance ? mixed.organization.socials : {x: 'https://x.com/acme', custom: 'Visit us'});
+  assert.ok(!mixedIssues.some(issue => issue.code === 'invalid-furniture-provenance'), JSON.stringify(mixedIssues));
+}
+// A single line that is both linked and holds a field keeps the link on every run
+// and on the field: attachFurnitureFields reuses the line's run properties.
+const linkedRun = '<a:rPr lang="en-US" dirty="0"><a:hlinkClick r:id="rId9"/></a:rPr>';
+const fieldEntries = {'ppt/slides/slide1.xml': new TextEncoder().encode(`<p:sld><p:sp><p:nvSpPr><p:cNvPr id="2" name="OPF furniture 0 part 0 line 0"/></p:nvSpPr><p:txBody><a:p><a:r>${linkedRun}<a:t>Page 3</a:t></a:r></a:p></p:txBody></p:sp></p:sld>`)};
+attachFurnitureFields(fieldEntries, new Map([['OPF furniture 0 part 0 line 0', {text: 'Page 3', fields: [{type: 'slideNumber', start: 5, end: 6, nativeType: 'slidenum'}]}]]));
+const combined = dec.decode(fieldEntries['ppt/slides/slide1.xml']);
+assert.ok(combined.includes(`<a:r>${linkedRun}<a:t>Page </a:t></a:r>`) && combined.includes(`type="slidenum">${linkedRun}<a:t>3</a:t></a:fld>`), combined);
 
 console.log(`Socials furniture passed: linked profile lines, canonical re-import, edits, disagreement, orphan and ${catalogs.socialPlatforms.length} bundled platforms.`);
