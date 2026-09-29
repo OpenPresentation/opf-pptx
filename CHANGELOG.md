@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- FF-09: a chart whose data is a single column (the catalog histogram and dot plot) was replaced by a text placeholder, with no chart part, no graphic frame and no diagnostic. It now exports a native chart and reports `chart-data-adapted` through `onDiagnostic`: a histogram's values are binned (equal-width bins, Sturges' count, at most 50) into a column chart of the counts, and every other chart type plots one value column against its row numbers. Data that cannot be plotted (a column without numbers, no rows, an external data source) keeps the placeholder frame and now reports `chart-data-unplottable` with a `reason`. Multi-column charts are unchanged. New `test/single-column-chart.mjs`.
+
 - FF-29: preserve exact media caption boundaries across soft wraps, current-link edits and re-export. Full tags retain validated CR/LF/CRLF separators, and older explicit soft/end tags safely imply no inserted character; references-only keeps structural LF without authored separator bytes. Cleared current captions use linked-text and empty-text fallback rather than reappearing as the URL. Fresh packed-consumer checks now include media and layout-intent fixtures against published core and renderer dependencies.
 
 - FF-29: preserve valid inline layout records that omit the standalone `$schema` identifier during PPTX reimport. Validation supplies the known layout identifier without changing authored records; explicit invalid identifiers and malformed content remain rejected.

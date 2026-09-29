@@ -1319,7 +1319,7 @@ async function addPayload(slide, presentation, payload, region, path, context, o
       addMediaPayload(slide, presentation, payload.video, region, path, context, options);
       break;
     case "chart":
-      addChartPayload(slide, payload.chart, region, context);
+      addChartPayload(slide, payload.chart, region, context, options, path);
       break;
     case "table":
       addTablePayload(slide, payload.table, region, context, options, path);
@@ -1486,12 +1486,15 @@ async function addSlideImage(slide, presentation, image, slideIndex, context, op
   }
 }
 
-function addChartPayload(slide, chart, region, context) {
+function addChartPayload(slide, chart, region, context, options = {}, path = "chart") {
   const chartData = toPptxChartData(chart);
-  if (!chartData) {
+  if (!chartData.series) {
+    // Never lose a chart silently: the placeholder frame stands in for it, and a diagnostic names the reason.
+    options.onDiagnostic?.({code: "chart-data-unplottable", path, message: chartData.message, reason: chartData.reason});
     addPlaceholderPayload(slide, "Chart", chart, region, context);
     return;
   }
+  if (chartData.adapted) options.onDiagnostic?.({code: "chart-data-adapted", path, message: chartData.message, adaptation: chartData.adapted});
 
   // Keep the resolved palette surface (including alpha) explicit in native
   // chart/plot areas, so inherited labels are assessed against their own panel.
@@ -1501,7 +1504,7 @@ function addChartPayload(slide, chart, region, context) {
   const fill = {color:normalizeHex(panelFill),transparency};
   const objectName = `OPF chart ${context.chartHeadings.size + 1}`;
   const circular = chartData.type === 'pie' || chartData.type === 'doughnut';
-  context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chart.data.columns[0],labelColor});
+  context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chartData.heading ?? chart.data.columns[0],labelColor});
   context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
   slide.addChart(chartData.type, chartData.series, {
     objectName,
@@ -1942,10 +1945,48 @@ function textRuns(value, context, fallbackFontSize) {
   });
 }
 
+/**
+ * Series for a native chart, or `{reason, message}` when the data cannot be plotted (the caller reports it).
+ * A first column that holds categories is the usual shape. Chart types whose data is one column of values
+ * (histogram, dot plot) have no category column, so their values are plotted directly: a histogram is binned
+ * into equal-width bins and exported as a column chart of the counts, every other type plots the values against
+ * their row numbers. `adapted` names that transformation so it is reported, never silent.
+ */
 function toPptxChartData(chart) {
   const data = chart?.data;
-  if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) return null;
-  if (data.columns.length < 2 || data.rows.length === 0) return null;
+  const unplottable = (reason, message) => ({reason, message});
+  if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) {
+    return unplottable("data-not-inline", "The chart data is not inline columns and rows (for example an external data source), so no native chart was exported; a placeholder frame stands in for it. Supply inline columns and rows.");
+  }
+  if (data.rows.length === 0) return unplottable("no-rows", "The chart data has no rows, so no native chart was exported; a placeholder frame stands in for it.");
+  if (data.columns.length === 0) return unplottable("no-columns", "The chart data has no columns, so no native chart was exported; a placeholder frame stands in for it.");
+  const mapped = mapChartType(chart.type);
+  if (data.columns.length === 1) {
+    const heading = stringifyText(data.columns[0]);
+    const cell = (row) => Array.isArray(row) ? row[0] : row;
+    const values = data.rows.map((row) => plottableNumber(cell(row))).filter((value) => value !== null);
+    if (values.length === 0) {
+      return unplottable("single-column-not-numeric", `The only chart data column '${heading}' holds no numbers, and a chart needs values to plot; no native chart was exported and a placeholder frame stands in for it.`);
+    }
+    if (String(chart.type ?? "").toLowerCase() === "histogram") {
+      const bins = histogramBins(values);
+      return {
+        type: "bar", barDir: "col", barGrouping: "clustered", heading: "Bin",
+        series: [{name: "Frequency", labels: bins.map((bin) => bin.label), values: bins.map((bin) => bin.count)}],
+        adapted: "histogram-binned",
+        message: `The histogram's single data column '${heading}' (${values.length} values) was binned into ${bins.length} equal-width bins and exported as a column chart of the counts; PowerPoint's own histogram chart is not exported.`
+      };
+    }
+    const labels = data.rows.map((_, index) => String(index + 1));
+    const numbers = data.rows.map((row) => numericValue(cell(row)));
+    const series = mapped.type === "scatter"
+      ? [{name: "Row", labels, values: labels.map(Number)}, {name: heading, labels, values: numbers}]
+      : [{name: heading, labels, values: numbers}];
+    return {
+      ...mapped, series, heading: "Row", adapted: "row-numbers",
+      message: `The chart's single data column '${heading}' has no category column, so its ${values.length} values are plotted against their row numbers.`
+    };
+  }
 
   const labels = data.rows.map((row) => stringifyText(row?.[0]));
   const series = data.columns.slice(1).map((name, seriesIndex) => ({
@@ -1953,9 +1994,26 @@ function toPptxChartData(chart) {
     labels,
     values: data.rows.map((row) => numericValue(row?.[seriesIndex + 1]))
   }));
-  const mapped = mapChartType(chart.type);
 
   return { ...mapped, series };
+}
+
+/** A finite number from a number or numeric string; null for anything else (unlike `numericValue`, which plots it as 0). */
+function plottableNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+/** Equal-width bins (Sturges' count, at most 50) from the minimum to the maximum; every bin but the last is [low, high). */
+function histogramBins(values) {
+  const min = values.reduce((a, b) => Math.min(a, b)), max = values.reduce((a, b) => Math.max(a, b));
+  const count = min === max ? 1 : Math.min(50, Math.ceil(Math.log2(values.length)) + 1);
+  const width = (max - min) / count;
+  const bins = Array.from({length: count}, (_, index) => ({low: min + index * width, high: index === count - 1 ? max : min + (index + 1) * width, count: 0}));
+  for (const value of values) bins[count === 1 ? 0 : Math.min(count - 1, Math.floor((value - min) / width))].count++;
+  const format = (value) => String(Number(value.toPrecision(6)));
+  return bins.map((bin) => ({...bin, label: min === max ? format(min) : `${format(bin.low)}\u2013${format(bin.high)}`}));
 }
 
 function mapChartType(type) {
