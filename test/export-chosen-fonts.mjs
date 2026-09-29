@@ -36,11 +36,11 @@ const cases = [
   {fontScheme: 'calibri', substitute: 'Carlito', expected: {major: 'Calibri', minor: 'Calibri'}},
   {fontScheme: 'georgia', substitute: 'Gelasio', expected: {major: 'Georgia', minor: 'Georgia'}},
   {fontScheme: 'times-new-roman', substitute: 'Tinos', expected: {major: 'Times New Roman', minor: 'Times New Roman'}},
-  {fontScheme: 'tahoma', substitute: 'Arimo', expected: {major: 'Tahoma', minor: 'Tahoma'}},
+  {fontScheme: 'tahoma', substitute: 'Red Hat Text', expected: {major: 'Tahoma', minor: 'Tahoma'}},
   {fontScheme: 'consolas', substitute: 'Cousine', expected: {major: 'Consolas', minor: 'Consolas'}},
   {fontScheme: 'courier-new', substitute: 'Cousine', expected: {major: 'Courier New', minor: 'Courier New'}},
 ];
-const substitutes = ['Carlito', 'Caladea', 'Arimo', 'Tinos', 'Cousine', 'Gelasio'];
+const substitutes = ['Carlito', 'Caladea', 'Arimo', 'Tinos', 'Cousine', 'Gelasio', 'Red Hat Text', 'Red Hat Display', 'PT Serif', 'Montserrat', 'Source Sans 3', 'Open Sans', 'Noto Sans'];
 const {options: visual, registry} = await prepareNodeFonts({pack: 'office', substitutionPolicy: 'visual'});
 const reference = new Map();
 for (const {fontScheme, substitute, expected} of cases) {
