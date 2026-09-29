@@ -36,7 +36,8 @@ const cases = [
   {fontScheme: 'calibri', substitute: 'Carlito', expected: {major: 'Calibri', minor: 'Calibri'}},
   {fontScheme: 'georgia', substitute: 'Gelasio', expected: {major: 'Georgia', minor: 'Georgia'}},
   {fontScheme: 'times-new-roman', substitute: 'Tinos', expected: {major: 'Times New Roman', minor: 'Times New Roman'}},
-  {fontScheme: 'tahoma', substitute: 'Red Hat Text', expected: {major: 'Tahoma', minor: 'Tahoma'}},
+  // Tahoma previews with Arimo before opf-render#50 and with the open Red Hat Text after it; either is a substitute that must not reach the PPTX.
+  {fontScheme: 'tahoma', substitute: ['Arimo', 'Red Hat Text'], expected: {major: 'Tahoma', minor: 'Tahoma'}},
   {fontScheme: 'consolas', substitute: 'Cousine', expected: {major: 'Consolas', minor: 'Consolas'}},
   {fontScheme: 'courier-new', substitute: 'Cousine', expected: {major: 'Courier New', minor: 'Courier New'}},
 ];
@@ -48,7 +49,8 @@ for (const {fontScheme, substitute, expected} of cases) {
   const plain = unzipSync(new Uint8Array(await toPptx(structuredClone(presentation), {strictAssets: true})));
   registry.clearSubstitutions();
   const measured = unzipSync(new Uint8Array(await toPptx(structuredClone(presentation), {...visual, strictAssets: true})));
-  assert.ok(registry.substitutions.some(entry => entry.resolvedFamily === substitute), `${fontScheme}: the preview measured with ${substitute}`);
+  const expectedSubstitutes = [substitute].flat();
+  assert.ok(registry.substitutions.some(entry => expectedSubstitutes.includes(entry.resolvedFamily)), `${fontScheme}: the preview measured with ${expectedSubstitutes.join(' or ')}`);
   assert.deepEqual(themePair(measured), expected, `${fontScheme}: theme keeps the chosen families`);
   const faces = allTypefaces(measured);
   for (const name of substitutes) assert.ok(!faces.has(name), `${fontScheme}: substitute ${name} must never reach the PPTX (${[...faces]})`);
