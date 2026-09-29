@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.0
+
+- Release 0.10.0 (minor: intentional export/import contract changes, no public export removed). Require `@openpresentation/opf` ^0.11.1 and raise the optional `@openpresentation/opf-render` peer (and dev dependency) to ^0.10.0, so exporter and preview share the accepted font, alignment, furniture-field and host-date contracts. Contract changes to note: explicit `zipDate` values now encode UTC calendar fields and invalid values throw `invalid-zip-date` (the previous host-dependent parsing is gone); ordinary untagged native body text and list items can import as rich-run arrays instead of strings when they carry native formatting; the PPTX always names the chosen font family, and the exported theme carries the deck color scheme and script-slot fonts. Native Office header/footer objects (`p:hf`) remain out of scope.
+
 - FF-29: preserve exact media caption boundaries across soft wraps, current-link edits and re-export. Full tags retain validated CR/LF/CRLF separators, and older explicit soft/end tags safely imply no inserted character; references-only keeps structural LF without authored separator bytes. Cleared current captions use linked-text and empty-text fallback rather than reappearing as the URL. Fresh packed-consumer checks now include media and layout-intent fixtures against published core and renderer dependencies.
 
 - FF-29: preserve valid inline layout records that omit the standalone `$schema` identifier during PPTX reimport. Validation supplies the known layout identifier without changing authored records; explicit invalid identifiers and malformed content remain rejected.
