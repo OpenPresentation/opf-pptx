@@ -52,7 +52,17 @@ const CLOCKS = ['1980-06-15T12:34:56.789Z', '2038-01-19T03:14:07Z', '2026-02-28T
 // ---------------------------------------------------------------------------
 // Child process
 // ---------------------------------------------------------------------------
+// The renderer ships its own vendored faces (fonts/carlito, fonts/open: hash-pinned, opf-render#50) in a `fonts` directory
+// of its package. Reading them is bundled-font loading, not host fonts, so they do not count as font-directory reads.
+function rendererFontsDirectory() {
+  try {
+    const manifest = realpathSync(createRequire(import.meta.url).resolve('@openpresentation/opf-render/package.json'));
+    return path.join(path.dirname(manifest), 'fonts') + path.sep;
+  } catch { return undefined; }
+}
+
 async function worker(config) {
+  const bundledFonts = rendererFontsDirectory();
   const audit = [];
   const auditedNames = ['readFile', 'readFileSync', 'readdir', 'readdirSync', 'opendir', 'opendirSync', 'stat', 'statSync',
     'lstat', 'lstatSync', 'access', 'accessSync', 'existsSync', 'open', 'openSync', 'createReadStream', 'realpath', 'realpathSync'];
@@ -132,7 +142,7 @@ async function worker(config) {
   const cases = await suites[config.suite](config);
   const inside = file => config.roots.some(base => { const relative = path.relative(base, file); return !relative.startsWith('..') && !path.isAbsolute(relative); });
   const outsideRoot = [...new Set(audit)].filter(file => !inside(file));
-  process.stdout.write(JSON.stringify({probe, cases, audit: {total: audit.length, outsideRoot, fontDirectoryReads: audit.filter(file => FONT_DIRECTORY.test(file) && !/(?:^|[\\/])node_modules[\\/]/.test(file))}}));
+  process.stdout.write(JSON.stringify({probe, cases, audit: {total: audit.length, outsideRoot, fontDirectoryReads: audit.filter(file => FONT_DIRECTORY.test(file) && !/(?:^|[\\/])node_modules[\\/]/.test(file) && !(bundledFonts && file.startsWith(bundledFonts)))}}));
 }
 
 // ---------------------------------------------------------------------------
