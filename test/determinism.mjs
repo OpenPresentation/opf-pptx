@@ -116,6 +116,7 @@ async function worker(config) {
     icuDefaultLocale: new Intl.DateTimeFormat().resolvedOptions().locale,
     numberSample: (1234567.891).toLocaleString(),
     turkishCollationDiffers: 'Id'.localeCompare('id') !== new Intl.Collator('und').compare('Id', 'id'),
+    collation: {icu: process.versions.icu, node: process.version, patched: String.prototype.localeCompare !== Object.getPrototypeOf(String.prototype).localeCompare, localeCompare: 'Id'.localeCompare('id'), und: new Intl.Collator('und').compare('Id', 'id'), tr: 'Id'.localeCompare('id', 'tr-TR'), trSupported: Intl.Collator.supportedLocalesOf(['tr-TR']).length},
     // toUpperCase/toLowerCase are locale-independent by specification.
     plainCase: ['i'.toUpperCase(), 'I'.toLowerCase(), '\u{130}'.toLowerCase().length],
     clock: new Date().toISOString(),
@@ -270,7 +271,7 @@ async function parent() {
     const stressed = results.filter(item => item.label.includes('stress='));
     assert.ok(stressed.every(item => item.probe.numberSample !== baselines.plain.probe.numberSample), 'hostile locale changed number formatting');
     assert.ok(stressed.every(item => item.probe.icuDefaultLocale !== baselines.plain.probe.icuDefaultLocale), 'hostile locale changed the ICU default locale');
-    assert.ok(stressed.some(item => item.probe.turkishCollationDiffers), 'hostile Turkish locale changed collation: ' + JSON.stringify(stressed.map(item => ({label: item.label, lang: item.probe.lang, lcAll: item.probe.lcAll, icu: item.probe.icuDefaultLocale, differs: item.probe.turkishCollationDiffers}))));
+    assert.ok(stressed.some(item => item.probe.turkishCollationDiffers), 'hostile Turkish locale changed collation: ' + JSON.stringify(stressed.map(item => ({label: item.label, lang: item.probe.lang, lcAll: item.probe.lcAll, icu: item.probe.icuDefaultLocale, differs: item.probe.turkishCollationDiffers, collation: item.probe.collation}))));
     assert.deepEqual(failures, [], 'Exports differ across the determinism grid:\n' + failures.join('\n'));
     const localeEffective = new Set(results.filter(item => !item.label.includes('stress=')).map(item => item.probe.icuDefaultLocale));
     const manifest = {
