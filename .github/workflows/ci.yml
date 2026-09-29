@@ -45,7 +45,7 @@ jobs:
         with:
           repository: OpenPresentation/opf-render
           # FF-29: merged renderer (opf-render#43) that anchors preview text to item.alignment.
-          ref: face3de97545edb872f9726cc9ff9b448516ac26
+          ref: c62b3f98a4ac98cdec8ffd28c035a17a04197396
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
