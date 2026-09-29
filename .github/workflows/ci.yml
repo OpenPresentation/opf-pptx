@@ -37,7 +37,7 @@ jobs:
         with:
           repository: OpenPresentation/opf
           # FF-29: merged core (opf#132) with composed item.alignment.
-          ref: 4b991553f8d9706de1003f8f8f547e46d902da74
+          ref: e00038c1fc96a5cba66140f4b3256ede0fe1bae2
           path: opf
           fetch-depth: 0
           persist-credentials: false
