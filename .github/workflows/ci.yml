@@ -44,8 +44,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-render
-          # Renderer 0.11.0 release commit: Intos previews Aptos and the open families are bundled.
-          ref: 3b6d0191f6f6f3056c11bc18ee15e1c766534d4d
+          # Renderer 0.11.0 published commit (gitHead): Intos previews Aptos and the open families are bundled.
+          ref: 17f7807e7e687444e7c466bf7edd3227593ba56d
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
