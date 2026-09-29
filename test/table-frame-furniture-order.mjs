@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
 import {composeSlide, layoutTable} from '@openpresentation/opf/composition';
-import {renderSvgDeck} from '@openpresentation/opf-render';
+import {renderSvg, renderSvgDeck} from '@openpresentation/opf-render';
 import {toPptx, fromPptx} from '../dist/index.js';
 
-// FF-39: the native table frame equals the composed box (as the preview and the
-// parity harness measure it), and header/footer furniture is added after every
+// FF-39: a native table frame is the table the preview draws (composed x/y/width,
+// height = emitted row total), and header/footer furniture is added after every
 // content shape, the order opf-render paints it in (furniture last).
 const dec = new TextDecoder(), EMU = 9525, TOLERANCE_EMU = 0.02 / 72 * 914400;
 const slideXml = async (deck, options) => dec.decode(unzipSync(await toPptx(deck, options))['ppt/slides/slide1.xml']);
@@ -16,9 +16,18 @@ const frameOf = xml => {
   return {x: +x, y: +y, cx: +cx, cy: +cy, rowSum: rows.reduce((a, b) => a + b, 0), rows: rows.length};
 };
 
-// 1. Table frame ext equals the composed box whether the rows fill it or not.
+// 1. Table frame: position and width are the composed box; the height is the
+// emitted row total, which is the table the preview draws (PowerPoint derives a
+// table's height from its rows, so a taller declared frame would only be ignored).
 const short = {columns: ['Region', 'Value'], rows: [['North', '1'], ['South', '2']]};
 const tall = {columns: ['Region', 'Value'], rows: Array.from({length: 40}, (_, index) => [`Row ${index} with a longer descriptive label`, String(index)])};
+const drawnExtent = (svg, path) => {
+  const cells = [...svg.matchAll(/<rect [^>]*>/g)].map(match => match[0]).filter(rect => rect.includes(`data-opf-path="${path}.columns.`) || rect.includes(`data-opf-path="${path}.rows.`));
+  assert.ok(cells.length, 'The preview draws table cells');
+  const number = (rect, name) => Number(rect.match(new RegExp(`[ ]${name}="(-?[0-9.]+)"`))[1]);
+  const top = Math.min(...cells.map(rect => number(rect, 'y'))), bottom = Math.max(...cells.map(rect => number(rect, 'y') + number(rect, 'height')));
+  return {y: top, height: bottom - top};
+};
 let checked = 0, slack = 0, packed = 0;
 for (const [label, table] of [['short', short], ['tall', tall]]) for (const scale of [1, 0.5]) for (const withText of [false, true]) {
   const slide = withText
@@ -29,15 +38,21 @@ for (const [label, table] of [['short', short], ['tall', tall]]) for (const scal
   const item = geometry.items.find(entry => entry.field === 'table');
   const frame = frameOf(await slideXml(deck));
   const note = `${label} scale ${scale} text ${withText}`;
-  for (const [actual, expected, name] of [[frame.x, item.box.x, 'x'], [frame.y, item.box.y, 'y'], [frame.cx, item.box.width, 'width'], [frame.cy, item.box.height, 'height']])
+  for (const [actual, expected, name] of [[frame.x, item.box.x, 'x'], [frame.y, item.box.y, 'y'], [frame.cx, item.box.width, 'width']])
     assert.ok(Math.abs(actual - expected * EMU) <= TOLERANCE_EMU, `${note}: frame ${name} ${actual / EMU} equals composed box ${expected}`);
-  // Rows keep the measured preview heights, which never exceed the composed box.
   const rows = layoutTable(table, item.box, {scale}).rows.reduce((sum, row) => sum + row.box.height, 0);
-  assert.ok(frame.rowSum <= frame.cy + frame.rows, `${note}: rows never exceed the declared frame`);
-  if (frame.cy - frame.rowSum > 100 * EMU) slack++; else packed++;
+  const drawn = drawnExtent(renderSvg(deck, {trace: true}), item.path);
+  // Each row is rounded to whole EMU independently, hence the per-row allowance.
+  const allowance = TOLERANCE_EMU + frame.rows;
+  assert.ok(Math.abs(frame.cy - frame.rowSum) <= frame.rows, `${note}: frame cy ${frame.cy} equals the emitted row total ${frame.rowSum}`);
+  assert.ok(Math.abs(frame.cy - rows * EMU) <= allowance, `${note}: frame cy equals the measured row total ${rows}`);
+  assert.ok(Math.abs(frame.cy - drawn.height * EMU) <= allowance, `${note}: frame cy ${frame.cy / EMU} equals the preview's drawn table height ${drawn.height}`);
+  assert.ok(Math.abs(frame.y - drawn.y * EMU) <= TOLERANCE_EMU, `${note}: frame top equals the drawn table top`);
+  assert.ok(frame.cy <= item.box.height * EMU + allowance, `${note}: the table never exceeds its composed box`);
+  if (item.box.height * EMU - frame.cy > 100 * EMU) slack++; else packed++;
   checked++;
 }
-assert.ok(slack > 0, 'The suite covers tables whose rows do not fill the composed box.');
+assert.ok(slack > 0, 'The suite covers tables drawn shorter than their composed box.');
 assert.ok(packed > 0, 'The suite covers tables whose rows fill the composed box.');
 
 // 2. Furniture follows all content in spTree, matching preview paint order.
@@ -73,4 +88,4 @@ for (const deck of decks) {
   assert.deepEqual(imported.design.footer, deck.design.footer);
   assert.deepEqual(imported.slides.map(slide => slide.title), deck.slides.map(slide => slide.title));
 }
-console.log(`Table frame and furniture order passed: ${checked} table frames equal the composed box (${slack} with slack rows, ${packed} packed); ${orders} slides paint furniture after content in spTree and SVG.`);
+console.log(`Table frame and furniture order passed: ${checked} table frames equal the drawn table extent (${slack} shorter than their box, ${packed} filling it); ${orders} slides paint furniture after content in spTree and SVG.`);

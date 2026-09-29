@@ -1608,10 +1608,10 @@ function addTablePayload(slide, table, region, context, options, path) {
     x: region.x,
     y: region.y,
     w: region.w,
-    // The declared frame is the composed box (shared with the preview and the
-    // parity checks). Rows keep the preview's measured heights (layout.height,
-    // never more than the box); PowerPoint sizes a table from its rows.
-    h: region.h,
+    // PowerPoint derives a table's height from its rows, and the preview draws
+    // the rows (layout.height, never more than the composed box). The declared
+    // frame height is the row total so the XML matches what both engines draw.
+    h: layout.height / 96,
     rowH: layout.rows.map(row => row.box.height / 96),
     colW: Array(columnCount).fill(region.w / columnCount),
     autoPage: false,

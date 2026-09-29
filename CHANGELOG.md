@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- FF-39: a native table's `graphicFrame` extent equals the composed box (the size the preview and the parity harness use) instead of the measured row total; row heights are unchanged and never exceed the frame. Header/footer furniture is now added after every content shape, so `spTree` order matches the preview, which paints furniture last (a footer overlapping content stays on top). `test/table-frame-furniture-order.mjs` covers both.
+- FF-39: header/footer furniture is added after every content shape, so `spTree` order matches the preview, which paints furniture last (a footer overlapping content stays on top). A native table's `graphicFrame` keeps the composed x/y/width and its height stays the row total (`a:tr h` sum), which is the table the preview draws; PowerPoint derives a table's height from its rows, so a taller frame would be ignored. `test/table-frame-furniture-order.mjs` covers both.
 
 - FF-29: preserve exact media caption boundaries across soft wraps, current-link edits and re-export. Full tags retain validated CR/LF/CRLF separators, and older explicit soft/end tags safely imply no inserted character; references-only keeps structural LF without authored separator bytes. Cleared current captions use linked-text and empty-text fallback rather than reappearing as the URL. Fresh packed-consumer checks now include media and layout-intent fixtures against published core and renderer dependencies.
 
