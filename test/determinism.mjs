@@ -285,7 +285,7 @@ async function parent() {
     const stressed = results.filter(item => item.label.includes('stress='));
     assert.ok(stressed.every(item => item.probe.numberSample !== baselines.plain.probe.numberSample), 'hostile locale changed number formatting');
     assert.ok(stressed.every(item => item.probe.icuDefaultLocale !== baselines.plain.probe.icuDefaultLocale), 'hostile locale changed the ICU default locale');
-    assert.ok(stressed.some(item => item.probe.turkishCollationDiffers), 'hostile Turkish locale changed collation');
+    assert.ok(stressed.some(item => item.probe.turkishCollationDiffers), 'hostile Turkish locale changed collation: ' + JSON.stringify({parent: ['tr-TR','und'].map(l => 'Id'.localeCompare('id', l)), icu: process.versions.icu, stressed: stressed.map(item => [item.label, item.probe.turkishCollationDiffers, item.probe.icu])}));
     assert.deepEqual(failures, [], 'Exports differ across the determinism grid:\n' + failures.join('\n'));
     const localeEffective = new Set(results.filter(item => !item.label.includes('stress=')).map(item => item.probe.icuDefaultLocale));
     const manifest = {
