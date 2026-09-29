@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.11.0
+
+- Release 0.11.0 (minor: new core floor and a visible layout change; no exporter source change since 0.10.0, no public export removed). Require `@openpresentation/opf` ^0.11.2 and raise the optional `@openpresentation/opf-render` peer (and dev dependency) to ^0.11.0. Core 0.11.2 centers cover slides between the header and footer furniture, so exported covers move (103 of the 805 bundled example slides, 184 to 269 reference pixels in y); the export matches the preview only when the renderer and this package resolve the same core, so install PPTX 0.11.0 with renderer 0.11.0, editor 0.10.0 and core 0.11.2 or later.
+
 ## 0.10.0
 
 - Release 0.10.0 (minor: intentional export/import contract changes, no public export removed). Require `@openpresentation/opf` ^0.11.1 and raise the optional `@openpresentation/opf-render` peer (and dev dependency) to ^0.10.0, so exporter and preview share the accepted font, alignment, furniture-field and host-date contracts. Contract changes to note: explicit `zipDate` values now encode UTC calendar fields and invalid values throw `invalid-zip-date` (the previous host-dependent parsing is gone); a missing image whose alt or title holds an XML-unrepresentable character now throws `invalid-text`; ordinary untagged native body text and list items can import as rich-run arrays instead of strings when they carry native formatting; the PPTX always names the chosen font family, and the exported theme carries the deck color scheme and script-slot fonts. Native Office header/footer objects (`p:hf`) remain out of scope.
