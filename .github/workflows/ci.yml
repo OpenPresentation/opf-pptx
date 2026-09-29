@@ -36,8 +36,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          # Cover centering: core cover-centering PR head (composed item.alignment from opf#132 included); replace with the merged commit.
-          ref: 0d78449d2283262c96a66f803af1b81058496ab5
+          # Cover centering: merged core opf#169 (ce3c779), which includes composed item.alignment from opf#132.
+          ref: ce3c779afff2bc8132c082765d3d3121bb5e5288
           path: opf
           fetch-depth: 0
           persist-credentials: false
@@ -45,7 +45,7 @@ jobs:
         with:
           repository: OpenPresentation/opf-render
           # Cover centering: renderer cover-centering PR head (item.alignment anchoring from opf-render#43 included); replace with the merged commit.
-          ref: 637ea4fac038684fe9202d764564425096a9f399
+          ref: 6c91c05a83b6fb876baa3a95a8d1e62bca42327f
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
