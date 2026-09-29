@@ -3,7 +3,8 @@
 // nothing here may import the exporter at parent level.
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {strFromU8, unzipSync} from 'fflate';
+import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
+import {observeLanguage} from '../dist/script-fonts.js';
 import {examples} from '@openpresentation/opf/examples';
 import {toPptx, fromPptx} from '../dist/index.js';
 
@@ -129,6 +130,28 @@ const pick = names => names.map(name => {
 const coreExamples = () => pick(['full-feature-tour', 'chart-type-sampler', 'header-footer-logo-set', 'table-and-code', 'metrics-quotes-timeline', 'language-and-writing', 'media-and-follow-up', 'rich-text-runs']);
 const imageResolver = async () => image('wide.png');
 
+// Importer tie-breaks compare with code units, never a locale collation. Both
+// inputs tie on their primary key, so a locale-sensitive comparison could order them
+// differently under a Turkish default locale (I sorts before i there, after it in root).
+async function importTieBreaks(cases) {
+  const run = tag => `<a:rPr lang="${tag}"/>`;
+  const observed = observeLanguage({slides: [run('id-ID') + run('Id-ID'), run('zz-ZZ') + run('zz-ZZ')], theme: '', catalogs: undefined});
+  const ranked = observed.ranked.map(([tag, count]) => tag + ':' + count);
+  if (ranked.join() !== 'zz-ZZ:2,Id-ID:1,id-ID:1') throw new Error('language tie-break is not code-unit order: ' + ranked.join());
+  cases['import-language-tie'] = {sha256: sha(JSON.stringify(ranked)), bytes: ranked.length};
+  // slide01.xml and slide1.xml tie on slide number; without a slide list the importer orders by path.
+  const entries = unzipSync(await toPptx({name: 'Tie', slides: [{title: 'First'}, {title: 'Second'}]}));
+  entries['ppt/presentation.xml'] = strToU8(strFromU8(entries['ppt/presentation.xml']).replace(/<p:sldIdLst>[^]*?<[/]p:sldIdLst>/, ''));
+  entries['ppt/slides/slide01.xml'] = entries['ppt/slides/slide2.xml'];
+  entries['ppt/slides/_rels/slide01.xml.rels'] = entries['ppt/slides/_rels/slide2.xml.rels'];
+  delete entries['ppt/slides/slide2.xml'];
+  delete entries['ppt/slides/_rels/slide2.xml.rels'];
+  const imported = await fromPptx(zipSync(entries));
+  const titles = imported.slides.map(slide => slide.title).join();
+  if (titles !== 'Second,First') throw new Error('slide path tie-break is not code-unit order: ' + titles);
+  cases['import-slide-path-tie'] = {sha256: sha(JSON.stringify(imported)), bytes: titles.length};
+}
+
 export const suites = {
   async plain() {
     const cases = {};
@@ -138,6 +161,7 @@ export const suites = {
       if (imports || key === 'japanese') await exportCase(cases, `script-${key}:explicit`, scriptDeck(key), {...EXPLICIT, date: '2026-04-23'});
     }
     for (const [name, deck] of coreExamples()) await exportCase(cases, `example-${name}`, deck, {imageResolver}, name === 'full-feature-tour' || name === 'language-and-writing');
+    await importTieBreaks(cases);
     // Concurrent exports share one deterministic Math.random seed slot; they must
     // still equal sequential output.
     const [a, b, c] = await Promise.all([toPptx(scriptDeck('latin')), toPptx(scriptDeck('japanese')), toPptx(scriptDeck('latin'))]);

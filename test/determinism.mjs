@@ -169,8 +169,8 @@ function describeDifferences(baseline, other) {
 // decides whether it can change exported bytes and updates docs/export-determinism.md.
 const VENDOR = 'vendor/pptxgenjs/pptxgen.es.js';
 const HOST_APIS = [
-  // Import-only tie-breaks on ASCII slide paths and BCP-47 tags; no PPTX bytes.
-  ['localeCompare', /\blocaleCompare\b/, {'src/index.js': 1, 'src/script-fonts.js': 1}],
+  // The importer's tie-breaks use code-unit comparison (see importTieBreaks in the fixtures).
+  ['localeCompare', /\blocaleCompare\b/, {}],
   ['toLocale*', /\btoLocale\w*/, {}],
   ['Intl', /\bIntl\b/, {}],
   ['Date.now', /\bDate\.now\b|performance\.now/, {}],
