@@ -124,7 +124,7 @@ if (process.platform === 'win32') {
   assert.ok(Object.values(pure.policyNegativesRejected).every(Boolean));
   for (const key of ['handoutMasterObject', 'notesMasterObject', 'titleMasterObject', 'stringNamedMasterObject', 'chainedMasterObject']) assert.equal(pure.policyNegativesRejected[key], true, key);
   assert.equal(pure.masterPresenceDecisionPassed, true);
-  for (const key of ['masterPresenceMissing', 'masterPresenceUnread', 'masterPresenceOutOfDomain', 'masterPresenceString', 'masterPresenceBoolean']) assert.ok(pure.parentDecisionNegativesRejected.includes(key), key);
+  for (const key of ['masterPresenceMissing', 'masterPresenceTypesMissing', 'masterPresenceUnread', 'masterPresenceOutOfDomain', 'masterPresenceString', 'masterPresenceBoolean', 'masterPresenceNull', 'masterPresenceEmptyString', 'masterPresenceFraction', 'masterPresenceDoubleZero']) assert.ok(pure.parentDecisionNegativesRejected.includes(key), key);
   record('pure-regression');
 } else record('pure-regression', {skipped: 'non-Windows runner'});
 
@@ -215,7 +215,7 @@ let buildCounter = 0;
 
 // Build one synthetic evidence directory whose raw files follow the worker's
 // contract. `mutate` edits the in-memory evidence before it is written.
-async function buildEvidence({inputMode = 'carlito-fixture', mode = 'none', fonts = ['Carlito'], compareAfterContentFonts = false, afterEntries = null, recordMasterPresence = false, masterPresence = null, mutate = () => {}} = {}) {
+async function buildEvidence({inputMode = 'carlito-fixture', mode = 'none', fonts = ['Carlito'], compareAfterContentFonts = false, afterEntries = null, recordMasterPresence = false, masterPresence = null, masterPresenceTypes = null, mutate = () => {}} = {}) {
   const base = path.join(scratch, `synthetic-${++buildCounter}`);
   const evidence = path.join(base, 'evidence'), originals = path.join(base, 'originals'), inputs = path.join(evidence, 'inputs');
   await mkdir(inputs, {recursive: true}); await mkdir(originals, {recursive: true});
@@ -256,6 +256,7 @@ async function buildEvidence({inputMode = 'carlito-fixture', mode = 'none', font
   report.presentationFontsAfterContent = compareAfterContentFonts ? {count: (afterEntries ?? observed.presentationFonts.entries).length, entries: structuredClone(afterEntries ?? observed.presentationFonts.entries)} : null;
   report.fontQueryComparison = compareAfterContentFonts ? computeFontsComparison(report.presentationFonts, report.presentationFontsAfterContent) : null;
   report.masterPresence = recordMasterPresence ? structuredClone(masterPresence ?? {hasHandoutMaster: 0, hasNotesMaster: -1, hasTitleMaster: 0}) : null;
+  report.masterPresenceTypes = recordMasterPresence ? structuredClone(masterPresenceTypes ?? {hasHandoutMaster: 'System.Int32', hasNotesMaster: 'System.Int32', hasTitleMaster: 'System.Int32'}) : null;
   const expected = expectedInventoryStages(report);
   const rows = []; for (const [name, kind] of expected) { if (kind === 'pair') rows.push([name, 'begin'], [name, 'success']); else rows.push([name, 'success']); }
   const openBegin = rows.findIndex(([name, status]) => name === 'input.presentation.open-readonly' && status === 'begin');
@@ -377,6 +378,7 @@ try {
     const positives = [
       ['default-values', {}], ['all-true', {masterPresence: {hasHandoutMaster: -1, hasNotesMaster: -1, hasTitleMaster: -1}}],
       ['all-false', {masterPresence: {hasHandoutMaster: 0, hasNotesMaster: 0, hasTitleMaster: 0}}],
+      ['int16-types', {masterPresenceTypes: {hasHandoutMaster: 'System.Int16', hasNotesMaster: 'System.Int16', hasTitleMaster: 'System.Int16'}}],
       ['with-comparison', {compareAfterContentFonts: true}], ['fixture-temporary-session', {inputMode: 'carlito-fixture', mode: 'temporary-session'}],
       ['empty-fonts-with-comparison', {fonts: [], compareAfterContentFonts: true, afterEntries: []}],
     ];
@@ -387,7 +389,7 @@ try {
     }
     // Stage order implied by the observation: after every content and second-Fonts stage, immediately before the owned close.
     for (const compareAfterContentFonts of [false, true]) {
-      const names = expectedInventoryStages({...observation(), preflightPresentationCount: 0, source: {readOnly: -1}, compareAfterContentFonts, presentationFontsAfterContent: compareAfterContentFonts ? observation().presentationFonts : null, recordMasterPresence: true, masterPresence: {hasHandoutMaster: 0, hasNotesMaster: -1, hasTitleMaster: 0}}).map(([name, kind]) => [name, kind]);
+      const names = expectedInventoryStages({...observation(), preflightPresentationCount: 0, source: {readOnly: -1}, compareAfterContentFonts, presentationFontsAfterContent: compareAfterContentFonts ? observation().presentationFonts : null, recordMasterPresence: true, masterPresence: {hasHandoutMaster: 0, hasNotesMaster: -1, hasTitleMaster: 0}, masterPresenceTypes: {hasHandoutMaster: 'System.Int32', hasNotesMaster: 'System.Int32', hasTitleMaster: 'System.Int32'}}).map(([name, kind]) => [name, kind]);
       const list = names.map(item => item[0]), first = list.indexOf('owned.presentation.hasHandoutMaster.get');
       assert.deepEqual(list.slice(first, first + 4), ['owned.presentation.hasHandoutMaster.get', 'owned.presentation.hasNotesMaster.get', 'owned.presentation.hasTitleMaster.get', 'owned.presentation.fullName-before-close.get']);
       assert.ok(names.slice(first, first + 3).every(item => item[1] === 'pair'), 'each getter is its own begin/success pair');
@@ -414,6 +416,16 @@ try {
       ['missing-value', s => { delete s.report.masterPresence.hasTitleMaster; }, 'observation-master-presence'],
       ['extra-master-object-key', s => { s.report.masterPresence.notesMaster = {shapes: 0}; }, 'observation-master-presence'],
       ['missing-section', s => { s.report.masterPresence = null; }, 'observation-master-presence'],
+      ['types-missing', s => { s.report.masterPresenceTypes = null; }, 'observation-master-presence'],
+      ['types-key-missing', s => { delete s.report.masterPresenceTypes.hasTitleMaster; }, 'observation-master-presence'],
+      ['types-extra-key', s => { s.report.masterPresenceTypes.notesMaster = 'System.Int32'; }, 'observation-master-presence'],
+      ['type-double-with-integral-value', s => { s.report.masterPresenceTypes.hasNotesMaster = 'System.Double'; }, 'observation-master-presence'],
+      ['type-string-with-integral-value', s => { s.report.masterPresenceTypes.hasHandoutMaster = 'System.String'; }, 'observation-master-presence'],
+      ['type-boolean-with-integral-value', s => { s.report.masterPresenceTypes.hasTitleMaster = 'System.Boolean'; }, 'observation-master-presence'],
+      ['type-null-with-integral-value', s => { s.report.masterPresenceTypes.hasNotesMaster = null; }, 'observation-master-presence'],
+      ['type-int64', s => { s.report.masterPresenceTypes.hasNotesMaster = 'System.Int64'; }, 'observation-master-presence'],
+      ['empty-string-value', s => { s.report.masterPresence.hasNotesMaster = ''; s.report.masterPresenceTypes.hasNotesMaster = 'System.String'; }, 'observation-master-presence'],
+      ['null-value-null-type', s => { s.report.masterPresence.hasNotesMaster = null; s.report.masterPresenceTypes.hasNotesMaster = null; }, 'observation-master-presence'],
       ['missing-stage-pair', s => dropRows(s, row => row.stage === 'owned.presentation.hasNotesMaster.get'), 'stage-sequence'],
       ['missing-success-row', s => dropRows(s, row => row.stage === 'owned.presentation.hasTitleMaster.get' && row.status === 'success'), 'stage-sequence'],
       ['missing-all-stages', s => dropRows(s, row => masterStage.test(row.stage)), 'stage-sequence'],
@@ -435,6 +447,7 @@ try {
     const offNegatives = [
       ['section-present-when-off', s => { s.report.masterPresence = {hasHandoutMaster: 0, hasNotesMaster: -1, hasTitleMaster: 0}; }, 'master-presence-absent'],
       ['empty-section-when-off', s => { s.report.masterPresence = {}; }, 'master-presence-absent'],
+      ['types-present-when-off', s => { s.report.masterPresenceTypes = {hasHandoutMaster: 'System.Int32', hasNotesMaster: 'System.Int32', hasTitleMaster: 'System.Int32'}; }, 'master-presence-absent'],
       ['stages-present-when-off', s => { const at = s.stages.findIndex(row => row.stage === 'owned.presentation.fullName-before-close.get'); const rows = ['Handout', 'Notes', 'Title'].flatMap(kind => ['begin', 'success'].map(status => ({...s.stages[at], stage: `owned.presentation.has${kind}Master.get`, status}))); s.stages.splice(at, 0, ...rows); renumber(s); }, 'stage-count'],
       ['report-on-request-off', s => { s.report.recordMasterPresence = true; s.report.masterPresence = {hasHandoutMaster: 0, hasNotesMaster: -1, hasTitleMaster: 0}; }, 'master-presence-mode'],
       ['supervisor-on-request-off', s => { s.supervisor.recordMasterPresence = true; }, 'master-presence-mode'],
@@ -450,7 +463,7 @@ try {
     assert.equal(offClean.passed, true); assert.equal(offClean.findings.masterPresence, null);
     assert.ok(!(await readFile(path.join(offClean.evidenceDirectory, 'stages.jsonl'), 'utf8')).trim().split(/\r?\n/).map(JSON.parse).some(row => masterStage.test(row.stage)), 'no getter stage when off');
     // A pinned prior verifier revision (before this switch) may omit the field everywhere; the current one may not.
-    const legacyShape = s => { delete s.request.recordMasterPresence; delete s.report.recordMasterPresence; delete s.supervisor.recordMasterPresence; delete s.report.masterPresence; };
+    const legacyShape = s => { delete s.request.recordMasterPresence; delete s.report.recordMasterPresence; delete s.supervisor.recordMasterPresence; delete s.report.masterPresence; delete s.report.masterPresenceTypes; };
     const legacyRoot = path.join(scratch, 'legacy-reviewed'); await mkdir(legacyRoot);
     await writeFile(path.join(legacyRoot, 'native-font-inventory.ps1'), `${verifierSource}
 # a newer reviewed revision
@@ -702,7 +715,7 @@ try {
       const request = await parseFile(out, 'request.json'), report = await parseFile(out, 'report.json'), supervisor = await parseFile(out, 'supervisor.json');
       assert.equal(request.recordMasterPresence, true, name); assert.equal(report.recordMasterPresence, true, name); assert.equal(supervisor.recordMasterPresence, true, name);
       assert.equal(request.compareAfterContentFonts, compare, name); assert.deepEqual(report.masterPresence, values, name);
-      assert.ok(Object.values(report.masterPresence).every(value => Number.isInteger(value) && (value === 0 || value === -1)), name);
+      assert.ok(Object.values(report.masterPresence).every(value => Number.isInteger(value) && (value === 0 || value === -1)), name); assert.deepEqual(report.masterPresenceTypes, {hasHandoutMaster: 'System.Int32', hasNotesMaster: 'System.Int32', hasTitleMaster: 'System.Int32'}, name);
       assert.equal(report.ownedOpenCount, 1); assert.equal(report.ownedCloseCount, 1); assert.equal(supervisor.passed, true, name); assert.equal(supervisor.inventoryComplete, true, name);
       const stages = await stagesOf(out), names = stages.map(row => row.stage);
       const first = names.findIndex(isMasterStage);
@@ -740,17 +753,34 @@ try {
         assert.equal((await auditEvidenceDirectory(out, {reviewedRoot: harness})).passed, false, variant);
       }
     }
-    // A value outside msoTriState -1/0 is recorded raw, then fails the run after the owned close.
-    {
-      const out = path.join(harness, 'run-masters-domain');
-      const child = mockRun(['-ControlDeck', '-RecordMasterPresence', '-OutputDirectory', out, '-InputPresentation', path.join(harness, 'control.pptx')], 'masters-domain');
-      assert.notEqual(child.status, 0, 'out-of-domain value must fail');
+    // A value outside msoTriState -1/0, or of a non-integral type, is recorded raw with its type (never coerced to 0), then
+    // fails the run after the owned close with the distinct master-presence-out-of-domain failure.
+    const rawCases = [
+      ['masters-domain', 1, 'System.Int32'], ['masters-null', null, null], ['masters-empty-string', '', 'System.String'], ['masters-fraction', 0.5, 'System.Double'],
+      ['masters-bool', true, 'System.Boolean'], ['masters-string', '0', 'System.String'], ['masters-double-zero', 0, 'System.Double'],
+    ];
+    for (const [variant, rawValue, rawType] of rawCases) {
+      const out = path.join(harness, `run-${variant}`);
+      const child = mockRun(['-ControlDeck', '-RecordMasterPresence', '-OutputDirectory', out, '-InputPresentation', path.join(harness, 'control.pptx')], variant);
+      assert.notEqual(child.status, 0, `${variant}: out-of-domain value must fail`);
       const report = await parseFile(out, 'report.json'), supervisor = await parseFile(out, 'supervisor.json');
-      assert.equal(report.masterPresence.hasNotesMaster, 1); assert.ok(report.semanticFailures.includes('master-presence-out-of-domain')); assert.equal(report.ownedCloseCount, 1);
-      assert.equal(supervisor.passed, false); assert.equal(supervisor.inventoryComplete, false);
+      assert.deepEqual(report.masterPresence, {hasHandoutMaster: 0, hasNotesMaster: rawValue, hasTitleMaster: 0}, variant);
+      assert.deepEqual(report.masterPresenceTypes, {hasHandoutMaster: 'System.Int32', hasNotesMaster: rawType, hasTitleMaster: 'System.Int32'}, variant);
+      assert.ok(report.semanticFailures.includes('master-presence-out-of-domain'), variant); assert.equal(report.ownedCloseCount, 1, variant);
+      assert.equal(supervisor.passed, false, variant); assert.equal(supervisor.inventoryComplete, false, variant);
       const result = await auditEvidenceDirectory(out, {reviewedRoot: harness});
-      assert.equal(result.passed, false); assert.ok(codes(result).has('observation-master-presence') && codes(result).has('report-complete'), JSON.stringify(result.failures));
-      assert.equal(result.findings.masterPresence, null, 'out-of-domain values are never reported as findings');
+      assert.equal(result.passed, false, variant); assert.ok(codes(result).has('observation-master-presence') && codes(result).has('report-complete'), `${variant}: ${JSON.stringify(result.failures)}`);
+      assert.equal(result.findings.masterPresence, null, `${variant}: out-of-domain values are never reported as findings`);
+    }
+    // An integral Int16 msoTriState is accepted and its type recorded.
+    {
+      const out = path.join(harness, 'run-masters-int16');
+      const child = mockRun(['-ControlDeck', '-RecordMasterPresence', '-OutputDirectory', out, '-InputPresentation', path.join(harness, 'control.pptx')], 'masters-int16');
+      assert.equal(child.status, 0, child.stderr || child.stdout);
+      const report = await parseFile(out, 'report.json');
+      assert.deepEqual(report.masterPresence, {hasHandoutMaster: 0, hasNotesMaster: -1, hasTitleMaster: 0}); assert.deepEqual(report.masterPresenceTypes, {hasHandoutMaster: 'System.Int32', hasNotesMaster: 'System.Int16', hasTitleMaster: 'System.Int32'});
+      const result = await auditEvidenceDirectory(out, {reviewedRoot: harness});
+      assert.deepEqual([...codes(result)].sort(), mockCodes, JSON.stringify(result.failures)); assert.equal(result.findings.masterPresenceTypes.hasNotesMaster, 'System.Int16');
     }
     // The tripwire is live: touching a master object in the mock does leave a record.
     {
@@ -760,7 +790,7 @@ try {
       assert.equal(probe.status, 0, probe.stderr || probe.stdout);
       assert.deepEqual((await readFile(probeLog, 'utf8')).split(/\r?\n/).filter(Boolean), ['NotesMaster', 'HandoutMaster', 'TitleMaster']);
     }
-    record('mock-master-presence-order-values-latch-and-strict-boolean', {cases: masterCases.map(item => item[0]), errorInjection: ['handout', 'notes', 'title'].flatMap(kind => [`masters-${kind}-error`, `dual-masters-${kind}-error`]), outOfDomain: true, strictBooleanBothWays: true, tripwireLive: true});
+    record('mock-master-presence-order-values-latch-and-strict-boolean', {cases: masterCases.map(item => item[0]), errorInjection: ['handout', 'notes', 'title'].flatMap(kind => [`masters-${kind}-error`, `dual-masters-${kind}-error`]), outOfDomain: rawCases.map(item => item[0]), int16Accepted: true, strictBooleanBothWays: true, tripwireLive: true});
 
     // Failures while the owned presentation is open: exactly one error close
     // only for a non-COM failure with the owned FullName; otherwise left open.

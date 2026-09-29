@@ -12,6 +12,9 @@
 #   wrongfullname      the opened object reports a different FullName
 #   masters-all-true   Has{Handout,Notes,Title}Master all -1 (default: 0, -1, 0)
 #   masters-domain     HasNotesMaster returns 1, outside the msoTriState -1/0 domain
+#   masters-{null,empty-string,fraction,bool,string,double-zero}  HasNotesMaster returns $null, '', 0.5, $true, '0', [double]0
+#                      (each must be recorded raw with its type and fail, never coerced to 0)
+#   masters-int16      HasNotesMaster returns [int16]-1 (an integral COM type, accepted)
 #   masters-{handout,notes,title}-error  that getter fails (wrapper-injected, latched);
 #                      a dual- prefix combines it with the dual-* font scenarios
 # The HandoutMaster, NotesMaster and TitleMaster objects are tripwires: any access
@@ -108,7 +111,16 @@ function New-OpfInventoryMockApplication {
     $already=@(if($variant -ceq 'cloud'){[pscustomobject]@{FullName='https://contoso.sharepoint.com/sites/team/Shared%20Documents/cloud-deck.pptx'}})
     $presence=@{Handout=0;Notes=-1;Title=0}
     if($variant -ceq 'masters-all-true') { $presence=@{Handout=-1;Notes=-1;Title=-1} }
-    if($variant -ceq 'masters-domain') { $presence.Notes=1 }
+    switch -CaseSensitive ($variant) {
+        'masters-domain' { $presence.Notes=1 }
+        'masters-null' { $presence.Notes=$null }
+        'masters-empty-string' { $presence.Notes='' }
+        'masters-fraction' { $presence.Notes=0.5 }
+        'masters-bool' { $presence.Notes=$true }
+        'masters-string' { $presence.Notes='0' }
+        'masters-double-zero' { $presence.Notes=[double]0 }
+        'masters-int16' { $presence.Notes=[int16](-1) }
+    }
     $presentations=[pscustomobject]@{MockPresence=$presence;Count=$already.Count;MockAlreadyOpen=$already;MockFonts=$fonts;MockAfterFonts=$afterFonts;MockVariant=$variant;MockMaster=$master;MockSlides=$slides;MockWrongFullName=($variant -ceq 'wrongfullname')}
     $presentations | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) if([int]$Index -lt 1 -or [int]$Index -gt $this.MockAlreadyOpen.Count) { throw 'Mock presentation index out of range' }; return ,$this.MockAlreadyOpen[[int]$Index-1] }
     $presentations | Add-Member -MemberType ScriptMethod -Name Open -Value {
