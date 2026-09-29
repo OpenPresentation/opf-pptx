@@ -548,4 +548,34 @@ for (const video of ['file:clip.mp4', 'data:video/mp4;base64,PRIVATE']) {
   checks++;
 }
 
+// Parent FF-29 full tags have explicit soft/end boundaries and fingerprints,
+// but no separator field. Those boundaries unambiguously insert no character.
+// Old hard boundaries cannot distinguish CR/LF/CRLF and stay conservative.
+{
+  const url = 'https://example.com/parent.mp4';
+  const oldFull = async video => modify(await toPptx({slides: [{video}]}, {seed: 1}), entries => {
+    for (const part of tagParts(entries)) updateTag(entries, part, record => { const {separator, ...old} = record; return old; });
+  });
+  for (const video of [{src: url, title: ' A  B '}, {src: url, title: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.repeat(12)}, 'file:///offline/' + 'long-local-path-segment/'.repeat(10) + 'clip.mp4']) {
+    const result = await read(await oldFull(video));
+    assert.deepEqual(videos(result.doc), [[video]], 'Intact parent soft/end tags retain video without inventing characters.');
+    assert.deepEqual(result.media, []);
+    assert.deepEqual(videos((await read(await toPptx(result.doc, {seed: 1}))).doc), [[video]]);
+  }
+  const bytes = await oldFull({src: url, title: 'A B'});
+  for (const tamper of [
+    entries => updateTag(entries, frameTag(entries, 'slides.0.video'), record => ({...record, video: {...record.video, title: 'A  B'}})),
+    entries => { const part = tagParts(entries).find(path => tagValue(dec.decode(entries[path])).role === 'caption'); updateTag(entries, part, record => ({...record, fingerprint: '0:deadbeef41c6ce57'})); },
+    entries => { const part = tagParts(entries).find(path => tagValue(dec.decode(entries[path])).role === 'caption'); updateTag(entries, part, record => { const {boundary, ...missing} = record; return missing; }); },
+  ]) {
+    const result = await read(modify(bytes, tamper));
+    assert.deepEqual(result.doc.slides[0].blocks, [linkedText(url), {type: 'text', text: 'A B'}]);
+    assert.deepEqual(result.media, [['invalid-media-provenance', 'slides.0.video']]);
+  }
+  const hard = await read(await oldFull({src: url, title: 'One\r\nTwo'}));
+  assert.deepEqual(hard.doc.slides[0].blocks, [linkedText(url), {type: 'text', text: 'One'}, {type: 'text', text: 'Two'}]);
+  assert.deepEqual(hard.media, [['invalid-media-provenance', 'slides.0.video']], 'Never infer authored CRLF from an old hard boundary.');
+  checks++;
+}
+
 console.log(`Media placeholder passed: ${checks} groups; identity-only omissions, clickable surfaces, exact caption edits and linked fallback, privacy/current-frame authority, reorder/copy and untrusted tags. Native Office is a separate gate.`);

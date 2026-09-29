@@ -149,9 +149,15 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     // structural hard breaks, represented as LF without hidden source bytes.
     let caption;
     if (captions.length && captions.every((member, index) => member.record.line === index && member.record.count === captions.length && name(member, `caption line ${index}`))) try {
-      caption = sourceLineParagraphs(captions.map(member => ({index: member.index, data: frame?.record.nativeOnly === true
-        ? {boundary: member.record.boundary, separator: member.record.boundary === 'hard' ? '\n' : ''}
-        : member.record})), paragraphs)[0].text;
+      caption = sourceLineParagraphs(captions.map(member => {
+        let data = frame?.record.nativeOnly === true
+          ? {boundary: member.record.boundary, separator: member.record.boundary === 'hard' ? '\n' : ''}
+          : member.record;
+        // Parent full tags omitted separators. Explicit soft/end inserts no
+        // character; an old hard boundary cannot establish CR/LF spelling.
+        if (!Object.hasOwn(data, 'separator') && ['soft', 'end'].includes(data.boundary)) data = {...data, separator: ''};
+        return {index: member.index, data};
+      }), paragraphs)[0].text;
     } catch { /* Missing or damaged boundaries use current native fallback. */ }
     const links = array(frame?.shape['p:nvSpPr']?.['p:cNvPr']?.['a:hlinkClick']);
     const rel = links.length === 1 ? relationships.get(links[0]['r:id']) : undefined;
