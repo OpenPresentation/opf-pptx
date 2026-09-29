@@ -115,8 +115,10 @@ async function worker(config) {
     lcAll: process.env.LC_ALL ?? null,
     icuDefaultLocale: new Intl.DateTimeFormat().resolvedOptions().locale,
     numberSample: (1234567.891).toLocaleString(),
-    turkishCollationDiffers: 'Id'.localeCompare('id') !== new Intl.Collator('und').compare('Id', 'id'),
-    collation: {icu: process.versions.icu, node: process.version, patched: String.prototype.localeCompare !== Object.getPrototypeOf(String.prototype).localeCompare, localeCompare: 'Id'.localeCompare('id'), und: new Intl.Collator('und').compare('Id', 'id'), tr: 'Id'.localeCompare('id', 'tr-TR'), trSupported: Intl.Collator.supportedLocalesOf(['tr-TR']).length},
+    // The reference is an explicit English collator: on some hosts 'und' resolves to the process default locale, which would
+    // make the control compare the hostile locale with itself.
+    turkishCollationDiffers: 'Id'.localeCompare('id') !== new Intl.Collator('en-US').compare('Id', 'id'),
+    collation: {icu: process.versions.icu, node: process.version, localeCompare: 'Id'.localeCompare('id'), english: new Intl.Collator('en-US').compare('Id', 'id'), und: new Intl.Collator('und').compare('Id', 'id')},
     // toUpperCase/toLowerCase are locale-independent by specification.
     plainCase: ['i'.toUpperCase(), 'I'.toLowerCase(), '\u{130}'.toLowerCase().length],
     clock: new Date().toISOString(),
