@@ -134,7 +134,9 @@ async function worker(config) {
     lcAll: process.env.LC_ALL ?? null,
     icuDefaultLocale: new Intl.DateTimeFormat().resolvedOptions().locale,
     numberSample: (1234567.891).toLocaleString(),
-    turkishCollationDiffers: 'Id'.localeCompare('id') !== new Intl.Collator('und').compare('Id', 'id'),
+    // The reference must name a locale: V8 resolves an unsupported tag such as 'und' to the host default,
+    // which follows LANG on Linux (tr_TR would then equal the hostile locale and hide the change).
+    turkishCollationDiffers: 'Id'.localeCompare('id') !== new Intl.Collator('en-US').compare('Id', 'id'),
     // toUpperCase/toLowerCase are locale-independent by specification.
     plainCase: ['i'.toUpperCase(), 'I'.toLowerCase(), '\u{130}'.toLowerCase().length],
     clock: new Date().toISOString(),
@@ -285,7 +287,7 @@ async function parent() {
     const stressed = results.filter(item => item.label.includes('stress='));
     assert.ok(stressed.every(item => item.probe.numberSample !== baselines.plain.probe.numberSample), 'hostile locale changed number formatting');
     assert.ok(stressed.every(item => item.probe.icuDefaultLocale !== baselines.plain.probe.icuDefaultLocale), 'hostile locale changed the ICU default locale');
-    assert.ok(stressed.some(item => item.probe.turkishCollationDiffers), 'hostile Turkish locale changed collation: ' + JSON.stringify({parent: ['tr-TR','und'].map(l => 'Id'.localeCompare('id', l)), icu: process.versions.icu, stressed: stressed.map(item => [item.label, item.probe.turkishCollationDiffers, item.probe.icu])}));
+    assert.ok(stressed.some(item => item.probe.turkishCollationDiffers), 'hostile Turkish locale changed collation');
     assert.deepEqual(failures, [], 'Exports differ across the determinism grid:\n' + failures.join('\n'));
     const localeEffective = new Set(results.filter(item => !item.label.includes('stress=')).map(item => item.probe.icuDefaultLocale));
     const manifest = {
