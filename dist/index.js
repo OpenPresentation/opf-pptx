@@ -199,6 +199,7 @@ export async function toPptx(input, options = {}) {
 
   const context = resolvePresentationContext(presentation, {...options,textMeasurement:undefined});
   context.listMarkers = new Map();
+  context.imagePlaceholders = new Map();
   context.tableHeaders = new Map();
   context.tableCells = new Map();
   context.imagePlacements = new Map();
@@ -449,7 +450,7 @@ function resolveSlidePaths(entries, presentationRoot, relationships) {
 }
 
 function compareSlidePaths(left, right) {
-  return slideNumber(left) - slideNumber(right) || left.localeCompare(right);
+  return slideNumber(left) - slideNumber(right) || (left < right ? -1 : left > right ? 1 : 0);
 }
 
 function slideNumber(path) {
@@ -1224,7 +1225,6 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const geometry = composeSlide(opfSlide, { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) });
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   if (geometry.slideImage) await addSlideImage(slide, presentation, geometry.slideImage, slideIndex, slideContext, options);
-  await addFurniture(slide,presentation,opfSlide,geometry.furniture,slideContext,options,slideIndex);
   for (const item of geometry.items) {
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };
     if (item.frameBox) {
@@ -1252,7 +1252,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         breakLine: false
       });
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
-      addMeasuredList(slide,item.text,slideContext);
+      addMeasuredList(slide,item.text,slideContext,item.path);
     } else if (item.field === "text" && item.text?.richLines) {
       const alignment=item.text.placement?.alignment??alignmentFor(item)??'left';
       for(const [index,line] of item.text.richLines.entries()){
@@ -1271,6 +1271,10 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
       await addPayload(slide, presentation, item.payload, region, item.path, { ...slideContext, composition: item.composition, contentAlignment: alignmentFor(item) ?? "left" }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
     }
   }
+  // Core composes furniture above all content and opf-render paints it last, so
+  // spTree order (PowerPoint's z-order) matches: header/footer parts come after
+  // every content item, and an overlapping footer stays visible over content.
+  await addFurniture(slide,presentation,opfSlide,geometry.furniture,slideContext,options,slideIndex);
 
   if (opfSlide.notes) {
     const notes = String(opfSlide.notes);
@@ -1337,7 +1341,8 @@ async function addPayload(slide, presentation, payload, region, path, context, o
       addTimelinePayload(slide, payload.timeline, timelineLayout, context, options, path);
       break;
     default:
-      addPlaceholderPayload(slide, "Unsupported OPF payload", payload, region, context);
+      options.onDiagnostic?.({code: "content-placeholder", path, reason: "unsupported-payload", message: "This content has no PowerPoint export; a placeholder frame stands in for it."});
+      addPlaceholderPayload(slide, "Unsupported content", "This content has no PowerPoint export.", region, context);
   }
 }
 
@@ -1370,13 +1375,19 @@ function richLineRuns(line,color,context) {
     return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:fragment.fontSize*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/fragment.fontSize*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
   });
 }
-function addMeasuredList(slide,fit,context) {
+// Every native line of a list, marker paragraph or not, is named for the list's
+// composed path (`OPF list <path> line N`, N counting across the whole list) like
+// the other measured text shapes. A reader maps lines to their list by name, not
+// by geometry, so lines of an overflowing list that fall below its box still
+// belong to it.
+function addMeasuredList(slide,fit,context,path) {
+  let lineNumber=0;
   for(const entry of fit.listEntries){
     const addLines=(text,box,color,withBullet)=>{
       text.richLines.forEach((line,index)=>{
         const first=withBullet&&index===0,level=Math.min(8,entry.level),inset=first?entry.marker.indent*(level+1):0;
         const region={x:(box.x-inset)/96,y:(box.y+line.y)/96,w:(box.width+inset)/96,h:line.height/96};
-        const objectName=first?`OPF list paragraph ${context.listMarkers.size+1}`:undefined;
+        const objectName=`OPF list ${path} line ${lineNumber++}`;
         if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:normalizeHex(context.colors.text)});
         const paragraph=first?{bullet:{characterCode:entry.marker.text.codePointAt(0).toString(16).padStart(4,'0'),indent:entry.marker.indent*.75},indentLevel:level}:{bullet:false};
         const runs=richLineRuns(line,color,context);
@@ -1434,7 +1445,7 @@ function addListPayload(slide, items, region, context) {
 async function addImagePayload(slide, presentation, asset, region, path, context, options) {
   const resolved = await resolveImage(asset, presentation, options, path);
   if (!resolved) {
-    addPlaceholderPayload(slide, "Image", asset, region, context);
+    addImagePlaceholder(slide, presentation, asset, region, path, context, options);
     return;
   }
   const objectName = `OPF image ${context.imagePlacements.size + 1}`;
@@ -1457,7 +1468,7 @@ async function addSlideImage(slide, presentation, image, slideIndex, context, op
   const box = { x: image.box.x / 96, y: image.box.y / 96, w: image.box.width / 96, h: image.box.height / 96 };
   const resolved = await resolveImage(image.value, presentation, options, image.sourcePath);
   if (!resolved) {
-    addPlaceholderPayload(slide, "Image", image.value, box, context);
+    addImagePlaceholder(slide, presentation, image.value, box, image.sourcePath, context, options);
     return;
   }
   const objectName = slideImageName(`slides.${slideIndex}`);
@@ -1491,7 +1502,7 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
   if (!chartData.series) {
     // Never lose a chart silently: the placeholder frame stands in for it, and a diagnostic names the reason.
     options.onDiagnostic?.({code: "chart-data-unplottable", path, message: chartData.message, reason: chartData.reason});
-    addPlaceholderPayload(slide, "Chart", chart, region, context);
+    addPlaceholderPayload(slide, "Chart", chartData.summary, region, context);
     return;
   }
   if (chartData.adapted) options.onDiagnostic?.({code: "chart-data-adapted", path, message: chartData.message, adaptation: chartData.adapted});
@@ -1539,7 +1550,8 @@ function addTablePayload(slide, table, region, context, options, path) {
   const hasHeaders = Array.isArray(table?.columns) && table.columns.length > 0;
   const sourceRows = [...(hasHeaders ? [table.columns] : []), ...(table?.rows ?? [])];
   if (sourceRows.length === 0) {
-    addPlaceholderPayload(slide, "Table", table, region, context);
+    options?.onDiagnostic?.({code: "content-placeholder", path, reason: "table-has-no-rows", message: "The table has no rows and no header; a placeholder frame stands in for it."});
+    addPlaceholderPayload(slide, "Table", "The table has no rows.", region, context);
     return;
   }
 
@@ -1608,6 +1620,9 @@ function addTablePayload(slide, table, region, context, options, path) {
     x: region.x,
     y: region.y,
     w: region.w,
+    // PowerPoint derives a table's height from its rows, and the preview draws
+    // the rows (layout.height, never more than the composed box). The declared
+    // frame height is the row total so the XML matches what both engines draw.
     h: layout.height / 96,
     rowH: layout.rows.map(row => row.box.height / 96),
     colW: Array(columnCount).fill(region.w / columnCount),
@@ -1821,7 +1836,78 @@ function addMediaPayload(slide, presentation, value, region, path, context, opti
     {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText, objectName: `OPF media ${path} caption`, media: true, keepEmpty: true, hyperlink});
 }
 
-function addPlaceholderPayload(slide, label, value, region, context) {
+// The asset an image block names, layered as the preview layers it: fields on the
+// block win over the registry entry it references, and an unknown reference keeps
+// the block's own fields.
+function placeholderAsset(asset, presentation) {
+  const plain = value => typeof value === "string" ? { src: value } : isPlainObject(value) ? value : { src: "" };
+  let current = plain(asset);
+  const seen = new Set();
+  while (typeof current.src === "string" && current.src.startsWith("asset:")) {
+    const id = current.src.slice(6);
+    if (seen.has(id) || !Object.hasOwn(presentation.assets ?? {}, id)) break;
+    seen.add(id);
+    const { src: _source, ...overrides } = current;
+    current = { ...plain(presentation.assets[id]), ...overrides };
+  }
+  return current;
+}
+
+// An image that cannot be embedded exports the preview's placeholder, not a second
+// design: a dashed panel with a centered "Image unavailable" over the asset's alt
+// text (else title, else "Image"), set bold at 20 px (shrinking to the composition
+// minimum) in the readable text colour for the panel, or a cross when the label
+// cannot fit even at that minimum. The panel carries the accessible name the
+// preview gives its group, "Image unavailable: <description>".
+function addImagePlaceholder(slide, presentation, asset, region, path, context, options) {
+  const layered = placeholderAsset(asset, presentation);
+  const description = String(layered.alt ?? layered.title ?? "Image");
+  const label = `Image unavailable\n${description}`;
+  // The preview rejects characters DrawingML/SVG XML cannot represent when it draws the label.
+  // The cross and the accessible name would otherwise carry them into the slide XML, so check
+  // up front and fail the same way whichever form the placeholder takes.
+  const invalid = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF￾￿]/u.exec(label);
+  if (invalid) throw new OPFPptxError("invalid-text", `Text contains U+${invalid[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} at UTF-16 offset ${invalid.index}, which DrawingML XML cannot represent.`, { path });
+  const scale = Math.min(context.dimensions.widthInches, context.dimensions.heightInches) * 96 / 720;
+  const box = pixelBox(region);
+  const padding = Math.min(24 * scale, box.width * .06, box.height * .1);
+  const inner = { x: box.x + padding, y: box.y + padding, width: Math.max(1, box.width - padding * 2), height: Math.max(1, box.height - padding * 2) };
+  const surface = normalizeHex(context.colors.surface);
+  const textColor = normalizeHex(textColorForFill(`#${surface}`, `#${context.colors.text}`));
+  const style = resolveTextStyle({ fontFamily: context.fonts.body, fontWeight: 600, path }, options.textMeasurement);
+  const measurer = textWidthMeasurer(style, options.textMeasurement);
+  const minimum = (context.composition?.minFontSize ?? 16) * scale;
+  const fit = fitText(label, inner, 20 * scale, minimum, measurer);
+  const objectName = `OPF image placeholder ${context.imagePlaceholders.size + 1}`;
+  context.imagePlaceholders.set(objectName, `Image unavailable: ${description}`);
+  slide.addShape("rect", {
+    x: region.x, y: region.y, w: region.w, h: region.h,
+    fill: { color: surface },
+    line: { color: context.colors.border, width: .75, dashType: "dash" },
+    objectName
+  });
+  if (!fit.overflow) {
+    // The lines are centered vertically in the padded box. Fit against the shifted
+    // box so any per-line placement carries the same offset.
+    const offset = Math.max(0, (inner.height - fit.lines.length * fit.lineHeight) / 2);
+    const centered = { ...inner, y: inner.y + offset };
+    addMeasuredPayloadText(slide, label, centered, context, options, {
+      path, fit: fitText(label, centered, 20 * scale, minimum, measurer), textStyle: style,
+      diagnosticsHandled: true, align: "center", color: textColor
+    });
+    return;
+  }
+  // A status indicator, not shortened authored content: the full description stays
+  // in the panel's accessible name.
+  const size = Math.max(0, Math.min(inner.width, inner.height, 24 * scale));
+  if (!size) return;
+  const icon = { x: inner.x + (inner.width - size) / 2, y: inner.y + (inner.height - size) / 2 };
+  const line = { color: textColor, width: Math.min(2 * scale, size / 8) * .75 };
+  for (const flipV of [false, true]) slide.addShape("line", { x: icon.x / 96, y: icon.y / 96, w: size / 96, h: size / 96, line, flipV });
+}
+
+// A placeholder names what is missing in plain words. It never dumps the source value, so no data or URL lands in slide text.
+function addPlaceholderPayload(slide, label, description, region, context) {
   slide.addShape("rect", {
     x: region.x,
     y: region.y,
@@ -1830,7 +1916,7 @@ function addPlaceholderPayload(slide, label, value, region, context) {
     fill: { color: context.colors.surface, transparency: 10 },
     line: { color: context.colors.border, pt: 0.75 }
   });
-  slide.addText(`${label}\n${summarizeValue(value)}`, {
+  slide.addText(`${label}\n${description}`, {
     x: region.x + 0.12,
     y: region.y + 0.12,
     w: Math.max(0.2, region.w - 0.24),
@@ -1954,37 +2040,41 @@ function textRuns(value, context, fallbackFontSize) {
  */
 function toPptxChartData(chart) {
   const data = chart?.data;
-  const unplottable = (reason, message) => ({reason, message});
+  const unplottable = (reason, summary, message) => ({reason, summary, message: `${message} No native chart was exported; a placeholder frame stands in for it.`});
   if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) {
-    return unplottable("data-not-inline", "The chart data is not inline columns and rows (for example an external data source), so no native chart was exported; a placeholder frame stands in for it. Supply inline columns and rows.");
+    return unplottable("data-not-inline", "Chart data is not inline, so it cannot be drawn here.", "The chart data is not inline columns and rows (for example an external data source). Supply inline columns and rows.");
   }
-  if (data.rows.length === 0) return unplottable("no-rows", "The chart data has no rows, so no native chart was exported; a placeholder frame stands in for it.");
-  if (data.columns.length === 0) return unplottable("no-columns", "The chart data has no columns, so no native chart was exported; a placeholder frame stands in for it.");
+  if (data.rows.length === 0) return unplottable("no-rows", "The chart has no data rows.", "The chart data has no rows.");
+  if (data.columns.length === 0) return unplottable("no-columns", "The chart has no data columns.", "The chart data has no columns.");
   const mapped = mapChartType(chart.type);
   if (data.columns.length === 1) {
     const heading = stringifyText(data.columns[0]);
     const cell = (row) => Array.isArray(row) ? row[0] : row;
-    const values = data.rows.map((row) => plottableNumber(cell(row))).filter((value) => value !== null);
-    if (values.length === 0) {
-      return unplottable("single-column-not-numeric", `The only chart data column '${heading}' holds no numbers, and a chart needs values to plot; no native chart was exported and a placeholder frame stands in for it.`);
+    // The same parsing as multi-column charts (`numericValue`: "12%", "$5", "1,234"); a cell that holds no number is skipped, never plotted as 0.
+    const points = data.rows.map((row, index) => ({row: index + 1, value: parsedNumber(cell(row))})).filter((point) => point.value !== null);
+    if (points.length === 0) {
+      return unplottable("single-column-not-numeric", "The chart's data column has no numbers.", `The only chart data column '${heading}' holds no numbers, and a chart needs values to plot.`);
     }
+    const skipped = data.rows.length - points.length;
+    const skippedNote = skipped ? ` (${skipped} non-numeric ${skipped === 1 ? "cell was" : "cells were"} skipped)` : "";
     if (String(chart.type ?? "").toLowerCase() === "histogram") {
-      const bins = histogramBins(values);
+      const bins = histogramBins(points.map((point) => point.value));
       return {
         type: "bar", barDir: "col", barGrouping: "clustered", heading: "Bin",
         series: [{name: "Frequency", labels: bins.map((bin) => bin.label), values: bins.map((bin) => bin.count)}],
         adapted: "histogram-binned",
-        message: `The histogram's single data column '${heading}' (${values.length} values) was binned into ${bins.length} equal-width bins and exported as a column chart of the counts; PowerPoint's own histogram chart is not exported.`
+        message: `The histogram's single data column '${heading}' (${points.length} values${skippedNote}) was binned into ${bins.length} equal-width bins and exported as a column chart of the counts; PowerPoint's own histogram chart is not exported, and the binned counts do not restore the raw values on re-import.`
       };
     }
-    const labels = data.rows.map((_, index) => String(index + 1));
-    const numbers = data.rows.map((row) => numericValue(cell(row)));
+    // Rows keep their own row numbers, so a skipped cell leaves a gap in the numbering.
+    const labels = points.map((point) => String(point.row));
+    const numbers = points.map((point) => point.value);
     const series = mapped.type === "scatter"
-      ? [{name: "Row", labels, values: labels.map(Number)}, {name: heading, labels, values: numbers}]
+      ? [{name: "Row", labels, values: points.map((point) => point.row)}, {name: heading, labels, values: numbers}]
       : [{name: heading, labels, values: numbers}];
     return {
       ...mapped, series, heading: "Row", adapted: "row-numbers",
-      message: `The chart's single data column '${heading}' has no category column, so its ${values.length} values are plotted against their row numbers.`
+      message: `The chart's single data column '${heading}' has no category column, so its ${points.length} values${skippedNote} are plotted against their row numbers.`
     };
   }
 
@@ -1998,22 +2088,29 @@ function toPptxChartData(chart) {
   return { ...mapped, series };
 }
 
-/** A finite number from a number or numeric string; null for anything else (unlike `numericValue`, which plots it as 0). */
-function plottableNumber(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
-  return null;
-}
-
-/** Equal-width bins (Sturges' count, at most 50) from the minimum to the maximum; every bin but the last is [low, high). */
+/**
+ * Equal-width bins (Sturges' count, at most 50) from the minimum to the maximum; every bin but the last is [low, high).
+ * Arithmetic stays finite for any finite input (values of +-1e308 and denormals included): the bin edges are
+ * computed by interpolating the edges rather than from a width, and a value is placed by comparing it with the edges.
+ */
 function histogramBins(values) {
   const min = values.reduce((a, b) => Math.min(a, b)), max = values.reduce((a, b) => Math.max(a, b));
   const count = min === max ? 1 : Math.min(50, Math.ceil(Math.log2(values.length)) + 1);
-  const width = (max - min) / count;
-  const bins = Array.from({length: count}, (_, index) => ({low: min + index * width, high: index === count - 1 ? max : min + (index + 1) * width, count: 0}));
-  for (const value of values) bins[count === 1 ? 0 : Math.min(count - 1, Math.floor((value - min) / width))].count++;
-  const format = (value) => String(Number(value.toPrecision(6)));
-  return bins.map((bin) => ({...bin, label: min === max ? format(min) : `${format(bin.low)}\u2013${format(bin.high)}`}));
+  const edge = (index) => index === 0 ? min : index === count ? max : min / count * (count - index) + max / count * index;
+  const bins = Array.from({length: count}, (_, index) => ({low: edge(index), high: edge(index + 1), count: 0}));
+  // A value belongs to the last bin whose lower edge it reaches, so counts always agree with the labelled edges.
+  for (const value of values) {
+    let index = 0;
+    while (index + 1 < count && value >= bins[index + 1].low) index++;
+    bins[index].count++;
+  }
+  // Labels carry six significant digits, and more when that would make two bins read alike.
+  for (let precision = 6; ; precision++) {
+    const format = (value) => String(Number(value.toPrecision(precision)));
+    const labels = bins.map((bin) => min === max ? format(min) : `${format(bin.low)}\u2013${format(bin.high)}`);
+    if (new Set(labels).size === labels.length) return bins.map((bin, index) => ({...bin, label: labels[index]}));
+    if (precision === 17) return bins.map((bin, index) => ({...bin, label: `${labels[index]} (bin ${index + 1})`}));
+  }
 }
 
 function mapChartType(type) {
@@ -2518,10 +2615,18 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
       // Native bullets otherwise inherit the first rich run's size, font and
       // color, which can differ from the measured list marker.
       xml=xml.replace(/<p:sp>([\s\S]*?)<\/p:sp>/g,(shape)=>{
-        const marker=context.listMarkers.get(shape.match(/name="(OPF list paragraph \d+)"/)?.[1]);
+        const marker=context.listMarkers.get(shape.match(/name="(OPF list [^"]* line \d+)"/)?.[1]);
         if(!marker)return shape;
         const family=marker.fontFamily.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
         return shape.replace(/<a:buSzPct val="100000"\/>/g,`<a:buClr><a:srgbClr val="${marker.color}"/></a:buClr><a:buSzPts val="${Math.round(marker.fontSize*100)}"/><a:buFont typeface="${family}"/>`);
+      });
+      // PptxGenJS gives shapes no alternative text. An unavailable image's panel
+      // carries the accessible name the preview gives its group.
+      xml=xml.replace(/<p:cNvPr id="(\d+)" name="(OPF image placeholder \d+)">/g,(node,id,name)=>{
+        const description=context.imagePlaceholders.get(name);
+        if(description===undefined)return node;
+        const escapes={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;','\r':'&#13;','\n':'&#10;','\t':'&#9;'};
+        return `<p:cNvPr id="${id}" name="${name}" descr="${description.replace(/[&<>"'\r\n\t]/g,char=>escapes[char])}">`;
       });
       // PptxGenJS 4 emits pPr before each rich run. OOXML allows one pPr,
       // before all runs. Paragraph options belong to the first run.
@@ -2722,16 +2827,15 @@ function stringifyText(value) {
   return String(value);
 }
 
-function numericValue(value) {
+/** The number a chart cell holds ("12%", "$5" and "1,234" parse), or null when it holds none. */
+function parsedNumber(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const parsed = Number.parseFloat(String(value ?? "").replace(/[^0-9.-]/g, ""));
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function summarizeValue(value) {
-  const text = stringifyText(value);
-  if (text.length > 160) return `${text.slice(0, 157)}...`;
-  return text;
+function numericValue(value) {
+  return parsedNumber(value) ?? 0;
 }
 
 function normalizeAuthor(author) {

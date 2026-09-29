@@ -89,4 +89,47 @@ for (const type of ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'radar',
   assert.deepEqual(result.chartDiagnostics, [], `${type}: no diagnostic for ordinary data`);
   assert.deepEqual(numbers(result.chart, 'cat'), [['a', 'b']], type);
 }
+// Extremes: finite arithmetic for any finite input, every value counted once.
+for (const rows of [[[-1e308], [1e308]], [[-1e308], [0], [1e308]], [[1.7976931348623157e308], [-1.7976931348623157e308], [5]], [[Number.MIN_VALUE], [Number.MAX_VALUE]], [[0], [Number.MIN_VALUE]]]) {
+  const result = await exported('histogram', {columns: ['Value'], rows});
+  assert.equal(result.charts.length, 1, JSON.stringify(rows));
+  const counts = numbers(result.chart, 'val')[0].map(Number);
+  assert.equal(counts.reduce((total, count) => total + count, 0), rows.length, `extremes ${JSON.stringify(rows)}: every value is counted once`);
+  assert.ok(counts.every(Number.isInteger), 'integer counts');
+  assert.ok(numbers(result.chart, 'cat')[0].every((label) => label && !/NaN|Infinity/.test(label)), 'finite labels');
+}
+// Labels stay distinct when six significant digits would make two bins read alike.
+{
+  const result = await exported('histogram', {columns: ['Value'], rows: [[1000000], [1000000.4], [1000000.8], [1000001.2], [1000001.6], [1000002]]});
+  const labels = numbers(result.chart, 'cat')[0];
+  assert.equal(new Set(labels).size, labels.length, `distinct labels: ${labels}`);
+  assert.equal(numbers(result.chart, 'val')[0].reduce((total, count) => total + Number(count), 0), 6);
+}
+// One-column paths parse numbers as multi-column charts do ("12%", "$5", "1,234"), and skip cells that hold none.
+{
+  const rows = [['12%'], ['$5'], ['1,234'], ['n/a'], [''], [null], [7]];
+  const histogram = await exported('histogram', {columns: ['Value'], rows});
+  assert.equal(numbers(histogram.chart, 'val')[0].reduce((total, count) => total + Number(count), 0), 4, 'four cells hold numbers');
+  assert.match(histogram.chartDiagnostics[0].message, /4 values \(3 non-numeric cells were skipped\)/);
+  const dots = await exported('dot-plot', {columns: ['V'], rows});
+  assert.deepEqual(numbers(dots.chart, 'cat'), [['1', '2', '3', '7']], 'skipped rows leave gaps in the row numbers');
+  assert.deepEqual(numbers(dots.chart, 'val'), [['12', '5', '1234', '7']], 'skipped cells are not plotted as 0');
+  assert.match(dots.chartDiagnostics[0].message, /its 4 values \(3 non-numeric cells were skipped\)/);
+  const multi = await exported('column', {columns: ['Cat', 'V'], rows: [['a', '12%'], ['b', '$5'], ['c', '1,234']]});
+  assert.deepEqual(numbers(multi.chart, 'val'), [['12', '5', '1234']], 'multi-column charts parse the same way');
+}
+// A placeholder is plain words: no raw JSON, data or source URL in slide text.
+for (const data of [{columns: ['Category'], rows: [['a'], ['b']]}, {src: 'https://example.invalid/data.csv?token=secret'}]) {
+  const result = await exported('histogram', data);
+  const text = [...result.slide.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map(([, value]) => value).join('|');
+  assert.doesNotMatch(text, /&quot;|\{|example\.invalid|secret/, `placeholder text is readable: ${text}`);
+  assert.match(text, /Chart data is not inline, so it cannot be drawn here|chart&apos;s data column has no numbers/);
+}
+{
+  const placeholderDiagnostics = [];
+  const bytes = await toPptx({name: 'x', slides: [{id: 'a', title: 'T', table: {columns: [], rows: []}}]}, {onDiagnostic: (diagnostic) => placeholderDiagnostics.push(diagnostic)});
+  assert.deepEqual(placeholderDiagnostics.map((diagnostic) => [diagnostic.code, diagnostic.reason]), [['content-placeholder', 'table-has-no-rows']]);
+  const text = [...strFromU8(unzipSync(bytes)['ppt/slides/slide1.xml']).matchAll(/<a:t>([^<]*)<\/a:t>/g)].map(([, value]) => value).join('|');
+  assert.doesNotMatch(text, /&quot;|\{/);
+}
 console.log(`Single-column charts passed: histogram binning (${values.length} values to 3 bins, constant, single and 1000 values), ${types.size} chart types exported with a reported adaptation, unplottable data reported, ordinary charts unchanged.`);
