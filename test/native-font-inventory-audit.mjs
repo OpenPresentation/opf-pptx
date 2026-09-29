@@ -154,6 +154,12 @@ export function computeFontLedger(report) {
   return ledger;
 }
 
+function completePresentationFonts(snapshot) {
+  return isObject(snapshot) && isInt(snapshot.count) && snapshot.count >= 0 && snapshot.count <= INVENTORY_BOUNDS.maxPresentationFonts
+    && Array.isArray(snapshot.entries) && snapshot.entries.length === snapshot.count
+    && snapshot.entries.every((entry, offset) => isObject(entry) && entry.index === offset + 1 && typeof entry.name === 'string' && isInt(entry.embedded) && isInt(entry.embeddable));
+}
+
 export function computeFontsComparison(before, after) {
   const entries = snapshot => Array.isArray(snapshot?.entries) ? snapshot.entries : [];
   const first = entries(before), second = entries(after);
@@ -497,7 +503,10 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
     inputMode: inputMode ?? null, fontRegistrationMode: mode ?? null, powerPointVersion: report?.environment?.powerPointVersion ?? null,
     presentationFonts: report?.presentationFonts?.entries ?? null, theme: report?.theme ?? null, ledger,
     presentationFontsAfterContent: report?.compareAfterContentFonts === true ? report?.presentationFontsAfterContent?.entries ?? null : null,
-    fontQueryComparison: report?.compareAfterContentFonts === true ? computeFontsComparison(report?.presentationFonts, report?.presentationFontsAfterContent) : null,
+    // A missing/partial collection is unavailable, even when the first is empty.
+    // Complete raw observations remain useful when another audit gate fails.
+    fontQueryComparison: report?.compareAfterContentFonts === true && completePresentationFonts(report?.presentationFonts) && completePresentationFonts(report?.presentationFontsAfterContent)
+      ? computeFontsComparison(report.presentationFonts, report.presentationFontsAfterContent) : null,
     failureCleanup: analyzeFailureCleanup(report, Array.isArray(stages) ? stages : []),
     note: 'Findings are evidence only when passed is true. Reported names do not prove physical font-file or per-glyph identity.',
   };

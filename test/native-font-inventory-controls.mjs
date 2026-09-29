@@ -315,6 +315,25 @@ try {
       const result = await auditEvidenceDirectory(await buildEvidence({inputMode:'control-deck', compareAfterContentFonts:true, mutate}));
       assert.equal(result.passed, false, name); assert(codes(result).has(code), `${name}: ${JSON.stringify(result.failures)}`);
     }
+    const unavailable = [
+      ['missing-second', s => { s.report.presentationFontsAfterContent = null; }, 'observation-fonts'],
+      ['unknown-second-count', s => { s.report.presentationFontsAfterContent.count = null; }, 'observation-fonts'],
+      ['partial-second', s => { s.report.presentationFontsAfterContent = {count: 2, entries: [entry(1, 'Carlito')]}; }, 'observation-fonts'],
+      ['malformed-second-index', s => { s.report.presentationFontsAfterContent = {count: 1, entries: [entry(2, 'Carlito')]}; }, 'observation-font-entry'],
+      ['malformed-second-name', s => { s.report.presentationFontsAfterContent = {count: 1, entries: [entry(1, null)]}; }, 'observation-font-entry'],
+      ['malformed-second-flags', s => { s.report.presentationFontsAfterContent = {count: 1, entries: [entry(1, 'Carlito', '0')]}; }, 'observation-font-entry'],
+      ['over-bound-second', s => { s.report.presentationFontsAfterContent = {count: 65, entries: Array.from({length: 65}, (_, i) => entry(i + 1, 'Carlito'))}; }, 'observation-fonts'],
+      ['missing-first', s => { s.report.presentationFonts = null; }, 'observation-fonts'],
+    ];
+    for (const [name, mutate, code] of unavailable) {
+      const result = await auditEvidenceDirectory(await buildEvidence({inputMode: 'control-deck', fonts: [], compareAfterContentFonts: true, mutate}));
+      assert.equal(result.passed, false, name); assert(codes(result).has(code), `${name}: ${JSON.stringify(result.failures)}`);
+      assert.equal(result.findings.fontQueryComparison, null, `${name}: incomplete observations must never imply unchanged`);
+    }
+    const completeFailed = await auditEvidenceDirectory(await buildEvidence({fonts: [], compareAfterContentFonts: true, mutate: s => { s.report.cleanupConfirmed = false; }}));
+    assert.equal(completeFailed.passed, false); assert(codes(completeFailed).has('report-lifecycle'));
+    assert.equal(completeFailed.findings.fontQueryComparison.outcome, 'unchanged', 'Complete raw collections retain a comparison when a separate lifecycle gate fails');
+    record('comparison-findings-require-two-complete-valid-collections', {unavailable: unavailable.map(item => item[0]),completeFailedLifecycleRetainsComparison: true});
     const defaultExtra = await auditEvidenceDirectory(await buildEvidence({mutate:s => { s.report.presentationFontsAfterContent = structuredClone(s.report.presentationFonts); s.report.fontQueryComparison = computeFontsComparison(s.report.presentationFonts, s.report.presentationFontsAfterContent); }}));
     assert(codes(defaultExtra).has('comparison-absent'));
     const defaultMissing = await auditEvidenceDirectory(await buildEvidence({mutate:s => { delete s.request.compareAfterContentFonts; delete s.report.compareAfterContentFonts; delete s.supervisor.compareAfterContentFonts; delete s.report.presentationFontsAfterContent; delete s.report.fontQueryComparison; }}));
