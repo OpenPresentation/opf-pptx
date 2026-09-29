@@ -285,6 +285,33 @@ function referencedCatalogs(catalogs, referenced) {
 
 const layoutRecords = catalogs => array(Array.isArray(catalogs?.layouts) ? catalogs.layouts : catalogs?.layouts?.records);
 
+// Presentation validation deliberately accepts arbitrary inline catalog objects.
+// Recovered layouts must also pass their companion schema before composition
+// can use them (for example, a null placeholder otherwise crashes rendering).
+function validLayoutRecord(value) {
+  try { return opfCore.validateCatalogRecord('layouts', value).valid; }
+  catch { return false; }
+}
+
+function validatedLayoutCatalog(catalogs, entries, report, rejectedIds) {
+  if (!object(catalogs) || catalogs.layouts === undefined) return catalogs;
+  const current = catalogs.layouts;
+  const records = layoutRecords(catalogs).flatMap((record, index) => {
+    const {value, unresolved} = resolveMedia(record, entries);
+    if (!unresolved && validLayoutRecord(value)) return [value];
+    if (typeof record?.id === 'string') rejectedIds.add(record.id);
+    const path = `catalogs.layouts.${Array.isArray(current) ? '' : 'records.'}${index}`;
+    report({code: unresolved ? 'unresolved-asset-reference' : 'invalid-document-provenance', path,
+      message: `The stored layout record at ${path} ${unresolved ? 'refers to unavailable media' : 'does not validate against the layouts catalog schema'}, so it was not restored.`});
+    return [];
+  });
+  const result = {...catalogs};
+  if (records.length) result.layouts = Array.isArray(current) ? records : {...current, records};
+  else if (object(current) && current.source !== undefined) { result.layouts = {...current}; delete result.layouts.records; }
+  else delete result.layouts;
+  return Object.keys(result).length ? result : undefined;
+}
+
 const assetReferences = value => [...collectStrings(value)].filter(item => item.startsWith('asset:')).map(item => item.slice(6));
 
 /**
@@ -657,6 +684,9 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
     else document = validateDocument(found.value);
   } catch (error) { invalid(`${error.message}`); document = undefined; }
 
+  const rejectedLayoutIds = new Set();
+  if (document) document = {...document, catalogs: validatedLayoutCatalog(document.catalogs, entries, report, rejectedLayoutIds)};
+
   const slideRecords = slides.map(({root, relationships: rels, path}, index) => {
     try {
       const found = readTag(entries, root?.['p:cSld']?.['p:custDataLst'], rels, SLIDE_TAG);
@@ -669,7 +699,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
   });
   const groups = [];
   const group = (field, ops) => groups.push({field, ops});
-  const intent = layoutIntent(document ? layoutRecords(document.catalogs) : [], Boolean(document), slideRecords, entries, group, report);
+  const intent = layoutIntent(document ? layoutRecords(document.catalogs) : [], Boolean(document), slideRecords, entries, group, report, rejectedLayoutIds);
 
   // Without document provenance (a slide pasted into another deck, or a
   // missing or unreadable OPF_DOCUMENT_V1), each OPF_SLIDE_V1 still restores
@@ -838,8 +868,9 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
  * Each layout id resolves to exactly one record, in this order:
  * - the document's inline record (OPF_DOCUMENT_V1);
  * - a bundled layout. A slide's override of a bundled id is used only when
- *   there is no document record at all and every restored slide with that id
- *   carries the same override, so it never changes another slide's layout;
+ *   there is no document record, or its record for that id was rejected, and
+ *   every restored slide with that id carries the same override, so it never
+ *   changes another slide's layout;
  * - the first restored slide's `layoutRecord`.
  * A slide whose own record disagrees with the chosen one keeps its content
  * without the layout id (`layout-reference-changed`), and an id that resolves
@@ -847,7 +878,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
  * imported document always renders. `finalize` adds the slide-level records
  * that the imported document references.
  */
-function layoutIntent(documentRecords, hasDocument, slideRecords, entries, group, report) {
+function layoutIntent(documentRecords, hasDocument, slideRecords, entries, group, report, rejectedDocumentIds) {
   const bundled = id => array(opfCore.catalogs?.layouts).find(item => item?.id === id);
   const owns = slideRecords.map(entry => {
     if (!entry) return null;
@@ -859,7 +890,9 @@ function layoutIntent(documentRecords, hasDocument, slideRecords, entries, group
     if (own !== undefined && own.id !== layout) { problem = layout === undefined ? undefined : 'mismatch'; own = undefined; }
     else if (own !== undefined) {
       const {value, unresolved} = resolveMedia(own, entries);
-      if (unresolved) { own = undefined; problem = 'media'; } else own = value;
+      if (unresolved) { own = undefined; problem = 'media'; }
+      else if (!validLayoutRecord(value)) { own = undefined; problem = 'schema'; }
+      else own = value;
     }
     return {structureMatch, layout, own, problem, stated: record.layoutRecord};
   });
@@ -870,7 +903,7 @@ function layoutIntent(documentRecords, hasDocument, slideRecords, entries, group
     if (fromDocument) resolved.set(id, {record: fromDocument, source: 'document'});
     else if (builtIn) {
       const overrides = members.filter(item => item.own && !same(item.own, builtIn));
-      if (!hasDocument && overrides.length && overrides.length === members.length && overrides.every(item => same(item.own, overrides[0].own))) resolved.set(id, {record: overrides[0].own, source: 'slides', add: true});
+      if ((!hasDocument || rejectedDocumentIds.has(id)) && overrides.length && overrides.length === members.length && overrides.every(item => same(item.own, overrides[0].own))) resolved.set(id, {record: overrides[0].own, source: 'slides', add: true});
       else resolved.set(id, {record: builtIn, source: 'bundled'});
     } else {
       const first = members.find(item => item.own);
@@ -884,6 +917,7 @@ function layoutIntent(documentRecords, hasDocument, slideRecords, entries, group
     const {native: _native, ...recordValue} = record;
     if (structureMatch && problem === 'mismatch') report({code: 'invalid-document-provenance', path: `slides.${index}.layoutRecord`, message: `The stored layout record '${stated?.id}' does not match slides.${index}.layout '${layout}', so it was not restored.`});
     if (structureMatch && problem === 'media') report({code: 'unresolved-asset-reference', path: `slides.${index}.layoutRecord`, message: `slides.${index}.layoutRecord refers to a picture that is no longer in the PPTX, so the slide's stored layout record was not restored.`});
+    if (structureMatch && problem === 'schema') report({code: 'invalid-document-provenance', path: `slides.${index}.layoutRecord`, message: `slides.${index}.layoutRecord does not validate against the layouts catalog schema, so the slide's stored layout record was not restored.`});
     const target = layout === undefined ? undefined : resolved.get(layout);
     let restoreLayout = structureMatch;
     if (structureMatch && layout !== undefined) {

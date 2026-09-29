@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {unzipSync, zipSync} from 'fflate';
 import {toPptx, fromPptx} from '../dist/index.js';
-import {validatePresentation, catalogs} from '@openpresentation/opf';
+import {validatePresentation, validateCatalogRecord, catalogs} from '@openpresentation/opf';
 import {renderSvgDeck} from '@openpresentation/opf-render';
 
 // FF-29: slide layout intent (layout id, type, composition, composition hints
@@ -165,6 +165,54 @@ let cases = 0;
   cases++;
 }
 
+// Catalog objects are not checked by validatePresentation. Untrusted slide and
+// document records must pass the companion layout schema before restoration.
+{
+  const retag = (entries, part, mutate) => text(entries, part, xml => {
+    const value = tagValue(enc.encode(xml));
+    mutate(value);
+    return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
+  });
+  const malformedRecords = [
+    {id: 'gallery-hero', placeholders: [null]},
+    {...structuredClone(heroA), placeholders: [{type: 'not-a-placeholder'}]},
+    {...structuredClone(heroA), $schema: 'https://example.com/untrusted-layout'}
+  ];
+  for (const record of malformedRecords) {
+    assert.equal(validateCatalogRecord('layouts', record).valid, false);
+    // This deliberately passes the presentation schema: it is the regression.
+    assert.equal(validatePresentation({...deckA, catalogs: {layouts: {records: [record]}}}).valid, true);
+    const corruptSlide = entries => retag(entries, 'ppt/tags/opfSlide1.xml', value => { value.layoutRecord = record; });
+    const corruptDocument = entries => retag(entries, 'ppt/tags/opfDocument.xml', value => { value.catalogs.layouts.records[0] = record; });
+    const standalone = await read(modify(exportedA, entries => { stripDocument(entries); corruptSlide(entries); }));
+    assert.deepEqual(standalone.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-layout-reference', 'slides.0.layout']]);
+    assert.equal(standalone.deck.slides[0].layout, undefined);
+    assert.equal(standalone.deck.slides[0].title, 'Hello');
+    assert.equal(standalone.deck.slides[0].subtitle, 'World');
+    assert.equal(standalone.deck.slides[0].composition.mode, 'column');
+    assert.equal(standalone.deck.catalogs, undefined);
+    // A valid document record still supplies the layout when only the slide copy is invalid.
+    const documented = await read(modify(exportedA, corruptSlide));
+    assert.deepEqual(documented.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord']]);
+    assert.equal(documented.deck.slides[0].layout, 'gallery-hero');
+    assert.deepEqual(documented.deck.catalogs, {layouts: {records: [heroA]}});
+    // Conversely, a valid slide copy can replace an invalid document copy.
+    const recovered = await read(modify(exportedA, corruptDocument));
+    assert.deepEqual(recovered.provenance, [['invalid-document-provenance', 'catalogs.layouts.records.0']]);
+    assert.equal(recovered.deck.slides[0].layout, 'gallery-hero');
+    assert.deepEqual(recovered.deck.catalogs, {layouts: {records: [heroA]}});
+    // Neither invalid copy is retained; native content and other slides survive.
+    const both = await read(modify(exportedA, entries => { corruptDocument(entries); corruptSlide(entries); }));
+    assert.deepEqual(both.provenance, [['invalid-document-provenance', 'catalogs.layouts.records.0'],
+      ['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-layout-reference', 'slides.0.layout']]);
+    assert.deepEqual(both.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
+    assert.equal(both.deck.slides[0].title, 'Hello');
+    assert.equal(both.deck.slides[0].subtitle, 'World');
+    assert.equal(both.deck.catalogs, undefined);
+  }
+  cases++;
+}
+
 // Decks exported before FF-29 carry no layoutRecord on their slides.
 {
   const legacy = entries => { for (const index of [1, 2]) text(entries, `ppt/tags/opfSlide${index}.xml`, xml => {
@@ -210,6 +258,16 @@ let cases = 0;
     assert.deepEqual(own.deck.slides.map(slide => slide.layout), ['title-subtitle', 'title-subtitle']);
     assert.deepEqual(own.deck.catalogs, {layouts: {records: [override]}});
   }
+  // If its document copy is invalid, agreeing valid slide copies still restore
+  // this deliberate override; they never override a host's valid record.
+  const damagedDocument = await read(modify(exportedC, entries => text(entries, 'ppt/tags/opfDocument.xml', xml => {
+    const value = tagValue(enc.encode(xml));
+    value.catalogs.layouts.records[0] = {id: 'title-subtitle', placeholders: [null]};
+    return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
+  })));
+  assert.deepEqual(damagedDocument.provenance, [['invalid-document-provenance', 'catalogs.layouts.records.0']]);
+  assert.deepEqual(damagedDocument.deck.slides.map(slide => slide.layout), ['title-subtitle', 'title-subtitle']);
+  assert.deepEqual(damagedDocument.deck.catalogs, {layouts: {records: [override]}});
   cases++;
 }
 

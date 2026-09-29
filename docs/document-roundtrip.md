@@ -98,7 +98,7 @@ Neither mode stores the asset registry entries a layout record references; as be
 Import restores the intent while the slide's arrangement is unchanged (see the table above). Each layout id resolves to exactly one record, in this order:
 
 1. the document's inline record (`OPF_DOCUMENT_V1`, FF-32);
-2. a bundled layout. A slide's override of a bundled id is used only when there is no document record at all and every restored slide with that id carries the same override, so it never changes the layout of another slide;
+2. a bundled layout. A slide's override of a bundled id is used only when there is no document record, or its record for that id was rejected, and every restored slide with that id carries the same override, so it never changes the layout of another slide;
 3. the first restored slide's `layoutRecord`.
 
 - A slide whose own `layoutRecord` disagrees with the chosen record keeps its content and composition hints without the layout id and reports `layout-reference-changed` at `slides.N.layout`. Examples: a slide pasted from another deck whose `gallery-hero` record differs, or a pasted slide whose inline record overrides a bundled id such as `title-subtitle` that the host's own slides use. The override is never added to the host's catalog.
@@ -106,6 +106,7 @@ Import restores the intent while the slide's arrangement is unchanged (see the t
 - A layout id that resolves to no record (for example a deck exported before FF-29, whose slides carry no `layoutRecord`, after its document tag was stripped) is not restored, and `unresolved-layout-reference` names the layout at `slides.N.layout`. The imported document therefore always renders.
 - Without `OPF_DOCUMENT_V1`, or when it is unreadable (`invalid-document-provenance` at `''`), slide records still restore layout intent under these rules. Deck references, deck composition defaults, metadata, slide ids and beats need the document record and are not restored.
 - A `layoutRecord` whose `id` differs from the slide's `layout` is ignored and reported as `invalid-document-provenance` at `slides.N.layoutRecord`; a malformed one rejects the slide record (`slides.N`).
+- Inline layout records from both document and slide tags must also validate against the core layouts catalog schema after resolving packaged media. Invalid records are omitted with `invalid-document-provenance` at `catalogs.layouts.records.N` or `slides.N.layoutRecord`. A valid other copy can still supply the layout; otherwise an inline-only id is omitted with `unresolved-layout-reference`. Native content and unrelated composition hints remain available.
 
 Importers from before FF-29 ignore the `layoutRecord` field, as `OPF_SLIDE_V1` readers ignore unknown top-level fields.
 
