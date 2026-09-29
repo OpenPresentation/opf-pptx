@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
+import {XMLValidator} from 'fast-xml-parser';
 import {renderSvgDeck} from '@openpresentation/opf-render';
 import {loadOfficeFontRegistry} from '@openpresentation/opf-render/fonts-node';
 import {toPptx} from '../dist/index.js';
@@ -133,6 +134,28 @@ for (const options of [{}, {textMeasurement: fonts.textMeasurement}]) {
   const panel = second.find(shape => shape.name.startsWith('OPF image placeholder '));
   assert.equal(panel.descr, tight.label, 'The long description stays in the accessible name');
   assert.ok(tight.label.startsWith('Image unavailable: A description long enough'));
+  checked++;
+}
+
+// Characters XML cannot represent are rejected like the preview rejects them in a label, whether the
+// placeholder draws its label (short alt) or falls back to the cross (long alt, where the description
+// would otherwise reach the panel's accessible name unchecked).
+for (const [name, alt, code] of [
+  ['control character in a label', 'Photo \u0001 of the team', 'U+0001 at UTF-16 offset'],
+  ['control character in a cross description', `${long}\u0001`, 'U+0001 at UTF-16 offset'],
+  ['lone surrogate in a label', 'Photo \ud800 of the team', 'U+D800 at UTF-16 offset'],
+  ['lone surrogate in a cross description', `${long}\udfff`, 'U+DFFF at UTF-16 offset'],
+]) {
+  await assert.rejects(toPptx({slides: [{image: {src: 'https://example.invalid/bad.png', alt}}]}, {seed: 1}),
+    error => error.code === 'invalid-text' && error.message.includes(code) && error.details.path === 'slides.0.image', name);
+  checked++;
+}
+// A valid surrogate pair (an emoji) is ordinary text, and the description stays well-formed XML.
+{
+  const emoji = `${long}\u{1F600} & <done>`;
+  const xml = decoder.decode(unzipSync(await toPptx({slides: [{image: {src: 'https://example.invalid/emoji.png', alt: emoji}}]}, {seed: 1}))['ppt/slides/slide1.xml']);
+  assert.equal(XMLValidator.validate(xml), true);
+  assert.equal(shapes(xml).find(shape => shape.name.startsWith('OPF image placeholder ')).descr, `Image unavailable: ${emoji}`);
   checked++;
 }
 

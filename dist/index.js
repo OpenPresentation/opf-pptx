@@ -450,7 +450,7 @@ function resolveSlidePaths(entries, presentationRoot, relationships) {
 }
 
 function compareSlidePaths(left, right) {
-  return slideNumber(left) - slideNumber(right) || left.localeCompare(right);
+  return slideNumber(left) - slideNumber(right) || (left < right ? -1 : left > right ? 1 : 0);
 }
 
 function slideNumber(path) {
@@ -1852,6 +1852,11 @@ function addImagePlaceholder(slide, presentation, asset, region, path, context, 
   const layered = placeholderAsset(asset, presentation);
   const description = String(layered.alt ?? layered.title ?? "Image");
   const label = `Image unavailable\n${description}`;
+  // The preview rejects characters DrawingML/SVG XML cannot represent when it draws the label.
+  // The cross and the accessible name would otherwise carry them into the slide XML, so check
+  // up front and fail the same way whichever form the placeholder takes.
+  const invalid = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF￾￿]/u.exec(label);
+  if (invalid) throw new OPFPptxError("invalid-text", `Text contains U+${invalid[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} at UTF-16 offset ${invalid.index}, which DrawingML XML cannot represent.`, { path });
   const scale = Math.min(context.dimensions.widthInches, context.dimensions.heightInches) * 96 / 720;
   const box = pixelBox(region);
   const padding = Math.min(24 * scale, box.width * .06, box.height * .1);
