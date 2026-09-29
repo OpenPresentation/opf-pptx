@@ -17,6 +17,7 @@ const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', 
 const decoder = new TextDecoder('utf-8', {fatal: true}), encoder = new TextEncoder();
 const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const visibleWords = value => String(value).replace(/\s+/g, ' ').trim();
 const canonical = value => JSON.stringify(value, (_key, item) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const sizeOf = value => encoder.encode(JSON.stringify(value)).byteLength;
 const sourceOf = value => typeof value === 'string' ? value : value?.src;
@@ -181,6 +182,9 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
         }
       }
       else if (!captions.every(member => typeof member.record.fingerprint === 'string' && mediaTextFingerprint(text(member)) === member.record.fingerprint)) reason = 'its caption text was edited or exact caption evidence is missing';
+      // Exact line evidence detects native edits; this additional comparison
+      // binds the stored authored title to visible words despite line wrapping.
+      else if (visibleWords(caption) !== visibleWords(mediaCaption(frame.record.video))) reason = 'its stored caption disagrees with current native text';
       else if (!href && caption !== source) reason = 'its source has no current native hyperlink or source caption';
       else {
         const conflict = Object.entries(frame.record.assets ?? {}).some(([id, asset]) => Object.hasOwn(registry, id) && canonical(registry[id]) !== canonical(asset));

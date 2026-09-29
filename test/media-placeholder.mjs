@@ -376,6 +376,9 @@ for (const video of ['file:clip.mp4', 'data:video/mp4;base64,PRIVATE']) {
   const source = 'https://example.com/caption.mp4';
   const input = {slides: [{video: {src: source, title: 'A B', description: 'Hidden'}}]};
   const bytes = await toPptx(input, {seed: 1});
+  const forgedTitle = await read(modify(bytes, entries => updateTag(entries, frameTag(entries, 'slides.0.video'), record => ({...record, video: {...record.video, title: 'Forged caption'}}))));
+  assert.deepEqual(forgedTitle.doc.slides[0].blocks, [linkedText(source), {type: 'text', text: 'A B'}]);
+  assert.deepEqual(forgedTitle.media, [['invalid-media-provenance', 'slides.0.video']]);
   for (const caption of ['A  B', ' A B ', 'A\tB', '']) {
     const result = await read(modify(bytes, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace('<a:t>A B</a:t>', `<a:t>${caption}</a:t>`))));
     assert.deepEqual(videos(result.doc), [[]]);
