@@ -21,7 +21,7 @@ jobs:
         # multiline step. Bash's Actions wrapper stops on the first failure.
         shell: bash
     env:
-      OPF_GOLDEN_BASELINE: ${{ github.workspace }}/opf-render/test/golden/opf-examples-png.furniture.sha256.json
+      OPF_GOLDEN_BASELINE: ${{ github.workspace }}/opf-render/test/golden/opf-examples-png.cover-centering.sha256.json
     strategy:
       fail-fast: false
       matrix:
@@ -36,16 +36,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          # FF-29: merged core (opf#132) with composed item.alignment.
-          ref: 4b991553f8d9706de1003f8f8f547e46d902da74
+          # Cover centering: core cover-centering PR head (composed item.alignment from opf#132 included); replace with the merged commit.
+          ref: 0d78449d2283262c96a66f803af1b81058496ab5
           path: opf
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-render
-          # FF-29: merged renderer (opf-render#43) that anchors preview text to item.alignment.
-          ref: 0337ce2e8682f8dd3ea320e0614490735f554ed3
+          # Cover centering: renderer cover-centering PR head (item.alignment anchoring from opf-render#43 included); replace with the merged commit.
+          ref: 637ea4fac038684fe9202d764564425096a9f399
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
