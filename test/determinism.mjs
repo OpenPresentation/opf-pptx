@@ -175,7 +175,7 @@ async function worker(config) {
   // loads sharp. That is process introspection, identical for every run, and not a host font, clock or locale read.
   const LIBC_DETECTION = new Set(['/proc/self/exe', '/usr/bin/ldd']);
   const outsideRoot = [...new Set(audit)].filter(file => !inside(file) && !LIBC_DETECTION.has(file));
-  process.stdout.write(JSON.stringify({probe, cases, audit: {total: audit.length, outsideRoot, fontDirectoryReads: audit.filter(file => FONT_DIRECTORY.test(file) && !/(?:^|[\/])node_modules[\/]/.test(file) && !(bundledFonts && file.startsWith(bundledFonts)))}}));
+  process.stdout.write(JSON.stringify({probe, cases, audit: {total: audit.length, outsideRoot, fontDirectoryReads: audit.filter(file => FONT_DIRECTORY.test(file) && !/(?:^|[\\/])node_modules[\\/]/.test(file) && !(bundledFonts && file.startsWith(bundledFonts)))}}));
 }
 
 // ---------------------------------------------------------------------------
