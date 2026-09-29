@@ -1,6 +1,9 @@
 import {readBackgroundColor} from './background.js';
+import {KNOWN_WEIGHT_FACE_FAMILIES, splitWeightFace} from './font-weights.js';
 
 const boolean = value => ['1','true','on'].includes(value) ? true : ['0','false','off'].includes(value) ? false : undefined;
+
+const chosenFamilies = context => ['a:majorFont', 'a:minorFont'].map(key => context.fonts?.[key]?.['a:latin']?.typeface).filter(Boolean);
 
 export function nativeRunStyle(properties, context, relationships, report, kind = 'table') {
   const result = {};
@@ -23,8 +26,18 @@ export function nativeRunStyle(properties, context, relationships, report, kind 
   if (font) {
     const match = font.match(/^\+(mj|mn)-(lt|ea|cs)$/);
     const family = match ? context.fonts?.[match[1] === 'mj' ? 'a:majorFont' : 'a:minorFont']?.[{lt:'a:latin',ea:'a:ea',cs:'a:cs'}[match[2]]]?.typeface : font;
-    if (family) result.fontFamily = family;
-    else report(`unsupported-${kind}-font`, 'The theme font reference could not be resolved from this archive.');
+    if (family) {
+      result.fontFamily = family;
+      // The exporter writes a chosen family's weight faces under their native
+      // style-link names. OPF runs carry the family plus bold, never the face name.
+      const face = splitWeightFace(family, [...chosenFamilies(context), ...KNOWN_WEIGHT_FACE_FAMILIES]);
+      if (face) {
+        result.fontFamily = face.family;
+        if (face.weight >= 600) result.bold = true;
+        if (face.italic) result.italic = true;
+        if (face.weight !== 400 && face.weight !== 700) report(`approximate-${kind}-font-weight`, 'OPF text runs represent regular or bold only; the native weight face was imported as its family, with bold for weights of 600 and above.');
+      }
+    } else report(`unsupported-${kind}-font`, 'The theme font reference could not be resolved from this archive.');
   }
   if (properties['a:solidFill']) {
     const color = readBackgroundColor(properties['a:solidFill'], context);

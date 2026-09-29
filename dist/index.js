@@ -1,4 +1,5 @@
 import {nativeBodyReader, joinNativeParagraphs} from './body-text-import.js';
+import {FACE_STYLE_WORDS} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
@@ -1931,7 +1932,6 @@ function addPlaceholderPayload(slide, label, value, region, context) {
 // always names the developer's chosen family. Measurement still uses the
 // substitute, because the provider resolves the chosen family again on every
 // measure/outline call, so layout is unchanged.
-const FACE_STYLE_WORDS = /^(?:(?:thin|hairline|extra ?light|ultra ?light|light|semi ?light|demi ?light|book|regular|normal|medium|semi ?bold|demi ?bold|bold|extra ?bold|ultra ?bold|black|heavy|extra ?black|ultra ?black|italic|oblique)\s*)+$/i;
 function sameTypeface(requested, resolved) {
   if (typeof resolved !== 'string') return false;
   const want = requested.trim().toLowerCase(), got = resolved.trim().toLowerCase();
