@@ -1,9 +1,9 @@
 import {readBackgroundColor} from './background.js';
-import {KNOWN_WEIGHT_FACE_FAMILIES, splitWeightFace} from './font-weights.js';
+import {splitWeightFace} from './font-weights.js';
 
 const boolean = value => ['1','true','on'].includes(value) ? true : ['0','false','off'].includes(value) ? false : undefined;
 
-const chosenFamilies = context => ['a:majorFont', 'a:minorFont'].map(key => context.fonts?.[key]?.['a:latin']?.typeface).filter(Boolean);
+const themeFamilies = context => ['a:majorFont', 'a:minorFont'].map(key => context.fonts?.[key]?.['a:latin']?.typeface?.trim().toLowerCase()).filter(Boolean);
 
 export function nativeRunStyle(properties, context, relationships, report, kind = 'table') {
   const result = {};
@@ -28,9 +28,10 @@ export function nativeRunStyle(properties, context, relationships, report, kind 
     const family = match ? context.fonts?.[match[1] === 'mj' ? 'a:majorFont' : 'a:minorFont']?.[{lt:'a:latin',ea:'a:ea',cs:'a:cs'}[match[2]]]?.typeface : font;
     if (family) {
       result.fontFamily = family;
-      // The exporter writes a chosen family's weight faces under their native
-      // style-link names. OPF runs carry the family plus bold, never the face name.
-      const face = splitWeightFace(family, [...chosenFamilies(context), ...KNOWN_WEIGHT_FACE_FAMILIES]);
+      // The exporter writes a bundled family's weight faces (Roboto SemiBold) under their
+      // native style-link names. OPF runs carry the family plus bold, never the face name.
+      // A typeface that is itself a theme font was authored as a family; leave it as is.
+      const face = themeFamilies(context).includes(family.trim().toLowerCase()) ? undefined : splitWeightFace(family);
       if (face) {
         result.fontFamily = face.family;
         if (face.weight >= 600) result.bold = true;

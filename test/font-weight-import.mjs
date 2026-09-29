@@ -3,7 +3,7 @@ import {validatePresentation} from '@openpresentation/opf';
 import {prepareNodeFonts} from '@openpresentation/opf-render/fonts-node';
 import PptxGenJS from '../vendor/pptxgenjs/pptxgen.es.js';
 import {toPptx, fromPptx} from '../dist/index.js';
-import {FACE_STYLE_WORDS, FONT_WEIGHT_WORDS, splitWeightFace} from '../src/font-weights.js';
+import {FONT_WEIGHT_WORDS, isFaceStyleSuffix, splitWeightFace} from '../src/font-weights.js';
 
 // The exporter names a chosen family's weight faces by their native style-link
 // names ("Roboto SemiBold"). Import maps them back to family + OPF bold and never
@@ -43,18 +43,24 @@ assert.ok(diagnostics.some(item => item.code === 'approximate-body-font-weight')
   assert.deepEqual(notes.filter(item => item.code === 'approximate-body-font-weight').length, 4, 'Medium, SemiBold, ExtraBold and Light are approximated; Bold and regular are exact');
 }
 
-// 3. The deck's chosen family owns its weight faces; other families do not.
+// 3. Only faces the exporter itself can emit (bundled Roboto) are split. Authored theme families are not,
+// including a theme font that is itself a weight-named Roboto face.
 {
-  const chosen = await nativeRuns(['Inter SemiBold', 'Inter Medium'], {headFontFace: 'Inter', bodyFontFace: 'Inter'});
-  assert.deepEqual(chosen.runs.map(family), ['Inter', 'Inter']);
-  assert.deepEqual(chosen.runs.map(run => run.bold), [true, undefined]);
-  const foreign = await nativeRuns(['Inter SemiBold'], {headFontFace: 'Calibri', bodyFontFace: 'Calibri'});
-  assert.equal(foreign.runs[0].fontFamily, 'Inter SemiBold', 'a face of an unrelated family is left as authored');
-  assert.equal(foreign.runs[0].bold, undefined);
+  const other = await nativeRuns(['Inter SemiBold', 'Inter Medium'], {headFontFace: 'Inter', bodyFontFace: 'Inter'});
+  assert.deepEqual(other.runs.map(family), ['Inter SemiBold', 'Inter Medium']);
+  assert.deepEqual(other.runs.map(run => run.bold), [undefined, undefined]);
+  const aptos = await nativeRuns(['Aptos Light', 'Aptos SemiBold', 'Aptos Black'], {headFontFace: 'Aptos Display', bodyFontFace: 'Aptos'});
+  assert.deepEqual(aptos.runs.map(family), ['Aptos Light', 'Aptos SemiBold', 'Aptos Black']);
+  assert.ok(aptos.runs.every(run => run.bold === undefined));
+  assert.ok(!aptos.diagnostics.some(item => item.code === 'approximate-body-font-weight'));
+  const themed = await nativeRuns(['Roboto Light', 'Roboto SemiBold'], {headFontFace: 'Roboto Light', bodyFontFace: 'Roboto Light'});
+  assert.equal(themed.runs[0].fontFamily, 'Roboto Light', 'a theme font that is itself Roboto Light is an authored family');
+  assert.equal(themed.runs[0].bold, undefined);
+  assert.deepEqual([themed.runs[1].fontFamily, themed.runs[1].bold], ['Roboto', true], 'other Roboto faces still map');
 }
 
-// 4. Genuine families ending in a weight word stay exactly as authored, even when their base family is chosen.
-for (const [face, theme] of [['Arial Black', undefined], ['Arial Black', {headFontFace: 'Arial', bodyFontFace: 'Arial'}], ['Segoe UI Semibold', {headFontFace: 'Segoe UI', bodyFontFace: 'Segoe UI'}], ['Calibri Light', {headFontFace: 'Calibri', bodyFontFace: 'Calibri'}], ['Roboto Mono', undefined]]) {
+// 4. Genuine families ending in a weight word stay exactly as authored.
+for (const [face, theme] of [['Arial Black', undefined], ['Arial Black', {headFontFace: 'Arial', bodyFontFace: 'Arial'}], ['Segoe UI Semibold', {headFontFace: 'Segoe UI', bodyFontFace: 'Segoe UI'}], ['Calibri Light', {headFontFace: 'Calibri', bodyFontFace: 'Calibri'}], ['Roboto Mono', undefined], ['Roboto Fancy', undefined]]) {
   const {runs: imported, diagnostics: notes} = await nativeRuns([face], theme);
   assert.equal(imported[0].fontFamily, face, `${face} keeps its genuine family name`);
   assert.equal(imported[0].bold, undefined, `${face} is not turned bold`);
@@ -71,13 +77,32 @@ for (const [face, theme] of [['Arial Black', undefined], ['Arial Black', {headFo
   assert.deepEqual(cellRuns.map(run => [run.fontFamily, run.bold]), [['Roboto', true]]);
 }
 
-// 6. One table: every recognized weight word both keeps a chosen family's face (exporter) and splits it (importer).
+// 6. One table: every recognized weight word both keeps a face (exporter) and splits it (importer), spaced or joined.
 for (const [word, weight] of FONT_WEIGHT_WORDS) {
-  assert.ok(FACE_STYLE_WORDS.test(word), word);
-  assert.equal(splitWeightFace(`Roboto ${word}`, ['Roboto'])?.weight, weight, word);
+  assert.ok(isFaceStyleSuffix(word), word);
+  assert.equal(splitWeightFace(`Roboto ${word}`)?.weight, weight, word);
 }
-assert.equal(splitWeightFace('Roboto Fancy', ['Roboto']), undefined);
-assert.equal(splitWeightFace('Arial Black', ['Arial']), undefined);
-assert.deepEqual(splitWeightFace('Roboto Medium Italic', ['Roboto']), {family: 'Roboto', weight: 500, italic: true});
+for (const [spaced, weight] of [['semi bold', 600], ['Extra Bold', 800], ['ultra black', 950], ['Demi Light', 350], ['extra light', 200]]) {
+  assert.equal(splitWeightFace(`Roboto ${spaced}`)?.weight, weight, spaced);
+}
+assert.equal(splitWeightFace('Roboto Fancy'), undefined);
+assert.equal(splitWeightFace('Roboto'), undefined);
+assert.equal(splitWeightFace('Robotox Bold'), undefined);
+assert.equal(splitWeightFace('Arial Black'), undefined);
+assert.equal(splitWeightFace('Aptos Light'), undefined);
+assert.deepEqual(splitWeightFace('Roboto Medium Italic'), {family: 'Roboto', weight: 500, italic: true});
+
+// 7. Typeface names come from untrusted files: matching is linear. A repeated near-miss must not backtrack.
+{
+  const hostile = 'Roboto ' + 'semibold '.repeat(50000) + 'x';
+  const started = performance.now();
+  assert.equal(splitWeightFace(hostile), undefined);
+  assert.equal(isFaceStyleSuffix('semi bold '.repeat(50000) + 'x'), false);
+  assert.equal(isFaceStyleSuffix('extra black '.repeat(50000)), true);
+  assert.ok(performance.now() - started < 100, 'n=50000 style words finish in under 100 ms');
+  const imported = await nativeRuns(['Roboto ' + 'semibold '.repeat(50000) + 'x']);
+  assert.equal(imported.runs[0].fontFamily, hostile, 'the hostile name is imported as authored');
+  assert.ok(performance.now() - started < 5000, 'the whole import stays fast');
+}
 
 console.log(JSON.stringify({test: 'font-weight-import', passed: true, words: FONT_WEIGHT_WORDS.length}));

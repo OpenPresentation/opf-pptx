@@ -1,5 +1,5 @@
 import {nativeBodyReader, joinNativeParagraphs} from './body-text-import.js';
-import {FACE_STYLE_WORDS} from './font-weights.js';
+import {isFaceStyleSuffix} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
@@ -1942,7 +1942,7 @@ function sameTypeface(requested, resolved) {
   if (typeof resolved !== 'string') return false;
   const want = requested.trim().toLowerCase(), got = resolved.trim().toLowerCase();
   // A legacy four-style family such as "Roboto Medium" is the chosen typeface.
-  return got === want || got.startsWith(`${want} `) && FACE_STYLE_WORDS.test(got.slice(want.length + 1));
+  return got === want || got.startsWith(`${want} `) && isFaceStyleSuffix(got.slice(want.length + 1));
 }
 function chosenFamilyMeasurement(measurement) {
   if (!measurement || typeof measurement.resolveStyle !== 'function') return measurement;
