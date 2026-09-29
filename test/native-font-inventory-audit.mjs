@@ -60,6 +60,9 @@ export const PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256 = Object.freeze({
   // Exact pre-comparison worker from 357171a5, used by accepted E6/E7.
   '03534696f36fbc134cb54f733594636ac1d9dd25e1966c9aa40e18dd3c7eae16': 'ff-05-357171a-lf',
   'f8f24330db965436167758e54f907e1cc9b6bd9eb25e30b5110796823701ae7f': 'ff-05-357171a-crlf',
+  // Exact pre-master-presence worker from 9a7f3c1 (#88, after-content comparison); it never records recordMasterPresence.
+  '0f81cd5becc9c9190a9360cfb516db69c86987b1387d27d48dfdb3854585e1ea': 'ff-05-9a7f3c1-lf',
+  'dd21258aca3b8b4777e928bb96ee7c6488199b53326c594e0c2bd63ea4322c82': 'ff-05-9a7f3c1-crlf',
 });
 // Reviewed allowlist policy for native-font-inventory.ps1. The controls assert that every list below equals the matching
 // $script:InventoryPolicy* list in that file, which its PowerShell AST check enforces.
@@ -81,7 +84,7 @@ export const INVENTORY_SOURCE_POLICY = Object.freeze({
   exactApis: Object.freeze(['IO.File::WriteAllText|[IO.File]::WriteAllText($negativePath,$policyNegatives[$key])', 'IO.File::WriteAllText|[IO.File]::WriteAllText($positivePath,\'$p=$a.Open($x,-1,0,0); $n=$p.Fonts.Item(1).Name; $report.name=$n; $p.Close()\')', "string::Equals|[string]::Equals($key,$afterKeys[$i],[StringComparison]::Ordinal)", "string::Equals|[string]::Equals((ConvertTo-Json -InputObject $beforeEntries -Depth 5 -Compress),(ConvertTo-Json -InputObject $afterEntries -Depth 5 -Compress),[StringComparison]::Ordinal)", "string::Equals|[string]::Equals((ConvertTo-Json -InputObject @($beforeEntries | ForEach-Object {$_.name}) -Compress),(ConvertTo-Json -InputObject @($afterEntries | ForEach-Object {$_.name}) -Compress),[StringComparison]::Ordinal)", "string::Equals|[string]::Equals($_.name,'',[StringComparison]::Ordinal)"]),
   exactMembers: Object.freeze([]),
   pinned: Object.freeze(['operation', 'decide', 'mutate', 'processsnapshot', 'fonthelpersnapshot', 'pureroot', 'deleteroot', 'outputroot', 'snapshotroot', 'verifiersnapshot', 'sourcesnapshot', 'generationsnapshot', 'licensesnapshot', 'snapshot', 'reportfile', 'stagefile', 'progressfile', 'registrationpath', 'temproot', 'root', 'negativepath', 'positivepath', 'workerarguments']),
-  pinnedBindings: Object.freeze(['root|=|Get-InventoryAssignmentRoot $left', 'root|=|Get-InventoryAssignmentRoot $unary.Child', 'temproot|=|[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)', 'pureroot|=|Join-Path $tempRoot (\'opf-font-inventory-pure-\' + [Guid]::NewGuid().ToString(\'n\'))', 'pureroot|=|(Resolve-Path -LiteralPath $pureRoot).Path', 'negativepath|=|Join-Path $pureRoot "policy-$key.ps1"', 'positivepath|=|Join-Path $pureRoot \'policy-positive.ps1\'', 'stagefile|=|Join-Path $pureRoot \'stages.jsonl\'', 'progressfile|=|Join-Path $pureRoot \'progress.json\'', 'reportfile|=|Join-Path $pureRoot \'report.json\'', 'stagefile|=|Join-Path $pureRoot "error-close-$($case[0]).jsonl"', 'progressfile|=|Join-Path $pureRoot "error-close-$($case[0]).progress.json"', 'registrationpath|=|Join-Path $pureRoot \'font-registration.json\'', 'decide|=|{ param($Result,$Durable,$Report,$Mode,$Registrations,$Present,$Inputs) Get-InventoryParentDecision $Result $Durable $Report $Mode $Registrations $Present $Inputs $null }', 'mutate|=|{ param($Name,$Value) $sample=$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json; if($Name -like \'source.*\'){ $sample.source.($Name.Substring(7))=$Value } else { $sample.$Name=$Value }; return ,$sample }', 'deleteroot|=|(Resolve-Path -LiteralPath $pureRoot).Path', 'outputroot|=|[IO.Path]::GetFullPath($OutputDirectory)', 'snapshotroot|=|Join-Path $outputRoot \'inputs\'', 'verifiersnapshot|=|Join-Path $snapshotRoot \'native-font-inventory.ps1\'', 'processsnapshot|=|Join-Path $snapshotRoot \'native-process.ps1\'', 'fonthelpersnapshot|=|Join-Path $snapshotRoot \'native-text-fonts.ps1\'', 'sourcesnapshot|=|Join-Path $snapshotRoot \'source.pptx\'', 'generationsnapshot|=|Join-Path $snapshotRoot \'generation.json\'', 'licensesnapshot|=|Join-Path $snapshotRoot \'LICENSE_FONT\'', 'snapshot|=|Join-Path $snapshotRoot $font.file', 'workerarguments|=|@(\'-OutputDirectory\',$outputRoot,\'-InputPresentation\',$sourceSnapshot,\'-Worker\')', 'workerarguments|=|@(\'-OutputDirectory\',$outputRoot,\'-InputPresentation\',$sourceSnapshot,\'-Worker\',\'-CompareAfterContentFonts\')', 'registrationpath|=|Join-Path $outputRoot \'font-registration.json\'', 'root|=|(Resolve-Path -LiteralPath $OutputDirectory).Path', 'sourcesnapshot|=|(Resolve-Path -LiteralPath $request.source.snapshotPath).Path', 'stagefile|=|Join-Path $root \'stages.jsonl\'', 'progressfile|=|Join-Path $root \'progress.json\'', 'reportfile|=|Join-Path $root \'report.json\'', 'operation|param|Invoke-InventoryCom|ScriptBlock']),
+  pinnedBindings: Object.freeze(['root|=|Get-InventoryAssignmentRoot $left', 'root|=|Get-InventoryAssignmentRoot $unary.Child', 'temproot|=|[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)', 'pureroot|=|Join-Path $tempRoot (\'opf-font-inventory-pure-\' + [Guid]::NewGuid().ToString(\'n\'))', 'pureroot|=|(Resolve-Path -LiteralPath $pureRoot).Path', 'negativepath|=|Join-Path $pureRoot "policy-$key.ps1"', 'positivepath|=|Join-Path $pureRoot \'policy-positive.ps1\'', 'stagefile|=|Join-Path $pureRoot \'stages.jsonl\'', 'progressfile|=|Join-Path $pureRoot \'progress.json\'', 'reportfile|=|Join-Path $pureRoot \'report.json\'', 'stagefile|=|Join-Path $pureRoot "error-close-$($case[0]).jsonl"', 'progressfile|=|Join-Path $pureRoot "error-close-$($case[0]).progress.json"', 'registrationpath|=|Join-Path $pureRoot \'font-registration.json\'', 'decide|=|{ param($Result,$Durable,$Report,$Mode,$Registrations,$Present,$Inputs) Get-InventoryParentDecision $Result $Durable $Report $Mode $Registrations $Present $Inputs $null }', 'mutate|=|{ param($Name,$Value) $sample=$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json; if($Name -like \'source.*\'){ $sample.source.($Name.Substring(7))=$Value } else { $sample.$Name=$Value }; return ,$sample }', 'deleteroot|=|(Resolve-Path -LiteralPath $pureRoot).Path', 'outputroot|=|[IO.Path]::GetFullPath($OutputDirectory)', 'snapshotroot|=|Join-Path $outputRoot \'inputs\'', 'verifiersnapshot|=|Join-Path $snapshotRoot \'native-font-inventory.ps1\'', 'processsnapshot|=|Join-Path $snapshotRoot \'native-process.ps1\'', 'fonthelpersnapshot|=|Join-Path $snapshotRoot \'native-text-fonts.ps1\'', 'sourcesnapshot|=|Join-Path $snapshotRoot \'source.pptx\'', 'generationsnapshot|=|Join-Path $snapshotRoot \'generation.json\'', 'licensesnapshot|=|Join-Path $snapshotRoot \'LICENSE_FONT\'', 'snapshot|=|Join-Path $snapshotRoot $font.file', 'workerarguments|=|@(\'-OutputDirectory\',$outputRoot,\'-InputPresentation\',$sourceSnapshot,\'-Worker\')', 'workerarguments|=|@(\'-OutputDirectory\',$outputRoot,\'-InputPresentation\',$sourceSnapshot,\'-Worker\',\'-CompareAfterContentFonts\')', 'workerarguments|=|@(\'-OutputDirectory\',$outputRoot,\'-InputPresentation\',$sourceSnapshot,\'-Worker\',\'-RecordMasterPresence\')', 'workerarguments|=|@(\'-OutputDirectory\',$outputRoot,\'-InputPresentation\',$sourceSnapshot,\'-Worker\',\'-CompareAfterContentFonts\',\'-RecordMasterPresence\')', 'registrationpath|=|Join-Path $outputRoot \'font-registration.json\'', 'root|=|(Resolve-Path -LiteralPath $OutputDirectory).Path', 'sourcesnapshot|=|(Resolve-Path -LiteralPath $request.source.snapshotPath).Path', 'stagefile|=|Join-Path $root \'stages.jsonl\'', 'progressfile|=|Join-Path $root \'progress.json\'', 'reportfile|=|Join-Path $root \'report.json\'', 'operation|param|Invoke-InventoryCom|ScriptBlock']),
   dynamicMemberSites: Object.freeze(['Invoke-InventoryPureRegression|sample']),
   exemptFunction: null,
   exemptInvocations: Object.freeze([]),
@@ -110,6 +113,8 @@ export function auditInventoryVerifierSource(sourceText, {label = 'native-font-i
   failures.push(...auditHarnessSourcePolicy(sourceText, {label, ...INVENTORY_SOURCE_POLICY}));
   if (hasOfficeQuitInvocation(sourceText)) add('application-quit', 'must not call Application.Quit or .Quit()');
   if (/\b(?:Stop-Process|taskkill|spps)\b/i.test(code)) add('process-kill', 'must not terminate processes');
+  // Reading a master object can create that master in memory; only the Has*Master getters are permitted.
+  if (/\.\s*(?:HandoutMaster|NotesMaster|TitleMaster)\b/i.test(code)) add('master-object-access', 'must not access the HandoutMaster, NotesMaster or TitleMaster objects; read only Presentation.HasHandoutMaster, HasNotesMaster and HasTitleMaster');
   const opens = code.match(/\.Open\s*\(/g) ?? [], closes = code.match(/\.Close\s*\(/g) ?? [];
   if (opens.length !== 1) add('open-count', `must contain exactly one Open call; found ${opens.length}`);
   if (closes.length !== 1) add('close-count', `must contain exactly one Close call; found ${closes.length}`);
@@ -175,6 +180,14 @@ export function computeFontsComparison(before, after) {
     beforeEmptyNameIndexes: first.filter(entry => entry?.name === '').map(entry => entry.index),
     afterEmptyNameIndexes: second.filter(entry => entry?.name === '').map(entry => entry.index),
   };
+}
+
+// Raw msoTriState observations of Presentation.HasHandoutMaster, HasNotesMaster and HasTitleMaster (-1 true, 0 false).
+// Reading the master objects themselves may create a master, so no object is ever accessed.
+export const MASTER_PRESENCE_PROPERTIES = Object.freeze(['hasHandoutMaster', 'hasNotesMaster', 'hasTitleMaster']);
+export function validMasterPresence(value) {
+  return isObject(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...MASTER_PRESENCE_PROPERTIES].sort())
+    && MASTER_PRESENCE_PROPERTIES.every(property => isInt(value[property]) && (value[property] === 0 || value[property] === -1));
 }
 
 function validFont2(font) {
@@ -269,6 +282,11 @@ export function expectedInventoryStages(report, failures = []) {
   shapes('owned.slideMaster', report?.slideMaster, 'Slide master');
   need(totals.paragraphs <= INVENTORY_BOUNDS.maxParagraphsTotal && totals.runs <= INVENTORY_BOUNDS.maxRunsTotal, 'observation-totals', 'Paragraph and run totals exceed the bounded inventory');
   if (report?.compareAfterContentFonts === true) fontCollection(report.presentationFontsAfterContent, 'owned.presentation.fonts-after-content', 'After-content Presentation.Fonts');
+  // Opt-in raw msoTriState getters, after both Fonts snapshots and before the ownership-checked close.
+  if (report?.recordMasterPresence === true) {
+    for (const property of MASTER_PRESENCE_PROPERTIES) pair(`owned.presentation.${property}.get`);
+    need(validMasterPresence(report?.masterPresence), 'observation-master-presence', 'masterPresence must hold exactly hasHandoutMaster, hasNotesMaster and hasTitleMaster as integers -1 or 0');
+  }
   pair('owned.presentation.fullName-before-close.get'); pair('owned.presentation.close');
   stages.push(['owned.presentation.cleanup', 'single'], ['worker.complete', 'single']);
   return stages;
@@ -322,6 +340,10 @@ function auditLifecycle({request, report, supervisor, worker, progress, stages, 
   const compare = request?.compareAfterContentFonts === true && report?.compareAfterContentFonts === true;
   if (compare) need(canonical(report?.fontQueryComparison) === canonical(computeFontsComparison(report?.presentationFonts, report?.presentationFontsAfterContent)), 'font-query-comparison', 'Before/after comparison must equal independent recomputation from raw ordered entries and flags');
   else need(legacyDefault ? !Object.hasOwn(report, 'presentationFontsAfterContent') && !Object.hasOwn(report, 'fontQueryComparison') : report?.presentationFontsAfterContent === null && report?.fontQueryComparison === null, 'comparison-absent', 'Default mode must not carry a second snapshot or comparison');
+  const legacyMasterDefault = legacyMode && !Object.hasOwn(request, 'recordMasterPresence') && !Object.hasOwn(report, 'recordMasterPresence') && !Object.hasOwn(supervisor, 'recordMasterPresence');
+  need(legacyMasterDefault || (typeof request?.recordMasterPresence === 'boolean' && report?.recordMasterPresence === request.recordMasterPresence && supervisor?.recordMasterPresence === request.recordMasterPresence), 'master-presence-mode', 'Strict boolean master-presence mode must bind request, report and supervisor; absence is only a pinned historical default');
+  if (request?.recordMasterPresence === true && report?.recordMasterPresence === true) need(validMasterPresence(report?.masterPresence), 'master-presence-values', 'Recorded master presence must be exactly the three raw -1/0 getter values');
+  else need(legacyMasterDefault ? !Object.hasOwn(report, 'masterPresence') : report?.masterPresence === null, 'master-presence-absent', 'Default mode must not carry a masterPresence section');
   need(report?.kind === 'native-font-inventory' && report?.schemaVersion === 1, 'report-kind', 'report.json must be native-font-inventory schema 1');
   need(report?.error === null && report?.cleanupConfirmed === true && report?.officeOperationsStopped === false && report?.ownedOpenCount === 1 && report?.ownedCloseCount === 1 && report?.lastStage === 'worker.complete' && report?.lastStatus === 'success' && report?.failureCleanup === null, 'report-lifecycle', 'Worker report must end successfully with confirmed cleanup, one owned open and one owned close');
   need(report?.source?.openedPathMatches === true && samePath(report?.source?.fullName, report?.source?.snapshotPath) && report?.source?.readOnly === -1 && report?.source?.snapshotUnchangedAfterClose === true, 'report-read-only', 'The opened FullName must be the owned snapshot, ReadOnly must be -1, and the snapshot must be unchanged after close');
@@ -495,7 +517,9 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
   }
   let ledger = null;
   if (isObject(request) && isObject(report) && isObject(supervisor) && isObject(worker) && isObject(progress) && Array.isArray(stages)) {
-    const legacyMode = priorReviewedVerifiers !== false && Object.hasOwn(PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256, request?.verifier?.sha256 ?? '') && reviewedVerifierRevision === PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256[request.verifier.sha256];
+    // Legacy defaults (absent mode fields) apply only to a pinned prior verifier revision that this run explicitly allowed.
+    const priorMap = priorReviewedVerifiers === true ? PRIOR_REVIEWED_INVENTORY_VERIFIER_SHA256 : isObject(priorReviewedVerifiers) ? priorReviewedVerifiers : {};
+    const legacyMode = Object.hasOwn(priorMap, request?.verifier?.sha256 ?? '') && reviewedVerifierRevision === priorMap[request.verifier.sha256];
     const lifecycle = auditLifecycle({request, report, supervisor, worker, progress, stages, registrations, registrationFilePresent, legacyMode});
     failures.push(...lifecycle.failures); ledger = lifecycle.ledger;
   }
@@ -507,6 +531,7 @@ export async function auditEvidenceDirectory(evidenceDirectory, {reviewedRoot = 
     // Complete raw observations remain useful when another audit gate fails.
     fontQueryComparison: report?.compareAfterContentFonts === true && completePresentationFonts(report?.presentationFonts) && completePresentationFonts(report?.presentationFontsAfterContent)
       ? computeFontsComparison(report.presentationFonts, report.presentationFontsAfterContent) : null,
+    masterPresence: report?.recordMasterPresence === true && validMasterPresence(report?.masterPresence) ? {...report.masterPresence} : null,
     failureCleanup: analyzeFailureCleanup(report, Array.isArray(stages) ? stages : []),
     note: 'Findings are evidence only when passed is true. Reported names do not prove physical font-file or per-glyph identity.',
   };
