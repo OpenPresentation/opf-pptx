@@ -29,8 +29,11 @@ for(const [r,row] of rows.entries()){
  height+=actual;
 }
 const frame=find(native,'p:graphicFrame')[0];
-assert.ok(Math.abs(Number(frame['p:xfrm']['a:ext'].cy)/9525-height)<.001,'Native table extent equals variable row heights');
-console.log('Variable table rows passed: unchanged short rows, five-line rich cell containment, identical SVG/native row heights and native table extent.');
+// FF-39: the frame is the composed box; rows keep the preview's measured heights within it.
+const frameHeight=Number(frame['p:xfrm']['a:ext'].cy)/9525;
+assert.ok(frameHeight>=height-.001,'Native table frame contains the variable row heights');
+assert.ok(Math.abs(rows.reduce((sum,row)=>sum+Number(row.h),0)/9525-height)<.001,'Native rows sum to the preview row heights');
+console.log('Variable table rows passed: unchanged short rows, five-line rich cell containment, identical SVG/native row heights and a frame containing them.');
 
 const mixed={slides:[{table:{rows:[[[{text:'Large\n',fontSize:30},'small\nsmall']]]}}]};
 const mixedXml=parser.parse(new TextDecoder().decode(unzipSync(await toPptx(mixed))['ppt/slides/slide1.xml']));
