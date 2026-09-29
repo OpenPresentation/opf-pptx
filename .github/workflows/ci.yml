@@ -44,8 +44,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-render
-          # Cover centering: renderer cover-centering PR head (item.alignment anchoring from opf-render#43 included); replace with the merged commit.
-          ref: 6c91c05a83b6fb876baa3a95a8d1e62bca42327f
+          # Cover centering: merged renderer opf-render#56 (face3de), which includes item.alignment anchoring from opf-render#43.
+          ref: face3de97545edb872f9726cc9ff9b448516ac26
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
