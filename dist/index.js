@@ -8,7 +8,7 @@ import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord,mediaTex
 import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
-import {attachFurnitureTags, furnitureManifest, importFurniture} from './furniture-provenance.js';
+import {attachFurnitureTags, furnitureManifest, importFurniture, staticDateFallback} from './furniture-provenance.js';
 import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, restoreDocumentProvenance} from './document-provenance.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {importImageOrientation} from './image-import.js';
@@ -66,6 +66,9 @@ const FIXED_TIMESTAMP = "1980-01-01T00:00:00Z";
 // local components: a UTC instant rolls back to 1979 west of UTC (below
 // fflate's 1980 floor) and would otherwise yield timezone-dependent bytes.
 const FIXED_ZIP_DATE = new Date(1980, 0, 1, 0, 0, 0);
+// Explicit stamps overwrite these fields after ZIP generation. Keep the
+// temporary instant well inside fflate's range even if the host changes TZ.
+const EXPLICIT_ZIP_SENTINEL = new Date('2000-01-01T12:00:00Z');
 const DEFAULT_SEED = 0x4f504658;
 const CANONICAL_SCHEMA = "https://openpresentation.org/schema/opf/v1";
 const EMUS_PER_INCH = 914400;
@@ -77,6 +80,12 @@ const xmlParser = new XMLParser({
   parseAttributeValue: false,
   parseTagValue: false,
   trimValues: false
+});
+// Keep numeric character references (notably CR) in native core text. This is
+// scoped to properties; the ordinary slide/relationship parser is unchanged.
+const coreTextParser = new XMLParser({
+  ignoreAttributes: false, attributeNamePrefix: "", textNodeName: "#text",
+  parseAttributeValue: false, parseTagValue: false, trimValues: false, htmlEntities: true
 });
 
 const ROOT_PAYLOAD_FIELDS = [
@@ -194,6 +203,7 @@ export async function toPptx(input, options = {}) {
   context.imagePlacements = new Map();
   context.slideImages = new Map();
   context.backgroundFills = new Map();
+  context.notesWithCarriageReturns = new Map();
   context.cardTags = new Map();
   context.mediaTags = new Map();
   context.provenanceMode = options.provenance ?? "full";
@@ -446,12 +456,12 @@ function slideNumber(path) {
 }
 
 function readCoreProperties(entries) {
-  const doc = parseOptionalXml(entries, "docProps/core.xml");
+  const doc = entries["docProps/core.xml"] ? parseRequiredXml(entries, "docProps/core.xml", coreTextParser) : null;
   const core = doc?.["cp:coreProperties"] ?? {};
   return {
-    title: scalarText(core["dc:title"]).trim(),
-    description: scalarText(core["dc:description"] ?? core["dc:subject"]).trim(),
-    author: scalarText(core["dc:creator"]).trim()
+    title: scalarText(core["dc:title"]),
+    description: scalarText(core["dc:description"] ?? core["dc:subject"]),
+    author: scalarText(core["dc:creator"])
   };
 }
 
@@ -810,8 +820,7 @@ function chartFromRelationship(entries, slidePath, relationships, relId) {
   const names = series.map((entry, index) => firstCachedValue(entry?.["c:tx"], cachePath(index, 'c:tx'), budget) ?? `Series ${index + 1}`);
   const values = series.map((entry, index) => {
     const role = entry?.["c:val"] !== undefined ? 'c:val' : 'c:yVal';
-    return cachedValues(entry?.[role], cachePath(index, role), budget)
-      .map(value => value === null || value.trim() === '' ? null : numericValue(value));
+    return cachedValues(entry?.[role], cachePath(index, role), budget, numericCacheValue);
   });
   const rowCount = values.reduce((count, row) => Math.max(count, row.length), labels.length);
   if (rowCount === 0) return null;
@@ -856,10 +865,25 @@ function firstChartNode(plotArea) {
 const MAX_CHART_CACHE_POINTS = 100_000;
 const MAX_CHART_CACHE_CELLS = 1_000_000;
 
+// Import complete decimal exponent tokens without the exporter's legacy
+// character stripping. Other numeric strings deliberately retain that policy.
+function numericCacheValue(value, path) {
+  if (value === null || value.trim() === '') return null;
+  const token = value.trim();
+  const exponent = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))[eE][+-]?\d+$/.exec(token);
+  if (!exponent) return numericValue(value);
+  const parsed = Number(token);
+  if (!Number.isFinite(parsed) || (parsed === 0 && /[1-9]/.test(exponent[1]))) {
+    const reason = Number.isFinite(parsed) ? 'underflows to zero' : 'overflows';
+    throw new OPFPptxError('unsupported-chart-cache', `Scientific-notation chart value is outside the supported finite numeric range (${reason}); use a representable value before importing.`, {path});
+  }
+  return parsed;
+}
+
 // c:pt is sparse and its XML order does not determine the data row. Keep
 // explicit empty strings distinct from missing points, and bound native
-// metadata before allocating a dense OPF table. This does not parse numbers.
-function cachedValues(node, path, budget) {
+// metadata before allocating a dense OPF table. Only numeric roles convert values.
+function cachedValues(node, path, budget, readValue) {
   const invalid = (message, suffix = '') => {
     throw new OPFPptxError('invalid-chart-cache', `Invalid chart cache: ${message}. Repair the chart data before importing.`, {path: path + suffix});
   };
@@ -916,7 +940,9 @@ function cachedValues(node, path, budget) {
   if (budget.cells + extent > MAX_CHART_CACHE_CELLS) invalid('combined caches exceed the 1,000,000-cell import limit');
   budget.cells += extent;
   const result = new Array(extent).fill(null);
-  for (const [index, value] of indexed) result[index] = value;
+  for (const [index, value] of indexed) {
+    result[index] = readValue ? readValue(value, `${path}/c:pt[@idx="${index}"]/c:v`) : value;
+  }
   return result;
 }
 
@@ -928,17 +954,10 @@ function readSlideNotes(entries, relationships) {
   const notesRel = [...relationships.values()].find((relationship) => relationship.type.endsWith("/notesSlide"));
   if (!notesRel?.path || !entries[notesRel.path]) return "";
   const doc = parseRequiredXml(entries, notesRel.path);
-  const shapes = asArray(doc["p:notes"]?.["p:cSld"]?.["p:spTree"]?.["p:sp"]);
-  const bodyNotes = shapes
-    .filter((shape) => shapePlaceholderType(shape) === "body")
-    .map((shape) => textFromTextBody(shape["p:txBody"]))
-    .filter(Boolean);
-  return bodyNotes.join("\n").trim();
-}
-
-
-function textFromTextBody(txBody) {
-  return readParagraphs(txBody).map((paragraph) => paragraph.text).filter(Boolean).join("\n").trim();
+  const shapes = nativeTextShapes(doc["p:notes"]?.["p:cSld"]?.["p:spTree"]);
+  const paragraphs = nativeShapeParagraphs(decodeText(entries[notesRel.path]), 'p:notes');
+  return shapes.flatMap((shape, index) => shapePlaceholderType(shape) === "body"
+    ? paragraphs[index].map(paragraph => paragraph.text) : []).join("\n");
 }
 
 function comparePositionedItems(left, right) {
@@ -1051,7 +1070,8 @@ function resolvePresentationContext(presentation, options) {
   return {
     seed: Number.isInteger(options.seed) ? options.seed : DEFAULT_SEED,
     timestamp: options.timestamp ?? FIXED_TIMESTAMP,
-    zipDate: options.zipDate ? new Date(options.zipDate) : FIXED_ZIP_DATE,
+    zipDate: options.zipDate === undefined ? FIXED_ZIP_DATE : EXPLICIT_ZIP_SENTINEL,
+    zipDateStamp: resolveZipDateStamp(options.zipDate),
     compressionLevel: Number.isInteger(options.compressionLevel) ? options.compressionLevel : 6,
     layoutName: "OPF_CANVAS",
     dimensions,
@@ -1237,7 +1257,11 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
     }
   }
 
-  if (opfSlide.notes) slide.addNotes(String(opfSlide.notes));
+  if (opfSlide.notes) {
+    const notes = String(opfSlide.notes);
+    slide.addNotes(notes);
+    if (notes.includes('\r')) context.notesWithCarriageReturns.set(`ppt/notesSlides/notesSlide${slideIndex + 1}.xml`, notes);
+  }
 }
 
 function resolveSlideContext(presentation, slide, baseContext, options, slideIndex = 0) {
@@ -1638,6 +1662,7 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
     if (manifest) context.furnitureManifests.set(`ppt/slides/slide${slideIndex + 1}.xml`, manifest);
     return;
   }
+  const staticDates = new Map();
   for(const [index,part]of layout.parts.entries()){
     if(part.type==='image'){
       const region={x:part.box.x/96,y:part.box.y/96,w:part.box.width/96,h:part.box.height/96};
@@ -1655,10 +1680,17 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
         else options.onDiagnostic?.({code:'furniture-date-fixed',path:part.path,message:`dateFormat '${field.format}' has no PowerPoint en-US date field; the current date is exported as fixed text that PowerPoint will not update.`});
       }
       const liveFields=fields.length?lineFields(part.text,fields,part.fit.sourceLines,part.fit.lines):undefined;
+      for(const field of fields.filter(field => !lineFields(part.text,[field],part.fit.sourceLines,part.fit.lines).some(line => line.length))) {
+        options.onDiagnostic?.({code:'furniture-field-fixed',path:part.path,message:`The ${field.type} field range ${field.start}..${field.end} does not fit one accepted text line. It is exported as static text that PowerPoint will not update; native compatibility remains a separate gate.`});
+        if(context.provenanceMode === 'full') {
+          const marker = staticDateFallback(part,field);
+          if(marker) staticDates.set(index,marker);
+        }
+      }
       addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,color:context.colors.mutedText,keepEmpty:true,objectName:`OPF furniture ${slideIndex} part ${index}`,furniture:{group:String(slideIndex),part:index},liveFields,links:part.links});
     }
   }
-  const manifest = furnitureManifest(presentation, source, layout, slideIndex);
+  const manifest = furnitureManifest(presentation, source, layout, slideIndex, staticDates);
   if (manifest) context.furnitureManifests.set(`ppt/slides/slide${slideIndex + 1}.xml`, manifest);
 }
 
@@ -2243,14 +2275,41 @@ async function normalizePptxZip(raw, context) {
 
   // Sort after chart/worksheet renaming; source counters can cross digit widths.
   const sortedOutput = Object.fromEntries(Object.keys(output).sort().map(path => [path, output[path]]));
-  return zipSync(sortedOutput, {
+  return stampGeneratedZip(zipSync(sortedOutput, {
     level: context.compressionLevel,
     mtime: context.zipDate
+  }), context.zipDateStamp);
+}
+
+function preserveCarriageReturns(xml, textElements) {
+  // Only our generated text content is rewritten. Escaped literal entity text
+  // remains escaped, and XML formatting outside these elements is untouched.
+  return xml.replace(/(<([\w:]+)\b[^>]*>)([^<]*)(<\/\2>)/g, (element, open, name, text, close) =>
+    textElements.has(name) ? open + text.replace(/\r/g, '&#13;') + close : element);
+}
+
+const CORE_TEXT_ELEMENTS = new Set(['dc:title', 'dc:subject', 'dc:description', 'dc:creator']);
+
+function preserveGeneratedNotes(xml, notes, path) {
+  // PptxGenJS changes LF to CRLF. For authored CR, write the original text into
+  // its one generated native notes body; nothing is retained in hidden tags.
+  const text = notes.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;').replace(/\r/g, '&#13;');
+  let bodies = 0, texts = 0;
+  const output = xml.replace(/<p:sp\b[^>]*>[\s\S]*?<\/p:sp>/g, shape => {
+    if (!/<p:ph\b[^>]*\btype="body"/.test(shape)) return shape;
+    bodies++;
+    return shape.replace(/(<a:t\b[^>]*>)[^<]*(<\/a:t>)/g, (_, open, close) => {
+      texts++;
+      return open + text + close;
+    });
   });
+  if (bodies !== 1 || texts !== 1) throw new OPFPptxError('packaging-failed', 'Generated notes must have one body text element.', {path});
+  return output;
 }
 
 function normalizeCoreProperties(xml, timestamp) {
-  return xml
+  return preserveCarriageReturns(xml, CORE_TEXT_ELEMENTS)
     .replace(/<dcterms:created xsi:type="dcterms:W3CDTF">[^<]*<\/dcterms:created>/g, `<dcterms:created xsi:type="dcterms:W3CDTF">${timestamp}</dcterms:created>`)
     .replace(/<dcterms:modified xsi:type="dcterms:W3CDTF">[^<]*<\/dcterms:modified>/g, `<dcterms:modified xsi:type="dcterms:W3CDTF">${timestamp}</dcterms:modified>`);
 }
@@ -2265,6 +2324,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
   }
   if (isXmlPart(path)) {
     let xml=decodeText(bytes);
+    if (context.notesWithCarriageReturns.has(path)) xml = preserveGeneratedNotes(xml, context.notesWithCarriageReturns.get(path), path);
     if (path === '[Content_Types].xml') {
       // PptxGenJS 4.0.1 emits one slide-master override per slide even
       // though it creates only the actual master parts. Omit phantom master
@@ -2475,10 +2535,82 @@ function normalizeNestedZip(bytes, context) {
       mtime: context.zipDate
     }];
   }
-  return zipSync(output, {
+  return stampGeneratedZip(zipSync(output, {
     level: context.compressionLevel,
     mtime: context.zipDate
-  });
+  }), context.zipDateStamp);
+}
+
+// Explicit ZIP dates use UTC calendar fields. fflate clones mtime and reads
+// local fields, so passing a Date cannot express this reliably (including DST
+// gaps and skipped civil days). Leave the established default path unchanged.
+function resolveZipDateStamp(value) {
+  if (value === undefined) return null;
+  const invalid = () => {
+    throw new OPFPptxError('invalid-zip-date', 'zipDate must be a valid Date, finite epoch milliseconds, an ISO date, or an ISO datetime with Z/offset, within UTC years 1980–2099.', {path: 'options.zipDate'});
+  };
+  let time;
+  if (typeof value === 'string') {
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2}))?$/.exec(value);
+    if (!match) invalid();
+    const [, year, month, day, hour = '00', minute = '00', second = '00', fraction = '', zone = 'Z'] = match;
+    const parts = [year, month, day, hour, minute, second].map(Number);
+    if (parts[1] < 1 || parts[1] > 12 || parts[2] < 1 || parts[3] > 23 || parts[4] > 59 || parts[5] > 59) invalid();
+    const date = new Date(0);
+    date.setUTCFullYear(parts[0], parts[1] - 1, parts[2]);
+    date.setUTCHours(parts[3], parts[4], parts[5], Number(fraction.slice(0, 3).padEnd(3, '0')));
+    if (date.getUTCFullYear() !== parts[0] || date.getUTCMonth() !== parts[1] - 1 || date.getUTCDate() !== parts[2]) invalid();
+    const offsetHours = zone === 'Z' ? 0 : Number(zone.slice(1, 3));
+    const offsetMinutes = zone === 'Z' ? 0 : Number(zone.slice(4, 6));
+    if (offsetHours > 23 || offsetMinutes > 59) invalid();
+    const offset = (offsetHours * 60 + offsetMinutes) * (zone[0] === '-' ? -1 : 1);
+    time = date.getTime() - offset * 60000;
+  } else if (typeof value === 'number') {
+    time = value;
+  } else {
+    // The native brand check accepts cross-realm Dates without coercing objects.
+    try { time = Date.prototype.getTime.call(value); } catch { invalid(); }
+  }
+  const date = new Date(time);
+  const year = date.getUTCFullYear();
+  if (!Number.isFinite(time) || !Number.isFinite(year) || year < 1980 || year > 2099) invalid();
+  return (((year - 1980) << 25) | ((date.getUTCMonth() + 1) << 21) | (date.getUTCDate() << 16) |
+    (date.getUTCHours() << 11) | (date.getUTCMinutes() << 5) | (date.getUTCSeconds() >> 1)) >>> 0;
+}
+
+function stampGeneratedZip(bytes, stamp) {
+  if (stamp === null) return bytes;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const fail = () => { throw new OPFPptxError('packaging-failed', 'Generated ZIP headers could not be timestamped safely.'); };
+  const end = bytes.length - 22;
+  if (end < 0 || view.getUint32(end, true) !== 0x06054b50 || view.getUint16(end + 4, true) !== 0 ||
+    view.getUint16(end + 6, true) !== 0 || view.getUint16(end + 20, true) !== 0) fail();
+  const count = view.getUint16(end + 10, true);
+  const start = view.getUint32(end + 16, true);
+  if (count !== view.getUint16(end + 8, true) || start + view.getUint32(end + 12, true) !== end) fail();
+  const positions = [];
+  let central = start, localEnd = 0;
+  for (let i = 0; i < count; i++) {
+    if (central + 46 > end || view.getUint32(central, true) !== 0x02014b50) fail();
+    const nameSize = view.getUint16(central + 28, true);
+    const next = central + 46 + nameSize + view.getUint16(central + 30, true) + view.getUint16(central + 32, true);
+    const local = view.getUint32(central + 42, true);
+    if (next > end || local !== localEnd || local + 30 > start || view.getUint32(local, true) !== 0x04034b50 ||
+      view.getUint16(local + 26, true) !== nameSize || view.getUint16(central + 34, true) !== 0) fail();
+    const content = local + 30 + nameSize + view.getUint16(local + 28, true);
+    localEnd = content + view.getUint32(central + 20, true);
+    if (content > start || localEnd > start || view.getUint32(local + 18, true) !== view.getUint32(central + 20, true) ||
+      view.getUint32(local + 14, true) !== view.getUint32(central + 16, true) ||
+      view.getUint32(local + 22, true) !== view.getUint32(central + 24, true) ||
+      view.getUint16(local + 6, true) !== view.getUint16(central + 8, true) ||
+      view.getUint16(local + 8, true) !== view.getUint16(central + 10, true)) fail();
+    for (let j = 0; j < nameSize; j++) if (bytes[local + 30 + j] !== bytes[central + 46 + j]) fail();
+    positions.push(local + 10, central + 12);
+    central = next;
+  }
+  if (central !== end || localEnd !== start) fail();
+  for (const position of positions) view.setUint32(position, stamp, true);
+  return bytes;
 }
 
 function escapeRegExp(value) {
