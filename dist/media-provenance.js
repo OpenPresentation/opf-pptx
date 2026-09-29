@@ -17,7 +17,6 @@ const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', 
 const decoder = new TextDecoder('utf-8', {fatal: true}), encoder = new TextEncoder();
 const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const normal = value => String(value).replace(/\s+/g, ' ').trim();
 const canonical = value => JSON.stringify(value, (_key, item) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const sizeOf = value => encoder.encode(JSON.stringify(value)).byteLength;
 const sourceOf = value => typeof value === 'string' ? value : value?.src;
@@ -25,6 +24,18 @@ const webSource = source => typeof source === 'string' && /^https?:\/\//i.test(s
 const hasData = value => typeof value === 'string' ? /^data:/i.test(value) : Array.isArray(value) ? value.some(hasData) : object(value) && Object.values(value).some(hasData);
 const mediaPath = path => typeof path === 'string' && /^slides\.\d+\.(?:blocks\.\d+\.)*video$/.test(path);
 const currentPath = (path, slideIndex) => path.replace(/^slides\.\d+/, `slides.${slideIndex}`);
+
+// Exact emitted-line change detection, not authentication: tags remain writable.
+// Full mode stores no caption words here. References-only carries line
+// structure alone and derives its caption from the current native text.
+export function mediaTextFingerprint(text) {
+  let a = 0xdeadbeef, b = 0x41c6ce57;
+  for (let index = 0; index < text.length; index++) {
+    a = Math.imul(a ^ text.charCodeAt(index), 2654435761);
+    b = Math.imul(b ^ text.charCodeAt(index), 1597334677);
+  }
+  return `${text.length}:${(a >>> 0).toString(16).padStart(8, '0')}${(b >>> 0).toString(16).padStart(8, '0')}`;
+}
 
 function resolvedSource(value, assets) {
   let source = sourceOf(value);
@@ -56,7 +67,8 @@ export function mediaFrameRecord(value, path, presentation, mode, report = () =>
   if (mode === 'references-only') return {...record, nativeOnly: true};
   const omit = reason => {
     report({code: 'media-provenance-omitted', path, message: `The video value is not stored in the PPTX because ${reason}; import keeps current native content.`});
-    return {...record, omitted: true};
+    // Late checks run after video/assets are added. Omission is identity-only.
+    return {v: 1, role: 'frame', path, omitted: true};
   };
   if (hasData(value)) return omit('it embeds a data: source without an exported media part');
   if (sizeOf(value) > MAX_VALUE_BYTES) return omit('it exceeds the media provenance size limit');
@@ -101,7 +113,7 @@ const validVideo = value => validatePresentation({$schema: 'https://openpresenta
  * import must skip; assets are registry entries to add when absent.
  */
 export function importMediaGroups(shapes, paragraphs, relationships, entries, slideIndex, report, registry = Object.create(null)) {
-  const groups = new Map(), items = [], consumed = new Set(), assets = Object.create(null);
+  const groups = new Map(), items = [], consumed = new Set(), assets = Object.create(null), captionShapes = new Set();
   for (const [index, shape] of shapes.entries()) {
     const {tags, unreadable} = readTags(shape, relationships, entries);
     const own = tags.filter(tag => String(tag.name ?? '').toUpperCase() === TAG);
@@ -112,14 +124,16 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
       if (typeof own[0].val !== 'string' || own[0].val.length > MAX_VALUE_BYTES * 2) throw Error('oversized');
       record = decodeTextTag(own[0].val);
       if (!object(record) || record.v !== 1 || !ROLES.includes(record.role) || !mediaPath(record.path)) throw Error('invalid');
-      const allowed = ['v', 'role', 'path', ...(record.role === 'frame' ? ['video', 'assets', 'omitted', 'nativeOnly'] : record.role === 'caption' ? ['line', 'count'] : [])];
+      const allowed = ['v', 'role', 'path', ...(record.role === 'frame' ? ['video', 'assets', 'omitted', 'nativeOnly'] : record.role === 'caption' ? ['line', 'count', 'boundary', 'fingerprint'] : [])];
       if (Object.keys(record).some(key => !allowed.includes(key))) throw Error('unknown field');
+      if (record.role === 'caption' && (record.boundary !== undefined && !['hard', 'soft', 'end'].includes(record.boundary) || record.fingerprint !== undefined && (typeof record.fingerprint !== 'string' || !/^\d+:[0-9a-f]{16}$/.test(record.fingerprint)))) throw Error('invalid caption evidence');
       if (record.role === 'frame' && (record.omitted !== undefined && record.omitted !== true || record.nativeOnly !== undefined && record.nativeOnly !== true || (record.omitted || record.nativeOnly) && (Object.hasOwn(record, 'video') || Object.hasOwn(record, 'assets')) || record.omitted && record.nativeOnly)) throw Error('inconsistent frame');
     } catch { record = null; }
     const key = record?.path ?? `slides.${slideIndex}`;
     if (!groups.has(key)) groups.set(key, {path: key, members: [], invalid: false});
     const group = groups.get(key);
     if (!record) { group.invalid = true; group.members.push({index, shape, role: null}); continue; }
+    if (record.role === 'caption') captionShapes.add(shape);
     group.members.push({index, shape, record, role: record.role});
   }
   for (const group of groups.values()) {
@@ -129,7 +143,7 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     const [frame] = byRole('frame'), captions = byRole('caption').sort((a, b) => a.record.line - b.record.line);
     const decorations = group.members.filter(member => ['frame', 'badge', 'play'].includes(member.role));
     const path = currentPath(group.path, slideIndex);
-    const caption = normal(captions.map(text).join(' '));
+    const caption = captions.map((member, index) => text(member) + (index === captions.length - 1 ? '' : member.record.boundary === 'hard' ? '\n' : ' ')).join('');
     const links = array(frame?.shape['p:nvSpPr']?.['p:cNvPr']?.['a:hlinkClick']);
     const rel = links.length === 1 ? relationships.get(links[0]['r:id']) : undefined;
     const href = rel?.type === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink' && rel.targetMode === 'External' ? webSource(rel.target) : null;
@@ -141,7 +155,7 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     else if (links.length && !href) reason = 'the native hyperlink is ambiguous or unsupported';
     else if (frame.record.nativeOnly === true) {
       if (!href) reason = 'no native web hyperlink is available';
-      else video = caption === normal(href) ? href : {src: href, title: caption};
+      else video = caption === href ? href : {src: href, title: caption};
     }
     else if (frame.record.omitted || !Object.hasOwn(frame.record, 'video')) reason = 'the video value was omitted at export';
     else if (!validVideo(frame.record.video)) reason = 'the stored video value is not valid OPF';
@@ -162,17 +176,17 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
         if (!href) reason = 'its source hyperlink was removed';
         else {
           // Preserve the current URL and caption; hidden metadata describes the old source.
-          video = caption === normal(href) ? href : {src: href, title: caption};
+          video = caption === href ? href : {src: href, title: caption};
           report({code: 'media-source-changed', path, message: `The video hyperlink at ${path} changed; import keeps the current URL and caption.`});
         }
       }
-      else if (!href && caption !== normal(source)) reason = 'its source has no current native hyperlink or source caption';
-      else if (caption !== normal(mediaCaption(frame.record.video))) reason = 'its caption text was edited';
+      else if (!captions.every(member => typeof member.record.fingerprint === 'string' && mediaTextFingerprint(text(member)) === member.record.fingerprint)) reason = 'its caption text was edited or exact caption evidence is missing';
+      else if (!href && caption !== source) reason = 'its source has no current native hyperlink or source caption';
       else {
         const conflict = Object.entries(frame.record.assets ?? {}).some(([id, asset]) => Object.hasOwn(registry, id) && canonical(registry[id]) !== canonical(asset));
         if (conflict && !href) reason = 'its stored assets conflict with another video';
         else if (conflict) {
-          video = caption === normal(href) ? href : {src: href, title: caption};
+          video = caption === href ? href : {src: href, title: caption};
           report({code: 'media-asset-conflict', path, message: `Stored asset IDs at ${path} conflict with another video; import keeps this placeholder's current URL and caption.`});
         }
         else { video = structuredClone(frame.record.video); restoredAssets = frame.record.assets; }
@@ -189,8 +203,13 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     }
     // Tagged decoration carries no content; caption lines stay ordinary text.
     for (const member of group.members) if (member.role && member.role !== 'caption' && !text(member)) consumed.add(member.shape);
+    // Preserve the current frame URL independently of failed tag evidence.
+    // Decoration links never supply authority. Other schemes remain inert.
+    if (rel?.type === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink' && rel.targetMode === 'External' && typeof rel.target === 'string') {
+      items.push({shape: frame.shape, payload: {type: 'text', text: href ? [{text: href, link: href}] : rel.target}});
+    }
     report({code: 'invalid-media-provenance', path,
-      message: `The video placeholder at ${path} was not restored as a video because ${reason}. Its caption stays as text; the video source is available as the placeholder's hyperlink when it was a web URL.`});
+      message: `The video placeholder at ${path} was not restored as a video because ${reason}. Its current caption stays as text and its current frame URL is retained as linked text when it is a web URL.`});
   }
-  return {items, consumed, assets};
+  return {items, consumed, assets, captionShapes};
 }

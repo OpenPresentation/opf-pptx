@@ -4,7 +4,7 @@ import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbo
 import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
 import {attachCardTags,importCardFrames} from './card-provenance.js';
-import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord} from './media-provenance.js';
+import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord,mediaTextFingerprint} from './media-provenance.js';
 import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
@@ -545,14 +545,14 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   }
   for (const item of code.items) items.push({kind:'code',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
   for (const item of metric.items) items.push({kind:'metric',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
-  for (const item of media.items) items.push({kind:'media',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
+  for (const item of media.items) items.push({kind:'media',sourceText:item.payload.type==='text',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
   for (const [index,shape] of shapes.entries()) {
     if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index)) continue;
     if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)) continue;
-    const item = importShape(shape, dimensions, paragraphs[index], furniture.taggedText.has(index));
+    const item = importShape(shape, dimensions, paragraphs[index], furniture.taggedText.has(index) || media.captionShapes.has(shape));
     // A damaged/edited furniture group falls back to current native text,
     // including cleared text boxes, without inventing a title or shape label.
-    if (item && furniture.taggedText.has(index)) item.sourceText = true;
+    if (item && (furniture.taggedText.has(index) || media.captionShapes.has(shape))) item.sourceText = true;
     if (item) items.push(item);
   }
 
@@ -1546,7 +1546,7 @@ function addMeasuredPayloadText(slide, text, box, context, options, config) {
       context.furnitureTags.set(objectName,{v:1,role:'text',...config.furniture,line:index,count:fit.lines.length,...boundary});
       if(config.liveFields?.[index]?.length)context.furnitureFields.set(objectName,{text:line,fields:config.liveFields[index]});
     }
-    else if(config.media&&context.provenanceMode!==false)context.mediaTags.set(objectName,{v:1,role:'caption',path:config.path,line:index,count:fit.lines.length});
+    else if(config.media&&context.provenanceMode!==false)context.mediaTags.set(objectName,{v:1,role:'caption',path:config.path,line:index,count:fit.lines.length,boundary:sourceLine?.boundary??'end',...(context.provenanceMode==='full'?{fingerprint:mediaTextFingerprint(line)}:{})});
     else if(config.sourceText)context.plainTextTags.set(objectName,{v:1,group:config.path,line:index,count:fit.lines.length,...boundary});
     const area=placed?{x:(placed.x+placed.width*factor-box.width*factor)/96,y:(placed.baseline-fit.fontSize)/96,w:box.width/96,h:placed.height/96}:{x:box.x/96,y:(box.y+index*fit.lineHeight)/96,w:box.width/96,h:fit.lineHeight/96};
     // A run-level link keeps the muted, non-underlined furniture look of the preview (hlinkClr=tx, u=none).
@@ -1555,6 +1555,10 @@ function addMeasuredPayloadText(slide, text, box, context, options, config) {
       ...textBoxOptions(area, context, fit.fontSize * .75),
       ...nativeFontOptions(style),
       color: lineColor, align: alignment,
+      // Reuse the frame's existing relationship to cover blank caption boxes.
+      // PptxGenJS also inherits it into runs; keep their native text styling.
+      hyperlink: config.hyperlink,
+      underline: config.hyperlink ? {style: 'none'} : undefined,
       tabStops:sourceLine?.segments.filter(segment=>segment.kind==='tab').map(segment=>({position:(segment.x+segment.width)/96,alignment:'l'})),
       objectName,
       fit: 'none', wrap: false, lineSpacingMultiple: 1,
@@ -1696,10 +1700,10 @@ function addMediaPayload(slide, presentation, value, region, path, context, opti
     context.mediaTags.set(names.play, {v: 1, role: "play", path});
   }
   slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, pt: 0.75}, hyperlink, objectName: names.frame});
-  slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, objectName: names.badge});
-  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, objectName: names.play});
+  slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.badge});
+  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.play});
   addMeasuredPayloadText(slide, mediaCaption(value), {...box, y: icon.y + 72 + 20, height: 50}, context, options,
-    {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText, objectName: `OPF media ${path} caption`, media: true, keepEmpty: true});
+    {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText, objectName: `OPF media ${path} caption`, media: true, keepEmpty: true, hyperlink});
 }
 
 function addPlaceholderPayload(slide, label, value, region, context) {
