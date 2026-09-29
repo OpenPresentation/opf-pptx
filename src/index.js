@@ -4,7 +4,7 @@ import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbo
 import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
 import {attachCardTags,importCardFrames} from './card-provenance.js';
-import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord} from './media-provenance.js';
+import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord,mediaHrefFingerprint} from './media-provenance.js';
 import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
@@ -547,10 +547,10 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   for (const [index,shape] of shapes.entries()) {
     if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index)) continue;
     if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)) continue;
-    const item = importShape(shape, dimensions, paragraphs[index], furniture.taggedText.has(index));
+    const item = importShape(shape, dimensions, paragraphs[index], furniture.taggedText.has(index) || media.captionShapes.has(shape));
     // A damaged/edited furniture group falls back to current native text,
     // including cleared text boxes, without inventing a title or shape label.
-    if (item && furniture.taggedText.has(index)) item.sourceText = true;
+    if (item && (furniture.taggedText.has(index) || media.captionShapes.has(shape))) item.sourceText = true;
     if (item) items.push(item);
   }
 
@@ -1534,7 +1534,7 @@ function addMeasuredPayloadText(slide, text, box, context, options, config) {
   for (const [index, line] of fit.lines.entries()) {
     const link = config.links?.[sourceLineIndex];
     if (fit.sourceLines?.[index]?.boundary === 'hard') sourceLineIndex += 1;
-    if (!line&&!config.heading&&!config.sourceText&&!config.timeline&&!config.keepEmpty) continue;
+    if (!line&&!config.heading&&!config.sourceText&&!config.timeline&&!config.media&&!config.keepEmpty) continue;
     const alignment=fit.placement?.alignment??config.align??context.contentAlignment??'left',placed=fit.placement?.lines[index],factor=alignment==='right'?1:alignment==='center'?.5:0;
     const sourceLine=fit.sourceLines?.[index],boundary=sourceLine?{boundary:sourceLine.boundary,separator:String(text).slice(sourceLine.end,sourceLine.nextStart)}:{};
     const objectName=config.heading?`OPF heading ${config.path} line ${index}`:config.timeline?`OPF timeline ${config.timeline.group} part ${config.timeline.part} line ${index}`:config.sourceText?`OPF text ${config.path} line ${index}`:config.objectName?`${config.objectName} line ${index}`:undefined;
@@ -1544,7 +1544,7 @@ function addMeasuredPayloadText(slide, text, box, context, options, config) {
       context.furnitureTags.set(objectName,{v:1,role:'text',...config.furniture,line:index,count:fit.lines.length,...boundary});
       if(config.liveFields?.[index]?.length)context.furnitureFields.set(objectName,{text:line,fields:config.liveFields[index]});
     }
-    else if(config.media)context.mediaTags.set(objectName,{v:1,role:'caption',path:config.path,line:index,count:fit.lines.length});
+    else if(config.media)context.mediaTags.set(objectName,{v:1,role:'caption',path:config.path,line:index,count:fit.lines.length,nativeText:line});
     else if(config.sourceText)context.plainTextTags.set(objectName,{v:1,group:config.path,line:index,count:fit.lines.length,...boundary});
     const area=placed?{x:(placed.x+placed.width*factor-box.width*factor)/96,y:(placed.baseline-fit.fontSize)/96,w:box.width/96,h:placed.height/96}:{x:box.x/96,y:(box.y+index*fit.lineHeight)/96,w:box.width/96,h:fit.lineHeight/96};
     // A run-level link keeps the muted, non-underlined furniture look of the preview (hlinkClr=tx, u=none).
@@ -1688,7 +1688,7 @@ function addMediaPayload(slide, presentation, value, region, path, context, opti
   const resolved = dereferenceAsset(value, presentation, path), source = typeof resolved === "string" ? resolved : resolved?.src;
   const hyperlink = typeof source === "string" && /^https?:\/\//i.test(source) ? {url: source} : undefined;
   const names = {frame: `OPF media ${path} frame`, badge: `OPF media ${path} badge`, play: `OPF media ${path} play`};
-  context.mediaTags.set(names.frame, mediaFrameRecord(value, path, presentation, context.provenanceMode));
+  context.mediaTags.set(names.frame, {...mediaFrameRecord(value, path, presentation, context.provenanceMode), nativeHref: mediaHrefFingerprint(hyperlink?.url ?? null)});
   context.mediaTags.set(names.badge, {v: 1, role: "badge", path});
   context.mediaTags.set(names.play, {v: 1, role: "play", path});
   slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, pt: 0.75}, hyperlink, objectName: names.frame});

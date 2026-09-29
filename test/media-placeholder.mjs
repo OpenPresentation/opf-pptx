@@ -31,9 +31,62 @@ const text = (entries, path, mutate) => { entries[path] = enc.encode(mutate(dec.
 const videos = doc => doc.slides.map(slide => (slide.blocks ?? []).filter(block => block.video !== undefined).map(block => block.video));
 const junk = doc => doc.slides.flatMap(slide => slide.blocks ?? []).filter(block => /PowerPoint shape|OPF media/.test(block.text ?? ''));
 const blockTexts = doc => doc.slides.flatMap(slide => slide.blocks ?? []).map(block => block.text).filter(Boolean);
+const linkedText = href => ({type: 'text', text: [{text: href, link: href}]});
 const tagParts = entries => Object.keys(entries).filter(path => /^ppt\/tags\/opfMedia\d+\.xml$/.test(path));
 const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 'hex').toString('utf8'));
 let checks = 0;
+
+// Current native edits win over stale hidden provenance, including invisible
+// differences that whitespace normalization would erase.
+{
+  const source = 'https://example.com/original.mp4', current = 'https://example.com/edited.mp4';
+  const authored = {slides: [{title: 'Native edits', video: {src: source, title: 'A B'}}]};
+  const bytes = await toPptx(authored);
+  for (const caption of ['A  B', ' A B ', 'A\tB', '']) {
+    const changed = await read(modify(bytes, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace('<a:t>A B</a:t>', `<a:t>${caption}</a:t>`))));
+    assert.deepEqual(videos(changed.doc)[0], [], 'Edited whitespace must not restore the old title.');
+    assert.deepEqual(changed.doc.slides[0].blocks, [linkedText(source), {type: 'text', text: caption}]);
+    assert.deepEqual(changed.media, [['invalid-media-provenance', 'slides.0.video']]);
+  }
+  const linked = await read(modify(bytes, entries => text(entries, 'ppt/slides/_rels/slide1.xml.rels', xml => xml.replace(source, current))));
+  assert.deepEqual(videos(linked.doc)[0], [], 'An edited hyperlink must not restore the old source.');
+  assert.deepEqual(linked.doc.slides[0].blocks, [{type: 'text', text: [{text: current, link: current}]}, {type: 'text', text: 'A B'}]);
+  assert.deepEqual(linked.media, [['invalid-media-provenance', 'slides.0.video']]);
+  const reexport = unzipSync(await toPptx(linked.doc));
+  assert.ok(dec.decode(reexport['ppt/slides/_rels/slide1.xml.rels']).includes(current));
+  assert.ok(!dec.decode(reexport['ppt/slides/_rels/slide1.xml.rels']).includes(source));
+  const fileTarget = 'file:///offline-video.mp4';
+  const nonWeb = await read(modify(bytes, entries => text(entries, 'ppt/slides/_rels/slide1.xml.rels', xml => xml.replace(source, fileTarget))));
+  assert.deepEqual(nonWeb.doc.slides[0].blocks, [{type: 'text', text: fileTarget}, {type: 'text', text: 'A B'}], 'Non-web links remain current but inert.');
+  const legacy = await read(modify(bytes, entries => {
+    for (const path of tagParts(entries)) text(entries, path, xml => {
+      const value = tagValue(xml); delete value.nativeHref; delete value.nativeText;
+      return xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify(value)).toString('hex').toUpperCase()}"`);
+    });
+  }));
+  assert.deepEqual(legacy.doc.slides[0].blocks, [linkedText(source), {type: 'text', text: 'A B'}], 'Missing comparison evidence cannot discard the current native link.');
+  assert.deepEqual(legacy.media, [['invalid-media-provenance', 'slides.0.video']]);
+  const removed = await read(modify(bytes, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace(/<a:hlinkClick[^>]*\/>/, ''))));
+  assert.deepEqual(videos(removed.doc)[0], []);
+  assert.deepEqual(removed.doc.slides[0].blocks, [{type: 'text', text: 'A B'}]);
+  assert.deepEqual(removed.media, [['invalid-media-provenance', 'slides.0.video']]);
+  // Benign relationship-id rewrites do not count as a source edit.
+  const renumbered = await read(modify(bytes, entries => {
+    text(entries, 'ppt/slides/slide1.xml', xml => xml.replace(/(<a:hlinkClick r:id=")[^"]+"/, '$1rIdRenumbered"'));
+    text(entries, 'ppt/slides/_rels/slide1.xml.rels', xml => xml.replace(/<Relationship Id="[^"]+"([^>]*Type="[^"]*\/hyperlink"[^>]*\/)>/, '<Relationship Id="rIdRenumbered"$1>'));
+  }));
+  assert.deepEqual(videos(renumbered.doc)[0], [authored.slides[0].video]);
+  assert.deepEqual(renumbered.media, []);
+  // Exact emitted lines, including empty lines, allow untouched authored
+  // whitespace to return without pretending that wrapping is a native edit.
+  for (const title of [' A  B ', 'A\tB', 'A\r\n\r\nB', '   ']) {
+    const input = {slides: [{title: 'Unchanged', video: {src: source, title}}]};
+    const unchanged = await read(await toPptx(input));
+    assert.deepEqual(videos(unchanged.doc)[0], [input.slides[0].video]);
+    assert.deepEqual(unchanged.media, []);
+  }
+  checks++;
+}
 
 // Package shape: frame hyperlink to the web source; one OPF_MEDIA_V1 tag per placeholder shape.
 {
@@ -81,13 +134,13 @@ for (const provenance of ['references-only', false]) {
   const edited = await read(modify(exported, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace('<a:t>Walkthrough</a:t>', '<a:t>Renamed tour</a:t>'))));
   assert.deepEqual(edited.media, [['invalid-media-provenance', 'slides.0.blocks.0.video']]);
   assert.deepEqual(videos(edited.doc)[0], []);
-  assert.deepEqual(edited.doc.slides[0].blocks.map(block => block.text), ['Renamed tour']);
+  assert.deepEqual(edited.doc.slides[0].blocks, [linkedText('https://example.com/walkthrough.mp4'), {type: 'text', text: 'Renamed tour'}]);
   assert.deepEqual(videos(edited.doc).slice(1), [[deck.slides[1].video], [deck.slides[2].video]], 'Other slides are unaffected.');
   assert.deepEqual(junk(edited.doc), []);
 
   const removed = await read(modify(exported, entries => text(entries, 'ppt/slides/slide3.xml', xml => xml.replace(/<p:sp><p:nvSpPr><p:cNvPr id="\d+" name="OPF media slides\.2\.video badge">[\s\S]*?<\/p:sp>/, ''))));
   assert.deepEqual(removed.media, [['invalid-media-provenance', 'slides.2.video']]);
-  assert.deepEqual(removed.doc.slides[2].blocks.map(block => block.text), ['https://example.com/plain.mp4'], 'The caption keeps the source as text.');
+  assert.deepEqual(removed.doc.slides[2].blocks, [linkedText('https://example.com/plain.mp4'), {type: 'text', text: 'https://example.com/plain.mp4'}], 'The current link and caption survive independently.');
   assert.deepEqual(junk(removed.doc), []);
 
   const tampered = await read(modify(exported, entries => {
@@ -95,7 +148,7 @@ for (const provenance of ['references-only', false]) {
     text(entries, path, xml => xml.replace(/val="[0-9A-F]+"/, `val="${Buffer.from(JSON.stringify({v: 1, role: 'frame', path: 'slides.0.blocks.0.video', video: {src: 42}})).toString('hex').toUpperCase()}"`));
   }));
   assert.deepEqual(tampered.media, [['invalid-media-provenance', 'slides.0.blocks.0.video']]);
-  assert.deepEqual(tampered.doc.slides[0].blocks.map(block => block.text), ['Walkthrough']);
+  assert.deepEqual(tampered.doc.slides[0].blocks, [linkedText('https://example.com/walkthrough.mp4'), {type: 'text', text: 'Walkthrough'}]);
   assert.deepEqual(junk(tampered.doc), []);
   checks++;
 }
@@ -109,7 +162,7 @@ for (const provenance of ['references-only', false]) {
 // unattributable shape at the slide path.
 {
   const badgeTag = entries => tagParts(entries).find(path => { const record = tagValue(dec.decode(entries[path])); return record.role === 'badge' && record.path === 'slides.0.blocks.0.video'; });
-  const fallback = [{type: 'text', text: 'PowerPoint shape: OPF media slides.0.blocks.0.video badge'}, {type: 'text', text: 'Walkthrough'}];
+  const fallback = [linkedText('https://example.com/walkthrough.mp4'), {type: 'text', text: 'PowerPoint shape: OPF media slides.0.blocks.0.video badge'}, {type: 'text', text: 'Walkthrough'}];
   const cases = {
     // A second OPF_ identity on the same shape.
     ambiguous: [entries => text(entries, badgeTag(entries), xml => xml.replace('</p:tagLst>', '<p:tag name="OPF_CARD_V1" val="7B7D"/></p:tagLst>')),

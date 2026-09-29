@@ -16,8 +16,22 @@ const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', 
 const decoder = new TextDecoder('utf-8', {fatal: true}), encoder = new TextEncoder();
 const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const normal = value => String(value).replace(/\s+/g, ' ').trim();
 const sizeOf = value => encoder.encode(JSON.stringify(value)).byteLength;
+
+// A change detector, not authentication (the surrounding tags are writable).
+// Do not copy a dereferenced asset URL into restricted-mode provenance tags.
+export function mediaHrefFingerprint(value) {
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < value.length; i++) {
+    h1 = Math.imul(h1 ^ value.charCodeAt(i), 2654435761);
+    h2 = Math.imul(h2 ^ value.charCodeAt(i), 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+}
 
 /** The caption the placeholder shows: title, else source, else "Media". */
 export function mediaCaption(value) {
@@ -67,13 +81,24 @@ function readTags(shape, relationships, entries) {
 const validAsset = (id, asset) => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id) && validatePresentation({$schema: 'https://openpresentation.org/schema/opf/v1', name: 'Media', assets: {[id]: asset}, slides: [{title: 'Media'}]}).valid;
 const validVideo = value => validatePresentation({$schema: 'https://openpresentation.org/schema/opf/v1', name: 'Media', slides: [{video: value}]}).valid;
 
+// null means no native link; undefined means an ambiguous or unreadable link.
+// Compare the resolved target, never the relationship id (Office may renumber it).
+function frameHyperlink(shape, relationships) {
+  const links = array(shape?.['p:nvSpPr']?.['p:cNvPr']?.['a:hlinkClick']);
+  if (!links.length) return null;
+  if (links.length !== 1) return undefined;
+  const rel = relationships.get(links[0]?.['r:id']);
+  return rel?.type === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink'
+    && rel.targetMode === 'External' && typeof rel.target === 'string' ? rel.target : undefined;
+}
+
 /**
- * Returns {items, consumed, assets}. items are {shape, payload} for restored
+ * Returns {items, consumed, assets, captionShapes}. items are {shape, payload} for restored
  * video blocks (the frame supplies the position); consumed holds every shape
  * import must skip; assets are registry entries to add when absent.
  */
 export function importMediaGroups(shapes, paragraphs, relationships, entries, slideIndex, report) {
-  const groups = new Map(), items = [], consumed = new Set(), assets = {};
+  const groups = new Map(), items = [], consumed = new Set(), assets = {}, captionShapes = new Set();
   for (const [index, shape] of shapes.entries()) {
     const {tags, unreadable} = readTags(shape, relationships, entries);
     const own = tags.filter(tag => String(tag.name ?? '').toUpperCase() === TAG);
@@ -88,6 +113,7 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     if (!groups.has(key)) groups.set(key, {path: key, members: [], invalid: false});
     const group = groups.get(key);
     if (!record) { group.invalid = true; group.members.push({index, shape, role: null}); continue; }
+    if (record.role === 'caption') captionShapes.add(shape);
     group.members.push({index, shape, record, role: record.role});
   }
   for (const group of groups.values()) {
@@ -96,13 +122,17 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     const byRole = role => group.members.filter(member => member.role === role);
     const [frame] = byRole('frame'), captions = byRole('caption').sort((a, b) => a.record.line - b.record.line);
     const decorations = group.members.filter(member => ['frame', 'badge', 'play'].includes(member.role));
+    const currentHref = frameHyperlink(frame?.shape, relationships);
     let reason = null;
     if (group.invalid) reason = 'a media tag is ambiguous or unreadable';
     else if (byRole('frame').length !== 1 || byRole('badge').length !== 1 || byRole('play').length !== 1 || !captions.length) reason = 'placeholder shapes were removed or duplicated';
     else if (!decorations.every(member => name(member, member.role) && !text(member)) || !captions.every(member => name(member, `caption line ${member.record.line}`))) reason = 'placeholder shapes were renamed or given text';
     else if (frame.record.omitted || !Object.hasOwn(frame.record, 'video')) reason = 'the video value was too large to store at export';
     else if (!validVideo(frame.record.video)) reason = 'the stored video value is not valid OPF';
-    else if (normal(captions.map(text).join(' ')) !== normal(mediaCaption(frame.record.video))) reason = 'its caption text was edited';
+    else if (!captions.every((member, index) => member.record.line === index && member.record.count === captions.length
+      && typeof member.record.nativeText === 'string' && text(member) === member.record.nativeText)) reason = 'its caption text or line sequence changed, or exact caption evidence is missing';
+    else if (!(frame.record.nativeHref === null || typeof frame.record.nativeHref === 'string')
+      || mediaHrefFingerprint(currentHref) !== frame.record.nativeHref) reason = 'its source hyperlink changed or its hyperlink evidence is missing';
     if (!reason) {
       for (const member of group.members) consumed.add(member.shape);
       items.push({shape: frame.shape, payload: {type: 'video', video: structuredClone(frame.record.video)}});
@@ -111,8 +141,16 @@ export function importMediaGroups(shapes, paragraphs, relationships, entries, sl
     }
     // Tagged decoration carries no content; caption lines stay ordinary text.
     for (const member of group.members) if (member.role && member.role !== 'caption' && !text(member)) consumed.add(member.shape);
+    // Every current frame hyperlink is authored content, even when only its
+    // caption changed or old tags lack evidence. Keep web targets as editable
+    // linked text; other schemes remain inert plain text.
+    for (const member of byRole('frame')) {
+      const href = frameHyperlink(member.shape, relationships);
+      if (typeof href === 'string') items.push({shape: member.shape, payload: {type: 'text', text: /^https?:\/\//i.test(href)
+        ? [{text: href, link: href}] : href}});
+    }
     report({code: 'invalid-media-provenance', path: group.path,
       message: `The video placeholder at ${group.path} was not restored as a video because ${reason}. Its caption stays as text; the video source is available as the placeholder's hyperlink when it was a web URL.`});
   }
-  return {items, consumed, assets};
+  return {items, consumed, assets, captionShapes};
 }
