@@ -45,7 +45,7 @@ jobs:
         with:
           repository: OpenPresentation/opf-render
           # FF-29: merged renderer (opf-render#43) that anchors preview text to item.alignment.
-          ref: 0337ce2e8682f8dd3ea320e0614490735f554ed3
+          ref: face3de97545edb872f9726cc9ff9b448516ac26
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
@@ -119,6 +119,8 @@ jobs:
       - name: Install and exercise coordinated candidate tarballs
         working-directory: opf
         run: |
+          # Git-for-Windows GNU tar (first on PATH under bash) reads C:... as host:path; use Windows bsdtar.
+          if [ "$RUNNER_OS" = Windows ]; then export PATH="/c/Windows/System32:$PATH"; fi
           pnpm pack:ecosystem
           pnpm test:packed-ecosystem
           pnpm test:packed-browser
