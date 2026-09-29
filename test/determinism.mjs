@@ -141,7 +141,9 @@ async function worker(config) {
   const {suites} = await import(pathToFileURL(path.join(root, 'test', 'determinism-fixtures.mjs')).href);
   const cases = await suites[config.suite](config);
   const inside = file => config.roots.some(base => { const relative = path.relative(base, file); return !relative.startsWith('..') && !path.isAbsolute(relative); });
-  const outsideRoot = [...new Set(audit)].filter(file => !inside(file));
+  // /proc/self/exe is the running node binary: sharp's libc detection (detect-libc) reads it when the renderer loads sharp.
+  // It is process introspection, identical for every run, and not a host font, clock or locale read.
+  const outsideRoot = [...new Set(audit)].filter(file => !inside(file) && file !== '/proc/self/exe');
   process.stdout.write(JSON.stringify({probe, cases, audit: {total: audit.length, outsideRoot, fontDirectoryReads: audit.filter(file => FONT_DIRECTORY.test(file) && !/(?:^|[\\/])node_modules[\\/]/.test(file) && !(bundledFonts && file.startsWith(bundledFonts)))}}));
 }
 
