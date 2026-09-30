@@ -227,6 +227,12 @@ export async function toPptx(input, options = {}) {
   context.chartFonts = new Map();
   context.chartex = new Map();
   context.imageFormat = options.imageFormat ?? "compatible";
+  // Native chartex parts are opt-in until the native PowerPoint check confirms them (FF-22b); the default keeps the
+  // clustered column export of the chartex chart types.
+  if (options.chartex !== undefined && !['native', 'fallback'].includes(options.chartex)) {
+    throw new OPFPptxError('invalid-chartex-mode', 'chartex must be native or fallback.', {path: 'options.chartex'});
+  }
+  context.chartexMode = options.chartex ?? 'fallback';
   Object.assign(context, exportTheme(presentation, context));
   context.reportedFontSchemes = new Set();
   // Document references and metadata tags (FF-32, docs/document-roundtrip.md).
@@ -1645,7 +1651,7 @@ async function addSlideImage(slide, presentation, image, slideIndex, context, op
 }
 
 function addChartPayload(slide, chart, region, context, options = {}, path = "chart") {
-  const chartData = toPptxChartData(chart);
+  const chartData = toPptxChartData(chart, context.chartexMode);
   if (!chartData.series) {
     // Never lose a chart silently: the placeholder frame stands in for it, and a diagnostic names the reason.
     options.onDiagnostic?.({code: "chart-data-unplottable", path, message: chartData.message, reason: chartData.reason});
@@ -2205,7 +2211,7 @@ function textRuns(value, context, fallbackFontSize) {
  * into equal-width bins and exported as a column chart of the counts, every other type plots the values against
  * their row numbers. `adapted` names that transformation so it is reported, never silent.
  */
-function toPptxChartData(chart) {
+function toPptxChartData(chart, chartexMode = 'fallback') {
   const data = chart?.data;
   const unplottable = (reason, summary, message) => ({reason, summary, message: `${message} No native chart was exported; a placeholder frame stands in for it.`});
   if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) {
@@ -2214,12 +2220,18 @@ function toPptxChartData(chart) {
   if (data.rows.length === 0) return unplottable("no-rows", "The chart has no data rows.", "The chart data has no rows.");
   if (data.columns.length === 0) return unplottable("no-columns", "The chart has no data columns.", "The chart data has no columns.");
   const resolved = resolveChartType(chart.type).spec;
-  // A chartex type (treemap, histogram, pareto, box & whisker, waterfall, funnel, map) is written as its native
-  // cx:chartSpace part; the classic clustered column chart of the same data is its mc:Fallback (src/chartex.js).
-  const chartex = resolved.family === 'chartex' ? resolved : null;
-  const spec = chartex ? CHARTEX_FALLBACK : resolved;
+  // A chartex type (treemap, histogram, pareto, box & whisker, waterfall, funnel, map) has no classic construct. With
+  // `chartex: 'native'` it is written as its cx:chartSpace part and the clustered column chart of the same data is its
+  // mc:Fallback (src/chartex.js); by default (pending the native PowerPoint check, FF-22b) it exports as the clustered
+  // column chart alone and reports chartex-fallback, never silently.
+  const native = chartexMode === 'native';
+  const chartex = resolved.family === 'chartex' && native ? resolved : null;
+  const spec = resolved.family === 'chartex' ? CHARTEX_FALLBACK : resolved;
   const typeName = stringifyText(chart.type);
   const adaptations = [];
+  if (resolved.family === 'chartex' && !native) {
+    adaptations.push({adaptation: "chartex-fallback", message: `The '${typeName}' chart is a PowerPoint extension (chartex) chart that this exporter does not write; its data is exported as a native clustered column chart instead.`});
+  }
   const mapped = {type: spec.pptx, spec, chartex, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined};
   if (data.columns.length === 1) {
     const heading = stringifyText(data.columns[0]);
@@ -2231,13 +2243,24 @@ function toPptxChartData(chart) {
     }
     const skipped = data.rows.length - points.length;
     const skippedNote = skipped ? ` (${skipped} non-numeric ${skipped === 1 ? "cell was" : "cells were"} skipped)` : "";
+    if (!native && String(chart.type ?? "").toLowerCase() === "histogram") {
+      const bins = histogramBins(points.map((point) => point.value));
+      return {
+        type: "bar", spec: CHARTEX_FALLBACK, barDir: "col", barGrouping: "clustered", heading: "Bin",
+        series: [{name: "Frequency", labels: bins.map((bin) => bin.label), values: bins.map((bin) => bin.count)}],
+        adaptations: [{
+          adaptation: "histogram-binned",
+          message: `The histogram's single data column '${heading}' (${points.length} values${skippedNote}) was binned into ${bins.length} equal-width bins and exported as a column chart of the counts; PowerPoint's own histogram chart is not exported, and the binned counts do not restore the raw values on re-import.`
+        }]
+      };
+    }
     // Rows keep their own row numbers, so a skipped cell leaves a gap in the numbering.
     const labels = points.map((point) => String(point.row));
     const numbers = points.map((point) => point.value);
     const series = mapped.type === "scatter"
       ? [{name: "Row", labels, values: points.map((point) => point.row)}, {name: heading, labels, values: numbers}]
       : [{name: heading, labels, values: numbers}];
-    // A histogram or Pareto chart bins the values themselves (PowerPoint's automatic bins); only the classic fallback plots them against row numbers.
+    // A native histogram or Pareto chart bins the values themselves (PowerPoint's automatic bins); only its classic fallback plots them against row numbers.
     if (chartex?.binning) return {...mapped, series, heading: "Row", hasCategories: false, adaptations};
     adaptations.push({adaptation: "row-numbers", message: `The chart's single data column '${heading}' has no category column, so its ${points.length} values${skippedNote} are plotted against their row numbers.`});
     return {...mapped, series, heading: "Row", hasCategories: true, adaptations};
@@ -2262,6 +2285,33 @@ function toPptxChartData(chart) {
     adaptations.push({adaptation: "row-numbers", message: `The scatter chart has no X column (a point label column and one value column), so its ${data.rows.length} values are plotted against their row numbers.`});
   }
   return {...mapped, series, hasCategories: true, adaptations};
+}
+
+
+/**
+ * Equal-width bins (Sturges' count, at most 50) from the minimum to the maximum; every bin but the last is [low, high).
+ * Arithmetic stays finite for any finite input (values of +-1e308 and denormals included): the bin edges are
+ * computed by interpolating the edges rather than from a width, and a value is placed by comparing it with the edges.
+ * Used by the default (fallback) histogram export only; the native chartex histogram bins in PowerPoint.
+ */
+function histogramBins(values) {
+  const min = values.reduce((a, b) => Math.min(a, b)), max = values.reduce((a, b) => Math.max(a, b));
+  const count = min === max ? 1 : Math.min(50, Math.ceil(Math.log2(values.length)) + 1);
+  const edge = (index) => index === 0 ? min : index === count ? max : min / count * (count - index) + max / count * index;
+  const bins = Array.from({length: count}, (_, index) => ({low: edge(index), high: edge(index + 1), count: 0}));
+  // A value belongs to the last bin whose lower edge it reaches, so counts always agree with the labelled edges.
+  for (const value of values) {
+    let index = 0;
+    while (index + 1 < count && value >= bins[index + 1].low) index++;
+    bins[index].count++;
+  }
+  // Labels carry six significant digits, and more when that would make two bins read alike.
+  for (let precision = 6; ; precision++) {
+    const format = (value) => String(Number(value.toPrecision(precision)));
+    const labels = bins.map((bin) => min === max ? format(min) : `${format(bin.low)}–${format(bin.high)}`);
+    if (new Set(labels).size === labels.length) return bins.map((bin, index) => ({...bin, label: labels[index]}));
+    if (precision === 17) return bins.map((bin, index) => ({...bin, label: `${labels[index]} (bin ${index + 1})`}));
+  }
 }
 
 async function resolveImage(asset, presentation, options, path) {

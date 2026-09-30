@@ -3,6 +3,8 @@
 // clustered column chart as fallback, agree with the core catalog, round-trip
 // through fromPptx and stay deterministic.
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import {catalogs} from '@openpresentation/opf';
@@ -18,9 +20,10 @@ const chartexIds = Object.keys(CHART_TYPES).filter((id) => CHART_TYPES[id].famil
 assert.deepEqual(chartexIds, ['treemap', 'histogram', 'pareto', 'box-and-whisker', 'waterfall', 'funnel', 'world']);
 const dataFor = (id) => (id === 'box-and-whisker' ? boxData : categoryData);
 
+// Native chartex export is opt-in (`chartex: 'native'`) until the native PowerPoint check passes; the default keeps main's bytes (checked below).
 async function exportDeck(slides, options = {}) {
   const diagnostics = [];
-  const bytes = await toPptx({slides}, {...options, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic)});
+  const bytes = await toPptx({slides}, {chartex: 'native', ...options, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic)});
   const parts = unzipSync(bytes);
   const part = (name) => strFromU8(parts[name]);
   const relationships = (name) => Object.fromEntries([...part(name.replace(/([^/]+)$/, '_rels/$1.rels')).matchAll(/<Relationship\b([^>]*)\/>/g)].map(([, attrs]) => {
@@ -316,6 +319,73 @@ function repack(parts, edits) {
 }
 
 // ---------------------------------------------------------------------------
+// Native single-column data: a histogram or Pareto chart bins its own values (explicit Scott bin count), every other
+// construct plots them against row numbers and says so.
+const chartexValues = (xml) => [...xml.matchAll(/<cx:numDim\b[^>]*>([\s\S]*?)<\/cx:numDim>/g)].map(([, body]) => [...body.matchAll(/<cx:pt idx="\d+">([^<]*)<\/cx:pt>/g)].map(([, value]) => value));
+const binCount = (xml) => Number(xml.match(/<cx:binCount val="(\d+)"\/>/)?.[1]);
+const classicNumbers = (xml, tag) => [...xml.matchAll(new RegExp(`<c:${tag}>([\\s\\S]*?)</c:${tag}>`, 'g'))].map(([, body]) => [...body.matchAll(/<c:v>([^<]*)<\/c:v>/g)].map(([, value]) => value));
+{
+  const values = [3, 5, 8, 13];
+  const histogram = await exportDeck([{title: 'histogram', chart: {type: 'histogram', data: {columns: ['Value'], rows: values.map((value) => [value])}}}]);
+  const cx = histogram.part('ppt/charts/chartEx1.xml'), classic = histogram.part('ppt/charts/chart1.xml');
+  assert.deepEqual(histogram.diagnostics, [], 'a native histogram bins its own values: nothing is adapted');
+  assert.doesNotMatch(cx, /<cx:strDim/, 'no category dimension for a lone value column');
+  assert.deepEqual(chartexValues(cx), [['3', '5', '8', '13']]);
+  assert.equal(binCount(cx), 2, 'Scott: 3.49 * sd(4.35) / 4^(1/3) = 9.56 wide over a range of 10');
+  assert.deepEqual(classicNumbers(classic, 'cat'), [['1', '2', '3', '4']], 'the fallback plots the values against their row numbers');
+  assert.deepEqual(classicNumbers(classic, 'val'), [['3', '5', '8', '13']]);
+  assert.deepEqual(await importedChart(histogram.bytes), {type: 'histogram', data: {columns: ['Value'], rows: values.map((value) => [value])}}, 'raw values round-trip');
+  const strings = await exportDeck([{title: 'h', chart: {type: 'histogram', data: {columns: ['Value'], rows: [['1'], ['2'], ['x'], [null], [3], ['4.5']]}}}]);
+  assert.deepEqual(chartexValues(strings.part('ppt/charts/chartEx1.xml')), [['1', '2', '3', '4.5']], 'non-numeric cells are not plotted as zeros');
+  assert.deepEqual(classicNumbers(strings.part('ppt/charts/chart1.xml'), 'cat'), [['1', '2', '5', '6']], 'the fallback keeps the row numbers');
+  for (const [rows, count] of [[[[7], [7], [7]], 1], [[[7]], 1], [Array.from({length: 1000}, (_, index) => [index]), 10]]) {
+    assert.equal(binCount((await exportDeck([{title: 'h', chart: {type: 'histogram', data: {columns: ['Value'], rows}}}])).part('ppt/charts/chartEx1.xml')), count, `${rows.length} values`);
+  }
+  // Extremes: finite arithmetic for any finite input, every value written once and a finite bin count.
+  for (const rows of [[[-1e308], [1e308]], [[-1e308], [0], [1e308]], [[1.7976931348623157e308], [-1.7976931348623157e308], [5]], [[Number.MIN_VALUE], [Number.MAX_VALUE]], [[0], [Number.MIN_VALUE]]]) {
+    const cxPart = (await exportDeck([{title: 'h', chart: {type: 'histogram', data: {columns: ['Value'], rows}}}])).part('ppt/charts/chartEx1.xml');
+    assert.deepEqual(chartexValues(cxPart)[0].map(Number), rows.map(([value]) => value), `extremes ${JSON.stringify(rows)}: every value is written once`);
+    assert.ok(Number.isInteger(binCount(cxPart)) && binCount(cxPart) >= 1, 'finite bin count');
+    assert.doesNotMatch(cxPart, /NaN|Infinity/, 'finite markup');
+  }
+  // A category column bins by category; every chartex id with one column: binned (histogram, pareto) or row numbers.
+  const byCategory = await exportDeck([{title: 'h', chart: {type: 'histogram', data: {columns: ['Category', 'Value'], rows: [['a', 3], ['b', 4]]}}}]);
+  assert.match(byCategory.part('ppt/charts/chartEx1.xml'), /<cx:layoutPr><cx:aggregation\/><\/cx:layoutPr>/);
+  assert.deepEqual(byCategory.diagnostics, []);
+  for (const id of chartexIds) {
+    const result = await exportDeck([{title: id, chart: {type: id, data: {columns: ['Value'], rows: [[3], [5], [8]]}}}]);
+    const binned = Boolean(CHART_TYPES[id].binning);
+    assert.deepEqual(result.diagnostics.filter((d) => d.code === 'chart-data-adapted').map((d) => d.adaptation), binned ? [] : ['row-numbers'], `${id}: adaptation`);
+    const cxPart = result.part('ppt/charts/chartEx1.xml');
+    if (binned) assert.doesNotMatch(cxPart, /<cx:strDim/, `${id}: binned, not categorised`);
+    else assert.match(cxPart, /<cx:strDim type="cat">[\s\S]*<cx:pt idx="0">1<\/cx:pt>/, `${id}: row numbers as categories`);
+  }
+  checks++;
+}
+
+// ---------------------------------------------------------------------------
+// Default mode (`chartex: 'fallback'`, the default): the export of the chartex ids is byte-identical to main's, with main's
+// diagnostics, and no chartex part is written. The fixture holds SHA-256 digests generated from main (see its `source`).
+{
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/chartex-fallback-main.json', import.meta.url), 'utf8'));
+  assert.equal(fixture.source.repository, 'OpenPresentation/opf-pptx');
+  assert.equal(Object.keys(fixture.decks).length, 9);
+  for (const [name, deck] of Object.entries(fixture.decks)) {
+    for (const mode of [undefined, 'fallback']) {
+      const diagnostics = [];
+      const bytes = await toPptx(structuredClone(deck), {...(mode ? {chartex: mode} : {}), onDiagnostic: (d) => diagnostics.push(`${d.code}${d.adaptation ? `/${d.adaptation}` : ''}`)});
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), fixture.entries[name].sha256, `${name} (${mode ?? 'default'}): bytes identical to main ${fixture.source.commit.slice(0, 7)}`);
+      assert.deepEqual(diagnostics, fixture.entries[name].diagnostics, `${name}: main's diagnostics`);
+      const parts = unzipSync(bytes);
+      assert.ok(!Object.keys(parts).some((part) => /chartEx|\/style\d+\.xml|\/colors\d+\.xml/.test(part)), `${name}: no chartex parts by default`);
+      assert.doesNotMatch(strFromU8(parts['ppt/slides/slide1.xml']), /AlternateContent/, `${name}: no alternate content by default`);
+    }
+  }
+  await assert.rejects(toPptx({slides: [{title: 't', chart: {type: 'treemap', data: categoryData}}]}, {chartex: 'auto'}), (error) => error.code === 'invalid-chartex-mode' && error.details?.path === 'options.chartex');
+  checks++;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers.
 assert.deepEqual([1, 2, 26, 27, 52, 53, 702, 703].map(columnLetters), ['A', 'B', 'Z', 'AA', 'AZ', 'BA', 'ZZ', 'AAA']);
 assert.equal(scottBinCount([3, 5, 8, 13]), 2, 'Scott: width 3.49 * 4.349 / 1.587 = 9.56 over a range of 10');
@@ -330,4 +400,4 @@ assert.deepEqual(chartexPointColors('funnel', [1, 2], ['A']), [null, null]);
 assert.equal(resolveChartType('treemap-3x').id, 'treemap');
 assert.equal(DEPRECATED_CHART_TYPES['united-states'], 'world');
 
-console.log(`Chartex passed: ${checks} checks; ${chartexIds.length} chartex ids export native cx:chartSpace parts with style parts, content types, relationships and alternate-content frames, agree with core catalogs.chartTypes, round-trip, and are deterministic.`);
+console.log(`Chartex passed: ${checks} checks; ${chartexIds.length} chartex ids export native cx:chartSpace parts with style parts, content types, relationships and alternate-content frames, agree with core catalogs.chartTypes, round-trip, and are deterministic (opt-in); the default export of those ids is byte-identical to main.`);
