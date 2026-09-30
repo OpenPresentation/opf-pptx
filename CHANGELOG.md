@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- FF-53: image payloads survive re-import for the slide-image layouts. A root `image` whose source is the slide image's (or one that a source-less `design.slideImage` treatment places) is the slide image, not content (core composition `replacesContent`), and exports as the one native slide-image picture; the `OPF_SLIDE_IMAGE_V1` manifest now records `content: true` for it, so an unchanged picture imports back as `slide.image` (source and alt text) as well as `design.slideImage`. Previously only `design.slideImage` came back and the payload was lost with no diagnostic. A slide whose content image has another source, an edited picture, and every export without a content-replacing image import exactly as before; a manifest with any other `content` value is invalid provenance. `test/slide-image.mjs` covers both forms, the alt text, the separate-content case, the edited picture and the tag-only import. No geometry or slide XML change beyond the tag part; no gate or tolerance change.
+
 ## 0.11.3
 
 - Release 0.11.3 (patch: opt-in native chartex export and chartex import; no API removed, no default output change, core floor stays `@openpresentation/opf` ^0.11.2 and the optional renderer peer stays ^0.11.0). `toPptx({ chartex: 'native' })` exports the seven chartex chart types (treemap, histogram, pareto, box-and-whisker, waterfall, funnel, world) as Office 2016 chartex parts; the default `chartex: 'fallback'` keeps the previous export of those ids byte for byte, and the default flips only after the native PowerPoint check. `fromPptx` reads chartex parts back to the same id and data in every mode. Details in the FF-22b entry below.
