@@ -11,8 +11,8 @@ import {toPptx, checkPptxTypefaces, inventoryPptxTypefaces, THEME_SCRIPT_SUPPLEM
 // FF-08 (font-fidelity-everywhere): the exported package names only the fonts
 // the document chose. checkPptxTypefaces walks every XML part, including the
 // embedded chart workbooks, and allows chosen fonts, theme references that
-// resolve to them and the documented theme script supplements. The presentation
-// theme's ea/cs are never empty (FF-49); the chart workbooks' themes keep them empty.
+// resolve to them, empty theme ea/cs slots (FF-05) and the documented theme
+// script supplements.
 
 const vendor = await readFile(new URL('../vendor/pptxgenjs/pptxgen.es.js', import.meta.url), 'utf8');
 const count = (source, needle) => source.split(needle).length - 1;
@@ -145,12 +145,7 @@ assert.ok(control(e => replacePart(e, 'docProps/app.xml', /(<TitlesOfParts><vt:v
 assert.ok(control(e => replacePart(e, 'ppt/theme/theme1.xml', '<a:font script="Jpan" typeface="游ゴシック"/>', '<a:font script="Jpan" typeface="MS Gothic"/>')).includes('foreign-script-supplement'));
 assert.ok(control(e => replacePart(e, 'ppt/theme/theme1.xml', /<a:minorFont><a:latin typeface="[^"]*"/, '<a:minorFont><a:latin typeface="Calibri"')).includes('foreign-theme-reference'));
 assert.ok(control(e => replacePart(e, 'ppt/slides/slide8.xml', /pitchFamily="49"/g, 'pitchFamily="34"')).includes('monospace-not-fixed-pitch'));
-// FF-49: an empty presentation-theme ea/cs is a violation unless a caller explicitly allows it; workbook themes stay empty by design.
-const emptyEa = e => replacePart(e, 'ppt/theme/theme1.xml', /<a:ea typeface="[^"]*"[/]>/, '<a:ea typeface=""/>');
-assert.ok(control(emptyEa).includes('empty-typeface'));
-assert.ok(control(e => replacePart(e, 'ppt/theme/theme1.xml', /<a:cs typeface="[^"]*"[/]>/, '<a:cs typeface=""/>')).includes('empty-typeface'));
-assert.ok(!control(emptyEa, {allowEmptyThemeScripts: true}).includes('empty-typeface'));
-assert.ok(!control(() => {}).includes('empty-typeface'), 'exported packages have no empty typeface, chart workbooks included');
+assert.ok(control(() => {}, {allowEmptyThemeScripts: false}).includes('empty-typeface'), 'FF-05 empty theme ea/cs is an explicit allowance');
 assert.throws(() => checkPptxTypefaces(bytes, {}), TypeError);
 
 // Corpus: every example deck, with the fonts its design and runs choose.
@@ -184,7 +179,10 @@ for (const {file, deck: example} of examples) {
   // A scheme's type describes its major/minor, not inline heading/body overrides.
   const mono = roles.flatMap(role => [...role.mono, role.code]);
   const exported = await toPptx(example, {imageResolver: async () => new Uint8Array(await readFile(new URL('./fixtures/images/wide.png', import.meta.url)))});
-  const checked = checkPptxTypefaces(exported, {fonts, monospace: mono});
+  // FF-49: a theme ea/cs is written exactly where the deck selected a script font (scheme slot or language), else empty.
+  const deckSlots = opfCore.resolveScriptFonts(example);
+  const supplied = role => Object.fromEntries([['ea', 'eastAsian'], ['cs', 'complexScript']].map(([element, key]) => [element, deckSlots.sources[key] === 'latin' ? '' : deckSlots[role][key]]));
+  const checked = checkPptxTypefaces(exported, {fonts, monospace: mono, themeScripts: {major: supplied('heading'), minor: supplied('body')}});
   corpus.decks++;
   corpus.typefaces += checked.inventory.typefaces.length;
   corpus.charts += checked.inventory.typefaces.filter(entry => /^ppt\/charts\/chart\d+\.xml$/.test(entry.part)).length ? 1 : 0;
@@ -195,5 +193,21 @@ assert.equal(corpus.decks, examples.length);
 assert.deepEqual(corpus.failures, [], JSON.stringify(corpus.failures, null, 1));
 assert.ok(corpus.workbooks > 0, 'the corpus exercises embedded chart workbooks');
 assert.equal(typeof inventoryPptxTypefaces, 'function');
+
+// FF-49: themeScripts flags a slot that should be set but is empty or different, and accepts an empty slot when nothing
+// was selected (Office's convention); a Latin deck selects nothing.
+{
+  const japanese = await toPptx({name: 'ja', language: 'japanese', slides: [{title: 'これは日本語です', text: 'Body'}]});
+  const latinDeck = await toPptx({name: 'en', slides: [{title: 'Title', text: 'Body'}]});
+  const jaFonts = ['Aptos', 'Aptos Display', 'Meiryo'];
+  const selected = {major: {ea: 'Meiryo'}, minor: {ea: 'Meiryo'}};
+  assert.deepEqual(checkPptxTypefaces(japanese, {fonts: jaFonts, themeScripts: selected}).violations, []);
+  const emptied = repack(japanese, e => replacePart(e, 'ppt/theme/theme1.xml', /<a:ea typeface="Meiryo"[/]>/, '<a:ea typeface=""/>'));
+  assert.ok(reasons(checkPptxTypefaces(emptied, {fonts: jaFonts, themeScripts: selected})).includes('theme-script-slot'), 'a selected ea that is empty is flagged');
+  assert.deepEqual(checkPptxTypefaces(emptied, {fonts: jaFonts}).violations, [], 'without themeScripts an empty slot stays allowed');
+  const wrong = repack(japanese, e => replacePart(e, 'ppt/theme/theme1.xml', /<a:ea typeface="Meiryo"[/]>/, '<a:ea typeface="Aptos"/>'));
+  assert.ok(reasons(checkPptxTypefaces(wrong, {fonts: jaFonts, themeScripts: selected})).includes('theme-script-slot'), 'a different ea is flagged');
+  assert.deepEqual(checkPptxTypefaces(latinDeck, {fonts: ['Aptos', 'Aptos Display'], themeScripts: {}}).violations, [], 'nothing selected: empty ea/cs are fine');
+}
 
 console.log(JSON.stringify({test: 'typeface-inventory', passed: true, charts: charts.length, corpus: {decks: corpus.decks, decksWithCharts: corpus.charts, workbooks: corpus.workbooks, typefaces: corpus.typefaces}}));

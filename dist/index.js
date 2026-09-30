@@ -22,7 +22,7 @@ import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermark
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
-import {isThemePart, languageDiagnostics, observeLanguage, partScriptFonts, planScriptFonts, reconcileLanguage, themeScriptFallback} from './script-fonts.js';
+import {languageDiagnostics, observeLanguage, partScriptFonts, planScriptFonts, reconcileLanguage} from './script-fonts.js';
 import { webpToPng } from '#image-fallback';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import { layoutTable, composeSlide, fitText, fitRichText, textWidthMeasurer, resolveCanvasDimensions, resolveFontFamilies, resolveTextStyle, textColorForFill, chartColorForFill } from "@openpresentation/opf/composition";
@@ -2832,7 +2832,6 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
     }
     // theme1.xml: FF-24 colors and names above, then FF-07 fonts here; they touch disjoint elements.
     if (context.scriptFonts) xml = partScriptFonts(path, xml, context.scriptFonts, context.partSlides.get(path) ?? 0);
-    else if (isThemePart(path)) xml = themeScriptFallback(xml);
     return encodeText(normalizePartReferences(xml, renameMaps));
   }
   return bytes;

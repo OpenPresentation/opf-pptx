@@ -64,25 +64,23 @@ const escapeAttribute = value => String(value).replace(/[&<>"']/g, char => ({"&"
  * language's own per-script supplement. Only the supplement's script entry
  * changes; the rest of the vendored per-script list is FF-08's call.
  *
- * FF-49: neither slot is ever left empty. A slot the design font scheme or the
- * language's script font supplies (source `fontScheme`, `schemeFamily` or
- * `language`) names that family. Any other slot (source `latin`, which includes
- * every Latin, Cyrillic, Greek, Armenian, Georgian and Ethiopic deck) repeats
- * the theme's own latin face exactly as written, so the theme names only the
- * family the author selected and `+mn-ea`/`+mn-cs` references resolve to it.
- * Office's own themes leave these two slots empty and pick a face per script
- * from the `a:font script=` list; OPF fills them so that every slot names a
- * selected family (core docs script-font-model.md, "FF-49: theme slots").
+ * FF-49: a slot is written only when a script font is actually selected for it,
+ * that is when the resolver's source for that slot is not `latin`: the design
+ * font scheme's explicit `eastAsian`/`complexScript`, the scheme's own script
+ * family, or the language's script font (Model C). Every other slot keeps the
+ * vendored empty typeface, exactly as Office's own themes leave it, so PowerPoint
+ * picks its per-language default for script text typed later and the package
+ * names nothing the author did not select (core script-font-model.md, "Theme
+ * slots (FF-49)"). Latin, Cyrillic and Greek decks keep both slots empty, and a
+ * Japanese deck writes `ea` only.
  */
 export function themeScriptFonts(xml, plan) {
   const {heading, body, supplement} = plan.deck;
   for (const [tag, slots, family] of [["majorFont", heading, supplement?.heading], ["minorFont", body, supplement?.body]]) {
     xml = xml.replace(new RegExp(`<a:${tag}>[\\s\\S]*?</a:${tag}>`), block => {
-      // With no script-specific choice the slot repeats the theme's own latin
-      // face exactly as written, as the run slots do.
-      const latin = /<a:latin typeface="([^"]*)"/.exec(block)?.[1];
       for (const [element, slot] of SCRIPT_SLOTS) {
-        const face = plan.deck.sources[slot] === "latin" && latin ? latin : escapeAttribute(slots[slot]);
+        if (plan.deck.sources[slot] === "latin") continue;
+        const face = escapeAttribute(slots[slot]);
         block = block.replace(new RegExp(`<a:${element}\\b[^>]*/>`), `<a:${element} typeface="${face}"/>`);
       }
       if (supplement && family) {
@@ -95,21 +93,6 @@ export function themeScriptFonts(xml, plan) {
   }
   return xml;
 }
-
-/**
- * FF-49 without a resolved plan (core without the resolver, or a language the
- * resolver failed on): the theme's empty ea/cs still repeat its own latin face.
- */
-export function themeScriptFallback(xml) {
-  return xml.replace(/<a:(majorFont|minorFont)>[\s\S]*?<\/a:\1>/g, block => {
-    const latin = /<a:latin typeface="([^"]*)"/.exec(block)?.[1];
-    if (!latin) return block;
-    return block.replace(/<a:(ea|cs) typeface=""\/>/g, (node, element) => `<a:${element} typeface="${latin}"/>`);
-  });
-}
-
-/** Whether a package part is a presentation theme. */
-export const isThemePart = path => /^ppt\/theme\/theme\d+\.xml$/.test(path);
 
 // PptxGenJS writes run fonts as latin/ea/cs triples naming one face (charts
 // may omit ea). Theme references (+mj-lt, +mn-ea) are left alone.
@@ -167,7 +150,7 @@ const levelRtl = xml => xml.replace(/(<a:(?:lvl\dpPr|defPPr)\b[^>]*?\srtl=")0(")
  * slide, chart or notes part belongs to.
  */
 export function partScriptFonts(path, xml, plan, slideIndex) {
-  if (isThemePart(path)) return themeScriptFonts(xml, plan);
+  if (/^ppt\/theme\/theme\d+\.xml$/.test(path)) return themeScriptFonts(xml, plan);
   if (!path.startsWith("ppt/") || !path.endsWith(".xml")) return xml;
   const resolved = plan.slides[slideIndex] ?? plan.deck;
   if (plan.lang !== "en-US") xml = xml.replace(RUN_LANGUAGE, `$1${escapeAttribute(plan.lang)}$2`);
