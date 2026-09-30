@@ -170,6 +170,25 @@ export function defaultTextSchemeValues(context) {
   return values;
 }
 
+/**
+ * Scheme value for the exporter's default text in a table cell whose fill is a
+ * theme reference (`fillValue`, from schemeColorValue). A light or dark fill (bg1,
+ * bg2, tx1, tx2) pairs with the opposite text slot (dark1 on bg, light1 on tx).
+ * An accent fill has contrast-selected text, which stays a theme reference only
+ * when the selection is exactly the deck light1 or dark1. Anything else, and any
+ * fill that is not a theme reference, keeps literal text.
+ */
+export function tableTextSchemeValue(fillValue, hex, context) {
+  if (!fillValue) return undefined;
+  const light = /^bg[12]$/.test(fillValue), dark = /^tx[12]$/.test(fillValue);
+  const candidates = light ? ['dark1'] : dark ? ['light1'] : /^accent[1-6]$/.test(fillValue) ? ['light1', 'dark1'] : [];
+  for (const slot of candidates) {
+    const value = schemeColorValue(slot, hex, context, {vendor: true});
+    if (value) return value;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Import
 

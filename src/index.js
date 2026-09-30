@@ -19,7 +19,7 @@ import {dedupeMedia} from './media-dedupe.js';
 import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
-import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
+import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
 import {languageDiagnostics, observeLanguage, partScriptFonts, planScriptFonts, reconcileLanguage} from './script-fonts.js';
 import { webpToPng } from '#image-fallback';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
@@ -234,6 +234,7 @@ export async function toPptx(input, options = {}) {
   });
   context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic);
   context.masterBackground = masterBackground(context);
+  context.linkSentinels = linkSentinels(presentation);
   const pptx = new PptxGenJS();
   configurePresentation(pptx, presentation, {...context,fonts:resolveSlideContext(presentation,presentation.slides[0],context,options).fonts});
 
@@ -1136,7 +1137,30 @@ function exportColor(entry, context, fallback) {
 // otherwise the resolved literal RRGGBB. Alpha stays in the caller's transparency.
 function nativeColor(reference, hex, context, fallback) {
   if (fallback !== undefined && (reference === undefined || reference === null || reference === '')) return pptxColor(fallback);
-  return schemeColorValue(reference, hex, context, {vendor: true}) ?? normalizeHex(hex);
+  const value = schemeColorValue(reference, hex, context, {vendor: true});
+  if (value) return value;
+  // PptxGenJS cannot write hlink or folHlink: a reserved literal stands in and
+  // is rewritten to the scheme color in the finished slide part.
+  const link = schemeColorValue(reference, hex, context);
+  return (link && context.linkSentinels?.[link]) ?? normalizeHex(hex);
+}
+
+// FF-24c: two literals no document color uses stand in for hlink and folHlink
+// (see nativeColor). When the document uses every candidate, those colors stay literal.
+const LINK_SENTINELS = [['FE01A0', 'FE01A1'], ['FE02B0', 'FE02B1'], ['FE03C0', 'FE03C1']];
+function linkSentinels(presentation) {
+  const text = JSON.stringify(presentation).toUpperCase();
+  const pair = LINK_SENTINELS.find(hexes => hexes.every(hex => !text.includes(hex)));
+  return pair ? {hlink: pair[0], folHlink: pair[1]} : {};
+}
+
+function writeLinkSentinels(xml, sentinels) {
+  const values = Object.entries(sentinels ?? {});
+  if (!values.length) return xml;
+  return xml.replace(/<a:srgbClr val="([0-9A-F]{6})"(\/>|>[\s\S]*?<\/a:srgbClr>)/g, (node, hex, rest) => {
+    const link = values.find(([, value]) => value === hex)?.[0];
+    return link ? `<a:schemeClr val="${link}"${rest.replace(/<\/a:srgbClr>$/, '</a:schemeClr>')}` : node;
+  });
 }
 
 // PptxGenJS color option: a scheme value it can emit (tx1, bg2, ...) or RRGGBB.
@@ -1642,8 +1666,13 @@ function addTablePayload(slide, table, region, context, options, path) {
     const cellStyle = cell.style ?? {};
     const defaultFillHex = header ? context.colors.accent : context.colors.surface;
     const baseFill = exportColor(cellStyle.fill ?? defaultFillHex, context, defaultFillHex);
+    // FF-24c: engine chrome resolves from scheme roles (header accent1, body surface), so it follows the deck theme like a named fill.
+    const fillReference = cellStyle.fill ?? (header ? 'accent1' : 'surface');
+    const fillValue = schemeColorValue(fillReference, baseFill, context);
     const inheritedText = textColorForFill(`#${baseFill}`, header ? "#FFFFFF" : `#${context.colors.text}`);
     const baseColor = exportColor(cellStyle.color ?? inheritedText.replace(/^#/, ""), context, inheritedText.replace(/^#/, ""));
+    // Default cell text follows the theme only with a theme-referenced fill: paired slot on a light or dark fill, light1/dark1 on an accent fill.
+    const defaultText = cellStyle.color === undefined ? tableTextSchemeValue(fillValue, baseColor, context) : undefined;
     const alpha = value => value.length === 8 ? (1 - parseInt(value.slice(6), 16) / 255) * 100 : 0;
     const text = stringifyText(cell.value), style = cell.textStyle;
     const fragments = rich ? fit.richLines.flatMap(line => line.fragments) : [];
@@ -1652,7 +1681,7 @@ function addTablePayload(slide, table, region, context, options, path) {
       const fragment = fragments.find(item => item.runIndex === index);
       const runStyle = fragment?.style ?? resolveTextStyle({...style,fontFamily:run.fontFamily ?? style.fontFamily,fontWeight:run.bold === undefined ? style.fontWeight : run.bold ? 700 : 400,italic:run.italic ?? style.italic}, options.textMeasurement);
       const rawColor = run.color !== undefined && run.color !== '' ? exportColor(run.color, context, baseColor) : baseColor;
-      const color = nativeColor(run.color !== undefined && run.color !== '' ? run.color : cellStyle.color, rawColor, context), transparency = rawColor.length === 8 ? (1 - parseInt(rawColor.slice(6), 16) / 255) * 100 : 0;
+      const color = nativeColor(run.color !== undefined && run.color !== '' ? run.color : cellStyle.color, rawColor, context, defaultText), transparency = rawColor.length === 8 ? (1 - parseInt(rawColor.slice(6), 16) / 255) * 100 : 0;
       const runOptions = {
         ...nativeFontOptions(runStyle),fontSize:fragment ? fragment.fontSize * .75 : fit.fontSize * .75,
         underline:run.underline ? {style:'sng',color} : undefined,strike:run.strikethrough ? 'sngStrike' : undefined,
@@ -1682,17 +1711,17 @@ function addTablePayload(slide, table, region, context, options, path) {
         valign: cellStyle.verticalAlign ?? 'top',
         ...(cell.colSpan > 1 ? {colspan:cell.colSpan} : {}),
         ...(cell.rowSpan > 1 ? {rowspan:cell.rowSpan} : {}),
-        color: nativeColor(cellStyle.color, baseColor, context),
+        color: nativeColor(cellStyle.color, baseColor, context, defaultText),
         // Rich runs carry resolved alpha. A translucent cell default would
         // overwrite an explicit opaque run because PptxGenJS inherits falsy 0.
         ...(cellStyle.color && !rich ? {transparency:alpha(baseColor)} : {}),
-        fill: { color: nativeColor(cellStyle.fill, baseFill, context), ...(cellStyle.fill ? {transparency:alpha(baseFill)} : {}) },
+        fill: { color: nativeColor(fillReference, baseFill, context), ...(cellStyle.fill ? {transparency:alpha(baseFill)} : {}) },
       },
     };
   }));
   const objectName = `OPF table ${context.tableHeaders.size + 1}`;
   context.tableHeaders.set(objectName, hasHeaders);
-  if (layout.rows.some(row => row.cells.some(cell => Object.keys(cell.style ?? {}).length))) context.tableCells.set(objectName, {layout, scale, defaultBorder:{color:"#"+context.colors.border,width:1/scale}});
+  if (layout.rows.some(row => row.cells.some(cell => Object.keys(cell.style ?? {}).length))) context.tableCells.set(objectName, {layout, scale, context, defaultBorder:{color:"accent5",width:1/scale}});
   slide.addTable(rows, {
     objectName,
     x: region.x,
@@ -1708,7 +1737,7 @@ function addTablePayload(slide, table, region, context, options, path) {
     fontFace: context.fonts.body,
     fontSize: 15 * scale * 0.75,
     color: context.colors.text,
-    border: { type: "solid", color: context.colors.border, pt: 0.75 },
+    border: { type: "solid", color: nativeColor("accent5", context.colors.border, context), pt: 0.75 },
     margin: [6 * scale, 7.5 * scale, 3 * scale, 7.5 * scale],
     valign: "top"
   });
@@ -2593,6 +2622,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
     if (context.masterBackground && /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(path)) xml = inheritLayoutBackground(xml);
     if (path === 'ppt/theme/theme1.xml') xml = writeThemeColors(xml, {colors: context.themeColors, schemeName: context.schemeName, themeName: context.themeName});
     if (/^ppt\/slides\/slide\d+\.xml$/.test(path)) {
+      xml = writeLinkSentinels(xml, context.linkSentinels);
       const fill = context.backgroundFills.get(path);
       if (typeof fill === 'string') xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${fill}<a:effectLst/></p:bgPr></p:bg>`);
       else if (fill?.image) {
@@ -2663,10 +2693,10 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
               for (const [edge, native] of [['left','lnL'],['right','lnR'],['top','lnT'],['bottom','lnB']]) {
                 const border = style.borders?.[edge];
                 if (!border) continue;
-                const borderHex = exportColor(border.color, context, context.colors.border);
+                const slideContext = table.context, borderHex = exportColor(border.color, slideContext, slideContext.colors.border);
                 const borderOpacity = borderHex.length === 8 ? parseInt(borderHex.slice(6), 16) / 255 : 1;
-                const borderScheme = borderOpacity === 1 ? schemeColorValue(border.color, borderHex, context) : undefined;
-                const fill = border.width === 0 ? '<a:noFill/>' : borderScheme ? `<a:solidFill><a:schemeClr val="${borderScheme}"/></a:solidFill>` : nativeBackgroundFill({type:'solid',color:'#' + borderHex.slice(0, 6), opacity: borderOpacity},{width:1,height:1}, context.colors.border);
+                const borderScheme = borderOpacity === 1 ? schemeColorValue(border.color, borderHex, slideContext) : undefined;
+                const fill = border.width === 0 ? '<a:noFill/>' : borderScheme ? `<a:solidFill><a:schemeClr val="${borderScheme}"/></a:solidFill>` : nativeBackgroundFill({type:'solid',color:'#' + borderHex.slice(0, 6), opacity: borderOpacity},{width:1,height:1}, slideContext.colors.border);
                 const dash = {solid:'solid',dash:'dash',dot:'sysDot'}[border.dash ?? 'solid'];
                 const line = `<a:${native} w="${Math.round(border.width * table.scale * 9525)}" cap="flat" cmpd="sng" algn="ctr">${fill}<a:prstDash val="${dash}"/></a:${native}>`;
                 const existing = new RegExp(`<a:${native}\\b[^>]*>[\\s\\S]*?<\\/a:${native}>`);

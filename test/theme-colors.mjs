@@ -103,8 +103,9 @@ assert.equal(runFill(first, 'role'), '<a:schemeClr val="accent1"/>', 'primary ma
 assert.equal(runFill(first, 'secondary'), '<a:schemeClr val="tx2"/>', 'textSecondary on a light background is dark2');
 assert.equal(runFill(first, 'literal'), '<a:srgbClr val="4A7C59"/>', 'literal hex stays literal even when it equals accent1');
 assert.equal(runFill(first, 'variable'), '<a:srgbClr val="B42318"/>');
-// PptxGenJS 4.0.1 cannot emit hlink/folHlink run colors, so those stay literal.
-assert.equal(runFill(first, 'link'), `<a:srgbClr val="${hex(forest.hyperlink)}"/>`);
+// FF-24c: PptxGenJS 4.0.1 cannot emit hlink/folHlink, so a reserved literal is rewritten in the slide part.
+assert.equal(runFill(first, 'link'), '<a:schemeClr val="hlink"/>');
+assert.equal(resolve(runFill(first, 'link'), colors), hex(forest.hyperlink));
 for (const text of ['slot', 'role', 'secondary']) assert.equal(resolve(runFill(first, text), colors), {slot: hex(forest.accent2), role: hex(forest.accent1), secondary: hex(forest.dark2)}[text]);
 assert.match(first, /<p:bg><p:bgPr><a:solidFill><a:schemeClr val="bg1"\/><\/a:solidFill>/, 'classic background slot light1');
 // Default text on a theme background follows the theme: tx1 on the light1 (bg1) background.
@@ -160,9 +161,9 @@ const card = await pairing({theme: 'minimal', contentBox: true}, {title: 'Cards'
 assert.ok(card.xml.includes('name="OPF card'), 'cards exported');
 assert.equal(runFill(card.xml, 'Cards'), '<a:schemeClr val="bg1"/>', 'the heading outside the card still pairs');
 assert.equal(runFill(card.xml, 'Inside card'), `<a:srgbClr val="${hex(cool.light1)}"/>`, 'card text stays literal');
-// Table cells keep their contrast-selected literal text.
+// Table cell text follows the theme with its theme-referenced fill (FF-24c); see test/table-theme-colors.mjs.
 const table = await pairing({theme: 'classic'}, {title: 'Table', table: {columns: ['A'], rows: [['cell']]}});
-assert.doesNotMatch(runFill(table.xml, 'cell'), /schemeClr/);
+assert.equal(runFill(table.xml, 'cell'), '<a:schemeClr val="tx1"/>', 'default cell text pairs with the bg2 surface fill');
 
 // FF-24b: the slide master follows a non-bg1 theme background, with paired
 // default text, so slides added in PowerPoint match. The layout inherits it.
