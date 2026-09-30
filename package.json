@@ -75,6 +75,7 @@
     }
   },
   "devDependencies": {
+    "@expo-google-fonts/carlito": "0.4.1",
     "@openpresentation/opf-render": "0.11.0",
     "esbuild": "0.28.2",
     "playwright": "1.63.0"
