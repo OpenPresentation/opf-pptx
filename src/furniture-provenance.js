@@ -1,24 +1,79 @@
 import {XMLParser} from 'fast-xml-parser';
 import {attachTextTags, decodeTextTag, encodeTextTag} from './code-provenance.js';
 import {sourceLineParagraphs} from './text-provenance.js';
+import {DEFAULT_DATE_FORMAT, NATIVE_DATE_FIELDS, formatSlideNumber, parseDate} from './furniture-fields.js';
+import {schemas} from '@openpresentation/opf';
 
 const TAG = 'OPF_FURNITURE_V1';
+// A slide has one tag list; it also carries the document's OPF_SLIDE_V1 record.
+const SLIDE_TAG = 'OPF_SLIDE_V1';
 const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tags';
 const NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const enc = new TextEncoder(), dec = new TextDecoder('utf-8', {fatal: true});
 const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false});
 const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const kinds = ['header', 'footer'], zones = ['left', 'center', 'right'];
-const fields = ['text', 'image', 'organization', 'section', 'slideNumber', 'date'];
+const fields = ['text', 'image', 'organization', 'socials', 'section', 'slideNumber', 'date'];
+const settings = ['slideNumberFormat', 'dateFormat'];
+const dateFormatForField = Object.fromEntries(Object.entries(NATIVE_DATE_FIELDS).map(([format, type]) => [type, format]));
+// Platform keys follow the Socials schema's propertyNames pattern exactly, so
+// every key a valid document can carry re-imports (and nothing else does).
+const platformId = new RegExp(schemas.presentation.$defs.Socials.propertyNames.pattern, 'u'), schemes = ['', 'https://'];
+// Socials lines show a profile URL without the https:// scheme; the manifest
+// keeps only each line's platform id and the stripped scheme, never its words.
+const socialLines = part => part.links.map(link => ({platform: link.platform,
+  scheme: link.href && !/^[a-z][a-z0-9+.-]*:/i.test(link.text) ? 'https://' : ''}));
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const key = part => `${part.kind}.${part.zone}.${part.field}`;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const check = (condition, message) => { if (!condition) throw Error(message); };
 
-// This manifest contains topology, identities and inactive flags only. Current
-// native shapes supply all words, image bytes and alt text, even after edits.
-export function furnitureManifest(presentation, slide, layout, slideIndex) {
-  const definitions = {};
+// Change detection, not authentication: editable tags store no cached date words.
+function dateLineFingerprint(text) {
+  let a = 0xdeadbeef, b = 0x41c6ce57;
+  for (let index = 0; index < text.length; index++) {
+    a = Math.imul(a ^ text.charCodeAt(index), 2654435761);
+    b = Math.imul(b ^ text.charCodeAt(index), 1597334677);
+  }
+  return `${text.length}:${(a >>> 0).toString(16).padStart(8, '0')}${(b >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+// Only the exporter may mark its own supported, whole-date field flattened by
+// an accepted soft wrap. Literal dates and unsupported patterns stay ordinary.
+export function staticDateFallback(part, field) {
+  const format = field.format ?? DEFAULT_DATE_FORMAT;
+  if (part.field !== 'date' || field.type !== 'date' || !NATIVE_DATE_FIELDS[format] ||
+      field.start !== 0 || field.end !== part.text.length || part.fit.lines.length < 2) return undefined;
+  const records = part.fit.sourceLines.map((line, index) => ({index, data: {
+    boundary: line.boundary, separator: part.text.slice(line.end, line.nextStart),
+  }}));
+  if (records.some((record, index) => record.data.boundary !== (index === records.length - 1 ? 'end' : 'soft'))) return undefined;
+  try {
+    if (sourceLineParagraphs(records, part.fit.lines.map(text => [{text}]))[0].text !== part.text) return undefined;
+  } catch { return undefined; }
+  return {v: 1, reason: 'wrapped-native-date', format, fingerprints: part.fit.lines.map(dateLineFingerprint)};
+}
+
+function unchangedStaticDate(marker, format, ordered, paragraphs) {
+  check(object(marker) && Object.keys(marker).sort().join(',') === 'fingerprints,format,reason,v' &&
+    marker.v === 1 && marker.reason === 'wrapped-native-date' && typeof marker.format === 'string' &&
+    Object.hasOwn(NATIVE_DATE_FIELDS, marker.format) && marker.format === (format.dateFormat ?? DEFAULT_DATE_FORMAT) &&
+    ordered.length > 1 && Array.isArray(marker.fingerprints) && marker.fingerprints.length === ordered.length,
+  'Invalid static date fallback evidence.');
+  check(ordered.every((record, index) => {
+    const current = paragraphs[record.index] ?? [];
+    return record.data.boundary === (index === ordered.length - 1 ? 'end' : 'soft') && record.data.separator === '' &&
+      typeof marker.fingerprints[index] === 'string' && /^\d+:[0-9a-f]{16}$/.test(marker.fingerprints[index]) &&
+      current.length === 1 && !current[0].bullet && dateLineFingerprint(current[0].text) === marker.fingerprints[index];
+  }), 'Current static date text or boundaries differ from the exported lines.');
+}
+
+// This manifest contains topology, identities, inactive flags and format
+// settings only. Current native shapes supply all words, image bytes and alt
+// text, even after edits; a recorded format is kept only while the current text
+// still matches it exactly.
+export function furnitureManifest(presentation, slide, layout, slideIndex, staticDates = new Map()) {
+  const definitions = {}, formats = {};
   for (const kind of kinds) {
     const local = slide.design?.[kind] !== undefined;
     const source = local ? slide.design[kind] : presentation.design?.[kind];
@@ -30,16 +85,20 @@ export function furnitureManifest(presentation, slide, layout, slideIndex) {
         const current = source[zone][field];
         value[zone][field] = field === 'image' ? 'native' : typeof current === 'string' ? 'literal' : current;
       }
+      const format = Object.fromEntries(settings.filter(setting => typeof source[zone][setting] === 'string').map(setting => [setting, source[zone][setting]]));
+      if (Object.keys(format).length) formats[`${kind}.${zone}`] = format;
     }
     definitions[kind] = {scope: local ? 'local' : 'global', value};
   }
   if (!Object.keys(definitions).length) return null;
   const organizations = array(presentation.organization);
   const organization = organizations.find(item => item.role === 'primary') ?? organizations[0];
-  return {v: 1, role: 'slide', group: String(slideIndex), definitions,
-    ...(layout.parts.some(part => part.field === 'organization') ? {organizationId: organization?.id} : {}),
-    parts: layout.parts.map(part => ({kind: part.kind, zone: part.zone, field: part.field,
-      type: part.type, count: part.type === 'image' ? 1 : part.fit.lines.length}))};
+  return {v: 1, role: 'slide', group: String(slideIndex), definitions, ...(Object.keys(formats).length ? {formats} : {}),
+    ...(layout.parts.some(part => part.field === 'organization' || part.field === 'socials') ? {organizationId: organization?.id} : {}),
+    parts: layout.parts.map((part, index) => ({kind: part.kind, zone: part.zone, field: part.field,
+      type: part.type, count: part.type === 'image' ? 1 : part.fit.lines.length,
+      ...(part.field === 'socials' ? {socials: socialLines(part)} : {}),
+      ...(staticDates.has(index) ? {staticDate: staticDates.get(index)} : {})}))};
 }
 
 export function attachFurnitureTags(entries, records, manifests) {
@@ -76,7 +135,7 @@ function readTags(container, relationships, entries) {
     } catch { unreadable = true; }
   }
   return {tags: tags.filter(tag => tag.name?.toUpperCase() === TAG),
-    ambiguous: unreadable || tags.filter(tag => /^OPF_/i.test(tag.name)).length !== 1};
+    ambiguous: unreadable || tags.filter(tag => /^OPF_/i.test(tag.name) && tag.name.toUpperCase() !== SLIDE_TAG).length !== 1};
 }
 
 function validateManifest(manifest) {
@@ -94,21 +153,33 @@ function validateManifest(manifest) {
       check(object(content) && Object.keys(content).every(field => fields.includes(field)), 'Invalid furniture fields.');
       for (const [field, flag] of Object.entries(content)) {
         check(field === 'image' ? flag === 'native' : field === 'text' ? flag === 'literal' :
-          field === 'date' ? flag === false || flag === 'literal' : typeof flag === 'boolean', 'Invalid furniture field intent.');
+          field === 'date' ? typeof flag === 'boolean' || flag === 'literal' : typeof flag === 'boolean', 'Invalid furniture field intent.');
         if (flag !== false) expected.set(`${kind}.${zone}.${field}`, field === 'image' ? 'image' : 'text');
       }
+    }
+  }
+  if (manifest.formats !== undefined) {
+    check(object(manifest.formats), 'Invalid furniture formats.');
+    for (const [slot, format] of Object.entries(manifest.formats)) {
+      const [kind, zone, extra] = slot.split('.');
+      check(extra === undefined && object(manifest.definitions[kind]?.value?.[zone]) && object(format) && Object.keys(format).length > 0 &&
+        Object.entries(format).every(([setting, value]) => settings.includes(setting) && typeof value === 'string'), 'Invalid furniture format.');
     }
   }
   check(manifest.parts.length === expected.size, 'Incomplete furniture topology.');
   for (const part of manifest.parts) {
     check(object(part) && expected.get(key(part)) === part.type, 'Ambiguous furniture part.');
     check(Number.isSafeInteger(part.count) && part.count >= 1 && part.count <= 10000 && (part.type !== 'image' || part.count === 1), 'Invalid furniture line count.');
+    if (part.field === 'socials') check(Array.isArray(part.socials) && part.socials.length >= 1 && part.socials.length <= 100
+      && part.socials.every(line => object(line) && platformId.test(line.platform) && schemes.includes(line.scheme))
+      && new Set(part.socials.map(line => line.platform)).size === part.socials.length, 'Invalid social profile lines.');
+    else check(part.socials === undefined, 'Unexpected social profile lines.');
     expected.delete(key(part));
   }
-  if (manifest.parts.some(part => part.field === 'organization')) check(typeof manifest.organizationId === 'string' && /^[a-zA-Z0-9_-]+$/.test(manifest.organizationId), 'Invalid organization identity.');
+  if (manifest.parts.some(part => part.field === 'organization' || part.field === 'socials')) check(typeof manifest.organizationId === 'string' && /^[a-zA-Z0-9_-]+$/.test(manifest.organizationId), 'Invalid organization identity.');
 }
 
-function readSlide(context, entries, slideIndex, report, taggedText) {
+function readSlide(context, entries, slideIndex, slideCount, report, taggedText) {
   const {root, shapes, paragraphs, pictures, relationships, readPicture} = context;
   const candidates = {};
   const records = [];
@@ -143,7 +214,7 @@ function readSlide(context, entries, slideIndex, report, taggedText) {
       if (value !== false) for (const zone of zones) if (definition.value[zone] !== undefined) {
         value[zone] = Object.fromEntries(Object.entries(definition.value[zone]).filter(([, flag]) => flag === false));
       }
-      const candidate = {scope: definition.scope, value, text: [], pictures: [], organizations: [], sections: []};
+      const candidate = {scope: definition.scope, value, text: [], pictures: [], organizations: [], socials: [], sections: []};
       for (const [partIndex, part] of manifest.parts.entries()) {
         if (part.kind !== kind) continue;
         const group = records.filter(record => record.data.part === partIndex);
@@ -161,10 +232,21 @@ function readSlide(context, entries, slideIndex, report, taggedText) {
             ordered[line] = record;
           }
           const text = sourceLineParagraphs(ordered, paragraphs)[0].text;
-          if (part.field === 'slideNumber') check(text === String(slideIndex + 1), 'Current slide number differs from its position; retain the visible number as ordinary text.');
+          const format = manifest.formats?.[`${kind}.${part.zone}`] ?? {};
+          if (part.field === 'slideNumber') {
+            // The live field renumbers in PowerPoint; any fixed text around it
+            // must still match the recorded format at this slide's position.
+            check(text === formatSlideNumber(format.slideNumberFormat ?? '{current}', slideIndex + 1, slideCount), 'Current slide number differs from its position; retain the visible number as ordinary text.');
+            if (format.slideNumberFormat !== undefined) value[part.zone].slideNumberFormat = format.slideNumberFormat;
+          }
           if (part.field === 'section') candidate.sections.push(text);
           if (part.field === 'organization') candidate.organizations.push({id: manifest.organizationId, name: text});
-          value[part.zone][part.field] = ['text', 'date'].includes(part.field) ? text : true;
+          if (part.field === 'socials') {
+            const lines = text.split('\n');
+            check(lines.length === part.socials.length && lines.every(line => line.trim()), 'Current social profile lines no longer match their platforms.');
+            candidate.socials.push({id: manifest.organizationId, socials: Object.fromEntries(part.socials.map((line, index) => [line.platform, line.scheme + lines[index]]))});
+          }
+          value[part.zone][part.field] = part.field === 'text' ? text : part.field === 'date' ? importedDate(definition.value[part.zone].date, format, text, ordered.flatMap(record => (paragraphs[record.index] ?? []).flatMap(paragraph => paragraph.fields ?? [])), value[part.zone], part.staticDate, ordered, paragraphs, message => report(slideIndex, `${kind}.${part.zone}.date: ${message}`)) : true;
           candidate.text.push(...ordered.map(record => record.index));
         }
       }
@@ -175,15 +257,40 @@ function readSlide(context, entries, slideIndex, report, taggedText) {
   return candidates;
 }
 
+// A current native date field wins. Full-mode static-wrap evidence can recover
+// generated OPF intent without turning the existing PPTX text into a live field. A fixed
+// date keeps its ISO value and pattern only when the current text round-trips.
+// Otherwise the current words import as a literal date.
+function importedDate(flag, format, text, nativeFields, zone, marker, ordered, paragraphs, report) {
+  if (flag === true) {
+    const pattern = nativeFields.length === 1 && nativeFields[0].text === text ? dateFormatForField[nativeFields[0].type] : undefined;
+    if (pattern) {
+      if (format.dateFormat !== undefined || pattern !== DEFAULT_DATE_FORMAT) zone.dateFormat = pattern;
+      return true;
+    }
+    if (marker !== undefined) try {
+      check(nativeFields.length === 0, 'A current native field no longer matches the static date evidence.');
+      unchangedStaticDate(marker, format, ordered, paragraphs);
+      if (format.dateFormat !== undefined) zone.dateFormat = format.dateFormat;
+      return true;
+    } catch (error) { report(`${error.message} Keep the current date as literal text.`); }
+    return text;
+  }
+  const iso = format.dateFormat === undefined ? null : parseDate(text, format.dateFormat);
+  if (iso) zone.dateFormat = format.dateFormat;
+  return iso ?? text;
+}
+
 // Reconcile metadata before consuming any shapes. Global inheritance is promoted
 // only when every slide has a valid definition/override and all inherited values
 // agree. A missing tag must never cause another slide's furniture to reappear.
 export function importFurniture(contexts, entries, onDiagnostic) {
   const report = (index, message) => onDiagnostic?.({code: 'invalid-furniture-provenance', path: `slides.${index}.design`, message: `${message} Ordinary import retains current native content; no old source words are restored.`});
   const taggedText = contexts.map(() => new Set());
-  const candidates = contexts.map((context, index) => readSlide(context, entries, index, report, taggedText[index]));
+  const candidates = contexts.map((context, index) => readSlide(context, entries, index, contexts.length, report, taggedText[index]));
   const organizations = candidates.flatMap(slide => Object.values(slide).flatMap(candidate => candidate.organizations));
-  if (organizations.some(item => !same(item, organizations[0]))) {
+  const organizationConflict = organizations.some(item => !same(item, organizations[0]));
+  if (organizationConflict) {
     for (const [index, slide] of candidates.entries()) for (const kind of kinds) if (slide[kind]?.organizations.length) {
       delete slide[kind]; report(index, `${kind}: Current organization metadata disagrees across repeated fields.`);
     }
@@ -194,6 +301,15 @@ export function importFurniture(contexts, entries, onDiagnostic) {
       delete slide[kind]; report(index, `${kind}: Current section metadata disagrees on this slide.`);
     }
   }
+  // Social profiles belong to the organization named by repeated furniture; without
+  // that name (or with disagreeing values) the lines stay ordinary current text.
+  const owner = candidates.flatMap(slide => Object.values(slide).flatMap(candidate => candidate.organizations))[0];
+  const socials = candidates.flatMap(slide => Object.values(slide).flatMap(candidate => candidate.socials));
+  if (socials.length && (!owner || socials.some(item => item.id !== owner.id || !same(item, socials[0])))) {
+    for (const [index, slide] of candidates.entries()) for (const kind of kinds) if (slide[kind]?.socials.length) {
+      delete slide[kind]; report(index, `${kind}: ${owner ? 'Current social profile metadata disagrees across repeated fields.' : 'Social profiles need a repeated organization name to rebuild organization metadata.'}`);
+    }
+  }
   const result = {design: {}, slides: candidates.map((slide, index) => {
     const values = Object.values(slide), sections = values.flatMap(candidate => candidate.sections);
     return {design: Object.fromEntries(Object.entries(slide).map(([kind, candidate]) => [kind, candidate.value])),
@@ -202,6 +318,10 @@ export function importFurniture(contexts, entries, onDiagnostic) {
   })};
   const validOrganizations = candidates.flatMap(slide => Object.values(slide).flatMap(candidate => candidate.organizations));
   if (validOrganizations.length) result.organization = validOrganizations[0];
+  const validSocials = candidates.flatMap(slide => Object.values(slide).flatMap(candidate => candidate.socials));
+  if (result.organization && validSocials.length) result.organization = {...result.organization, socials: validSocials[0].socials};
+  // Stored document metadata (FF-32) must not override disagreeing visible names.
+  if (organizationConflict) result.organizationConflict = true;
   for (const kind of kinds) {
     const inherited = candidates.map(slide => slide[kind]).filter(candidate => candidate?.scope === 'global');
     if (inherited.length && candidates.every(slide => slide[kind]) && inherited.every(candidate => same(candidate.value, inherited[0].value))) {

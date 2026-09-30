@@ -33,27 +33,68 @@ export interface ImageResolverContext {
   path: string;
 }
 
+export interface FontSchemeDiagnostic { code: "unresolved-font-scheme"; path: string; message: string; id: string; fallback: string }
+export interface MediaProvenanceDiagnostic { code: "media-provenance-omitted"; path: string; message: string }
+/** The chart data cannot be plotted, so a placeholder frame stands in for the chart. */
+export interface ChartDataUnplottableDiagnostic { code: "chart-data-unplottable"; path: string; message: string; reason: "data-not-inline" | "no-rows" | "no-columns" | "single-column-not-numeric" }
+/** Content with no PowerPoint export (an empty table, an unsupported payload) is replaced by a plain-language placeholder frame. */
+export interface ContentPlaceholderDiagnostic { code: "content-placeholder"; path: string; message: string; reason: "table-has-no-rows" | "unsupported-payload" }
+/** The chart data was reshaped to export a native chart: a histogram's values were binned, or a single value column was plotted against row numbers. */
+export interface WatermarkNotExportedDiagnostic { code: "watermark-not-exported"; path: string; message: string }
+export interface ChartDataAdaptedDiagnostic { code: "chart-data-adapted"; path: string; message: string; adaptation: "histogram-binned" | "row-numbers" }
+
 export interface ToPptxOptions {
   /** Default compatible converts WebP to a static PNG. Preserve embeds original WebP bytes. */
   imageFormat?: "compatible" | "preserve";
+  /**
+   * OPF_DOCUMENT_V1 / OPF_SLIDE_V1 customer-data tags that let fromPptx restore
+   * catalog references, layout ids and authoring metadata (docs/document-roundtrip.md).
+   * Tags are not shown in PowerPoint's UI. Default "full"; "references-only"
+   * stores catalog references without organization, speaker, free text, slide ids
+   * or assets; false writes no tags.
+   */
+  provenance?: "full" | "references-only" | false;
   textMeasurement?: TextMeasurement;
   /** Match preview/pagination clearance around supplied vector text outlines; default 1. */
   textRasterPadding?: number;
-  onDiagnostic?: (diagnostic: LayoutDiagnostic) => void;
+  /** Layout diagnostics, `media-provenance-omitted` when video data cannot be stored, plus `unresolved-font-scheme` (once per reference path) when a font-scheme id matches no record and the default `aptos` scheme is used as the base. */
+  onDiagnostic?: (diagnostic: LayoutDiagnostic | FontSchemeDiagnostic | MediaProvenanceDiagnostic | ChartDataUnplottableDiagnostic | ChartDataAdaptedDiagnostic | ContentPlaceholderDiagnostic | WatermarkNotExportedDiagnostic) => void;
   baseDir?: string;
   compressionLevel?: number;
   imageResolver?: (src: string, context: ImageResolverContext) => ImageResolverResult | Promise<ImageResolverResult | null | undefined> | null | undefined;
   seed?: number;
   strictAssets?: boolean;
   timestamp?: string;
+  /**
+   * ZIP calendar timestamps, including embedded workbooks, use UTC fields at
+   * two-second resolution. Omitted/undefined retains the fixed 1980 default.
+   * Accepts a valid Date, finite epoch milliseconds, YYYY-MM-DD (UTC midnight),
+   * or YYYY-MM-DDTHH:mm[:ss[.fraction]] with Z or ±HH:mm. UTC years 1980–2099 only.
+   * Ambiguous/legacy strings and invalid/out-of-range values throw OPFPptxError
+   * at options.zipDate; null, empty string and zero no longer choose the default.
+   */
   zipDate?: string | number | Date;
+  /**
+   * Today's calendar date (ISO YYYY-MM-DD) for `date: true` header/footer fields. The exporter never
+   * reads a clock: it lays out this date as the cached text of a native PowerPoint date field, which
+   * PowerPoint updates on open. Without it a current date is reported as unresolved content.
+   */
+  date?: string;
+  /** Host-supplied catalog records, as in opf-render. Currently consulted for socialPlatforms (generated socials furniture). */
+  catalogs?: Record<string, { records?: unknown[] } | unknown[]>;
+  /** Records for document `catalogs.<kind>.source` URLs, as in opf-render. Currently consulted for socialPlatforms. */
+  catalogSources?: Record<string, { records?: unknown[] } | unknown[]>;
 }
 
 export interface FromPptxOptions {
-  /** Reports native details that import cannot preserve, including code provenance fallback/reflow and grouped text transforms. Table paths identify native frame and row/cell indexes (including headers). */
+  /** Reports native details that import cannot preserve, including code provenance fallback/reflow and grouped text transforms. Table paths identify native frame and row/cell indexes (including headers). Stored catalog references that no longer match the package report `design-reference-changed` / `layout-reference-changed` at the reference path; a slide layout id that resolves to no inline or bundled record reports `unresolved-layout-reference` (docs/document-roundtrip.md). */
   onDiagnostic?: (diagnostic: {code: string; path: string; message: string}) => void;
   fallbackName?: string;
   schema?: string;
+  /** The export's host catalog records (as in ToPptxOptions). Currently used to recognize unedited socials lines, so authored handles return. */
+  catalogs?: Record<string, { records?: unknown[] } | unknown[]>;
+  /** The export's records for document `catalogs.<kind>.source` URLs (as in ToPptxOptions). Currently used for socialPlatforms. */
+  catalogSources?: Record<string, { records?: unknown[] } | unknown[]>;
 }
 
 export declare class OPFPptxError extends Error {
@@ -67,3 +108,73 @@ export declare class OPFPptxError extends Error {
 export declare function toPptx(input: unknown, options?: ToPptxOptions): Promise<Uint8Array>;
 
 export declare function fromPptx(input: Uint8Array | ArrayBuffer, options?: FromPptxOptions): Promise<Record<string, unknown>>;
+
+export interface TypefaceEntry {
+  /** Part path; parts of nested packages use "outer.xlsx!/inner/part.xml". */
+  part: string;
+  kind: "drawingml" | "spreadsheetml";
+  /** Local element name, for example latin, ea, cs, sym, buFont, font, name or rFont. */
+  element: string;
+  typeface: string;
+  /** Theme font collection for theme parts. */
+  theme?: "major" | "minor";
+  /** Script tag of a theme script supplement (`<a:font script="…">`). */
+  script?: string;
+  pitchFamily?: number;
+  /** Theme reference (+mj-lt, +mn-ea, …) resolved against the package theme; null when unresolved. */
+  resolved?: string | null;
+}
+
+export interface TypefaceInventory {
+  typefaces: TypefaceEntry[];
+  themes: Record<string, {major: Partial<Record<"latin" | "ea" | "cs", string>>; minor: Partial<Record<"latin" | "ea" | "cs", string>>}>;
+  /** docProps/app.xml "Fonts Used", or null when the package has no readable list. */
+  fontsUsed: string[] | null;
+}
+
+export interface CheckPptxTypefacesOptions {
+  /** Family names the document chose (heading, body, code, run fonts). Required. */
+  fonts: string[];
+  /** Chosen families that are monospace; their pitchFamily must be fixed pitch, and only theirs. */
+  monospace?: string[];
+  /** Allow empty theme ea/cs slots and references to them (FF-05). Default true. */
+  allowEmptyThemeScripts?: boolean;
+  /** Allowed theme script supplements; defaults to THEME_SCRIPT_SUPPLEMENTS. */
+  scriptSupplements?: Readonly<Record<"major" | "minor", Readonly<Record<string, string>>>>;
+}
+
+export type TypefaceViolationReason =
+  | "foreign-typeface"
+  | "foreign-theme-reference"
+  | "unresolved-theme-reference"
+  | "empty-theme-reference"
+  | "empty-typeface"
+  | "foreign-script-supplement"
+  | "monospace-not-fixed-pitch"
+  | "fixed-pitch-not-monospace"
+  | "inconsistent-pitch-family"
+  | "missing-fonts-used"
+  | "foreign-fonts-used"
+  | "fonts-used-mismatch";
+
+export interface TypefaceViolation {
+  reason: TypefaceViolationReason;
+  part: string;
+  element?: string;
+  typeface?: string;
+  [detail: string]: unknown;
+}
+
+export declare const THEME_SCRIPT_SUPPLEMENTS: Readonly<Record<"major" | "minor", Readonly<Record<string, string>>>>;
+
+export declare function inventoryPptxTypefaces(input: Uint8Array | ArrayBuffer | Record<string, Uint8Array>, options?: {nested?: boolean}): TypefaceInventory;
+
+export declare function packageFontsUsed(inventory: TypefaceInventory): string[];
+
+export declare function checkPptxTypefaces(input: Uint8Array | ArrayBuffer | Record<string, Uint8Array>, options: CheckPptxTypefacesOptions): {
+  ok: boolean;
+  violations: TypefaceViolation[];
+  inventory: TypefaceInventory;
+  /** The "Fonts Used" list the package's own fonts imply. */
+  fontsUsed: string[];
+};

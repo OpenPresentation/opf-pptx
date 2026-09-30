@@ -184,7 +184,7 @@ assert.match(layoutOf(classic.entries), /<p:bg><p:bgRef idx="1001"><a:schemeClr 
 // Imported slides keep their own backgrounds; the master background does not leak.
 const darkImport = await importWith(zipSync(dark.entries));
 assert.equal(darkImport.document.design.theme, 'dark');
-assert.deepEqual(darkImport.document.slides[0].design.background, {type: 'solid', color: hex(catalogs.colorSchemes.find(record => record.id === 'boost').dark1).replace(/^/, '#')});
+assert.equal((darkImport.document.slides[0].design ?? darkImport.document.design).background, undefined, "the master background does not leak into the import");
 
 // 4. Inline overrides come back relative to the named catalog scheme.
 const override = await importWith(await toPptx({design: {colorScheme: {id: 'boost', accent1: '#123456'}}, slides: [{title: 'Override'}]}));

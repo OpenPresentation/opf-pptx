@@ -10,13 +10,19 @@ await copyFile(new URL("src/index.js", root), new URL("index.js", dist));
 await copyFile(new URL('src/code-provenance.js', root), new URL('code-provenance.js', dist));
 await copyFile(new URL('src/metric-provenance.js', root), new URL('metric-provenance.js', dist));
 await copyFile(new URL('src/card-provenance.js', root), new URL('card-provenance.js', dist));
+await copyFile(new URL('src/media-provenance.js', root), new URL('media-provenance.js', dist));
 await copyFile(new URL('src/heading-provenance.js', root), new URL('heading-provenance.js', dist));
 await copyFile(new URL('src/text-provenance.js', root), new URL('text-provenance.js', dist));
 await copyFile(new URL('src/timeline-provenance.js', root), new URL('timeline-provenance.js', dist));
 await copyFile(new URL('src/furniture-provenance.js', root), new URL('furniture-provenance.js', dist));
+await copyFile(new URL('src/document-provenance.js', root), new URL('document-provenance.js', dist));
+await copyFile(new URL('src/furniture-fields.js', root), new URL('furniture-fields.js', dist));
 await copyFile(new URL('src/chart-workbook.js', root), new URL('chart-workbook.js', dist));
 await copyFile(new URL("src/index.d.ts", root), new URL("index.d.ts", dist));
 await copyFile(new URL("src/image-geometry.js", root), new URL("image-geometry.js", dist));
+await copyFile(new URL('src/slide-image-provenance.js', root), new URL('slide-image-provenance.js', dist));
+await copyFile(new URL('src/media-dedupe.js', root), new URL('media-dedupe.js', dist));
+await copyFile(new URL('src/watermark-provenance.js', root), new URL('watermark-provenance.js', dist));
 for (const name of ['image-fallback-node.js', 'image-fallback-browser.js']) {
   await copyFile(new URL(`src/${name}`, root), new URL(name, dist));
 }
@@ -26,7 +32,11 @@ await copyFile(new URL('src/background-import.js', root), new URL('background-im
 await copyFile(new URL('src/image-import.js', root), new URL('image-import.js', dist));
 
 await copyFile(new URL('src/table-import.js', root), new URL('table-import.js', dist));
+for (const name of ['native-text-style.js', 'body-text-import.js', 'font-weights.js']) await copyFile(new URL(`src/${name}`, root), new URL(name, dist));
 await copyFile(new URL('src/table-cell-import.js', root), new URL('table-cell-import.js', dist));
 await copyFile(new URL('src/table-border-import.js', root), new URL('table-border-import.js', dist));
 await copyFile(new URL('src/color-ref.js', root), new URL('color-ref.js', dist));
 await copyFile(new URL('src/theme-colors.js', root), new URL('theme-colors.js', dist));
+await copyFile(new URL('src/typeface-inventory.js', root), new URL('typeface-inventory.js', dist));
+await copyFile(new URL('src/package-fonts.js', root), new URL('package-fonts.js', dist));
+await copyFile(new URL('src/script-fonts.js', root), new URL('script-fonts.js', dist));

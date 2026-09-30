@@ -10,6 +10,37 @@
 #   badcount           Fonts.Count is not numeric: non-COM failure while open
 #   comerror           Fonts.Item throws: COM failure while open (latched)
 #   wrongfullname      the opened object reports a different FullName
+#   masters-all-true   Has{Handout,Notes,Title}Master all -1 (default: 0, -1, 0)
+#   masters-domain     HasNotesMaster returns 1, outside the msoTriState -1/0 domain
+#   masters-{null,empty-string,fraction,bool,string,double-zero}  HasNotesMaster returns $null, '', 0.5, $true, '0', [double]0
+#                      (each must be recorded raw with its type and fail, never coerced to 0)
+#   masters-int16      HasNotesMaster returns [int16]-1 (an integral COM type, accepted)
+#   masters-{handout,notes,title}-error  that getter fails (wrapper-injected, latched);
+#                      a dual- prefix combines it with the dual-* font scenarios
+# The HandoutMaster, NotesMaster and TitleMaster objects are tripwires: any access
+# appends its name to the file named by OPF_INVENTORY_MOCK_MASTER_LOG.
+# Second-read terminating failures use a hook inserted only in the controls'
+# temporary worker copy: PS ScriptProperty getter exceptions can be swallowed
+# by property access, so they cannot faithfully stand in for terminating COM.
+# The construction mock is dot-sourced inside an Operation child scope;
+# keep this later-stage hook visible to the temporary worker script.
+function script:Invoke-OpfInventoryMockFault([string]$StageName) {
+    $suffix=([string]$env:OPF_INVENTORY_MOCK_VARIANT) -replace '^dual-','' -replace '-error$',''
+    $target=$(switch($suffix) {
+        'get' {'owned.presentation.fonts-after-content.get'}
+        'count' {'owned.presentation.fonts-after-content.count.get'}
+        'item' {'owned.presentation.fonts-after-content.item-2.get'}
+        'name' {'owned.presentation.fonts-after-content.item-2.name.get'}
+        'embedded' {'owned.presentation.fonts-after-content.item-2.embedded.get'}
+        'embeddable' {'owned.presentation.fonts-after-content.item-2.embeddable.get'}
+        default {$null}
+    })
+    if($null -ne $target -and $StageName -ceq $target) { throw "Mock terminating getter failure at $StageName" }
+    if(([string]$env:OPF_INVENTORY_MOCK_VARIANT) -match '^(?:dual-)?masters-(handout|notes|title)-error$') {
+        $masterTarget=$(switch($Matches[1]) { 'handout' {'owned.presentation.hasHandoutMaster.get'} 'notes' {'owned.presentation.hasNotesMaster.get'} 'title' {'owned.presentation.hasTitleMaster.get'} })
+        if($StageName -ceq $masterTarget) { throw "Mock terminating getter failure at $StageName" }
+    }
+}
 function New-OpfInventoryMockCollection($Items) {
     $collection=[pscustomobject]@{Count=@($Items).Count;MockItems=@($Items)}
     $collection | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) return ,$this.MockItems[[int]$Index-1] }
@@ -45,6 +76,24 @@ function New-OpfInventoryMockApplication {
     $aptos=($variant -ceq 'aptos')
     $fontNames=$(if($aptos){@('Carlito','Aptos')}else{@('Carlito')})
     $fonts=New-OpfInventoryMockCollection @($fontNames | ForEach-Object { [pscustomobject]@{Name=$_;Embedded=0;Embeddable=-1} })
+    $afterFonts=$fonts
+    if($variant.StartsWith('dual-')) {
+        $beforeNames=@('Carlito'); $afterNames=@('Carlito')
+        switch($variant) {
+            'dual-changed' {$afterNames=@('','Aptos')}
+            'dual-reordered' {$beforeNames=@('','Carlito','Carlito','Aptos');$afterNames=@('Aptos','Carlito','','Carlito')}
+            'dual-soft-hyphen' {$beforeNames=@('AB');$afterNames=@('A'+[char]0x00ad+'B')}
+            'dual-composed' {$beforeNames=@([string][char]0x00e9);$afterNames=@('e'+[char]0x0301)}
+            'dual-empty-ignorable' {$beforeNames=@('');$afterNames=@([string][char]0x00ad)}
+            'dual-overflow' {$afterNames=@(1..65 | ForEach-Object {'Carlito'})}
+            'dual-cleared' {$afterNames=@()}
+            'dual-empty-both' {$beforeNames=@();$afterNames=@()}
+        }
+        if($variant -match '^dual-(item|name|embedded|embeddable)-error$') {$afterNames=@('Carlito','Aptos')}
+        $fonts=New-OpfInventoryMockCollection @($beforeNames | ForEach-Object {[pscustomobject]@{Name=$_;Embedded=0;Embeddable=$(if($_ -ceq ''){0}else{-1})}})
+        $afterFonts=New-OpfInventoryMockCollection @($afterNames | ForEach-Object {[pscustomobject]@{Name=$_;Embedded=0;Embeddable=$(if([string]::Equals($_,'',[StringComparison]::Ordinal)){0}else{-1})}})
+        if($variant -ceq 'dual-flags') {$afterFonts.MockItems[0].Embedded=-1}
+    }
     if($variant -ceq 'badcount') { $fonts.Count='not-a-number' }
     if($variant -ceq 'comerror') { $fonts | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) throw 'Mock COM failure reading Presentation.Fonts' } -Force }
     $themeFont={ param($Latin) New-OpfInventoryMockCollection @([pscustomobject]@{Name=$Latin},[pscustomobject]@{Name=''},[pscustomobject]@{Name=''}) }
@@ -60,12 +109,42 @@ function New-OpfInventoryMockApplication {
     )
     $slides=New-OpfInventoryMockCollection @([pscustomobject]@{Shapes=$slideShapes})
     $already=@(if($variant -ceq 'cloud'){[pscustomobject]@{FullName='https://contoso.sharepoint.com/sites/team/Shared%20Documents/cloud-deck.pptx'}})
-    $presentations=[pscustomobject]@{Count=$already.Count;MockAlreadyOpen=$already;MockFonts=$fonts;MockMaster=$master;MockSlides=$slides;MockWrongFullName=($variant -ceq 'wrongfullname')}
+    $presence=@{Handout=0;Notes=-1;Title=0}
+    if($variant -ceq 'masters-all-true') { $presence=@{Handout=-1;Notes=-1;Title=-1} }
+    switch -CaseSensitive ($variant) {
+        'masters-domain' { $presence.Notes=1 }
+        'masters-null' { $presence.Notes=$null }
+        'masters-empty-string' { $presence.Notes='' }
+        'masters-fraction' { $presence.Notes=0.5 }
+        'masters-bool' { $presence.Notes=$true }
+        'masters-string' { $presence.Notes='0' }
+        'masters-double-zero' { $presence.Notes=[double]0 }
+        'masters-int16' { $presence.Notes=[int16](-1) }
+    }
+    $presentations=[pscustomobject]@{MockPresence=$presence;Count=$already.Count;MockAlreadyOpen=$already;MockFonts=$fonts;MockAfterFonts=$afterFonts;MockVariant=$variant;MockMaster=$master;MockSlides=$slides;MockWrongFullName=($variant -ceq 'wrongfullname')}
     $presentations | Add-Member -MemberType ScriptMethod -Name Item -Value { param($Index) if([int]$Index -lt 1 -or [int]$Index -gt $this.MockAlreadyOpen.Count) { throw 'Mock presentation index out of range' }; return ,$this.MockAlreadyOpen[[int]$Index-1] }
     $presentations | Add-Member -MemberType ScriptMethod -Name Open -Value {
         param($FileName,$ReadOnly,$Untitled,$WithWindow)
         $fullName=$(if($this.MockWrongFullName){[string]$FileName + '.other.pptx'}else{[string]$FileName})
-        $opened=[pscustomobject]@{FullName=$fullName;ReadOnly=[int]$ReadOnly;Fonts=$this.MockFonts;SlideMaster=$this.MockMaster;Slides=$this.MockSlides;MockClosed=$false}
+        $opened=[pscustomobject]@{HasHandoutMaster=$this.MockPresence.Handout;HasNotesMaster=$this.MockPresence.Notes;HasTitleMaster=$this.MockPresence.Title;FullName=$fullName;ReadOnly=[int]$ReadOnly;Fonts=$this.MockFonts;SlideMaster=$this.MockMaster;Slides=$this.MockSlides;MockClosed=$false}
+        if($this.MockVariant.StartsWith('dual-')) {
+            $opened | Add-Member NoteProperty MockFirstFonts $this.MockFonts
+            $opened | Add-Member NoteProperty MockAfterFonts $this.MockAfterFonts
+            $opened | Add-Member NoteProperty MockFontsReads 0
+            $opened | Add-Member NoteProperty MockVariant $this.MockVariant
+            $opened | Add-Member ScriptProperty Fonts {
+                $this.MockFontsReads++
+                if($this.MockFontsReads -eq 1){return ,$this.MockFirstFonts}
+                if($this.MockFontsReads -ne 2){throw 'Mock refuses a third Fonts read'}
+                if($this.MockVariant -ceq 'dual-wrongfullname'){$this.FullName+=' .not-owned'}
+                return ,$this.MockAfterFonts
+            } -Force
+            if($this.MockVariant -ceq 'dual-writable'){$opened.ReadOnly=0}
+        }
+        # Tripwires: reading a master object can create a master, so the worker must never do it.
+        $opened | Add-Member -MemberType ScriptProperty -Name HandoutMaster -Value { if($env:OPF_INVENTORY_MOCK_MASTER_LOG) { Add-Content -LiteralPath $env:OPF_INVENTORY_MOCK_MASTER_LOG -Value 'HandoutMaster' }; return $null }
+        $opened | Add-Member -MemberType ScriptProperty -Name NotesMaster -Value { if($env:OPF_INVENTORY_MOCK_MASTER_LOG) { Add-Content -LiteralPath $env:OPF_INVENTORY_MOCK_MASTER_LOG -Value 'NotesMaster' }; return $null }
+        $opened | Add-Member -MemberType ScriptProperty -Name TitleMaster -Value { if($env:OPF_INVENTORY_MOCK_MASTER_LOG) { Add-Content -LiteralPath $env:OPF_INVENTORY_MOCK_MASTER_LOG -Value 'TitleMaster' }; return $null }
         $opened | Add-Member -MemberType ScriptMethod -Name Close -Value { $this.MockClosed=$true }
         return ,$opened
     }
