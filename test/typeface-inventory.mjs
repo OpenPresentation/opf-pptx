@@ -11,8 +11,8 @@ import {toPptx, checkPptxTypefaces, inventoryPptxTypefaces, THEME_SCRIPT_SUPPLEM
 // FF-08 (font-fidelity-everywhere): the exported package names only the fonts
 // the document chose. checkPptxTypefaces walks every XML part, including the
 // embedded chart workbooks, and allows chosen fonts, theme references that
-// resolve to them, empty theme ea/cs slots (FF-05) and the documented theme
-// script supplements.
+// resolve to them and the documented theme script supplements. The presentation
+// theme's ea/cs are never empty (FF-49); the chart workbooks' themes keep them empty.
 
 const vendor = await readFile(new URL('../vendor/pptxgenjs/pptxgen.es.js', import.meta.url), 'utf8');
 const count = (source, needle) => source.split(needle).length - 1;
@@ -145,7 +145,12 @@ assert.ok(control(e => replacePart(e, 'docProps/app.xml', /(<TitlesOfParts><vt:v
 assert.ok(control(e => replacePart(e, 'ppt/theme/theme1.xml', '<a:font script="Jpan" typeface="游ゴシック"/>', '<a:font script="Jpan" typeface="MS Gothic"/>')).includes('foreign-script-supplement'));
 assert.ok(control(e => replacePart(e, 'ppt/theme/theme1.xml', /<a:minorFont><a:latin typeface="[^"]*"/, '<a:minorFont><a:latin typeface="Calibri"')).includes('foreign-theme-reference'));
 assert.ok(control(e => replacePart(e, 'ppt/slides/slide8.xml', /pitchFamily="49"/g, 'pitchFamily="34"')).includes('monospace-not-fixed-pitch'));
-assert.ok(control(() => {}, {allowEmptyThemeScripts: false}).includes('empty-typeface'), 'FF-05 empty theme ea/cs is an explicit allowance');
+// FF-49: an empty presentation-theme ea/cs is a violation unless a caller explicitly allows it; workbook themes stay empty by design.
+const emptyEa = e => replacePart(e, 'ppt/theme/theme1.xml', /<a:ea typeface="[^"]*"[/]>/, '<a:ea typeface=""/>');
+assert.ok(control(emptyEa).includes('empty-typeface'));
+assert.ok(control(e => replacePart(e, 'ppt/theme/theme1.xml', /<a:cs typeface="[^"]*"[/]>/, '<a:cs typeface=""/>')).includes('empty-typeface'));
+assert.ok(!control(emptyEa, {allowEmptyThemeScripts: true}).includes('empty-typeface'));
+assert.ok(!control(() => {}).includes('empty-typeface'), 'exported packages have no empty typeface, chart workbooks included');
 assert.throws(() => checkPptxTypefaces(bytes, {}), TypeError);
 
 // Corpus: every example deck, with the fonts its design and runs choose.

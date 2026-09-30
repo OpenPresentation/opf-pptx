@@ -8,8 +8,11 @@ import {unzipSync} from 'fflate';
 // supplements, embedded-font lists), SpreadsheetML font names (styles `name`,
 // rich-text `rFont`) and the docProps/app.xml "Fonts Used" list.
 // checkPptxTypefaces() then applies the owner font policy: a package names only
-// the fonts its author chose, plus theme references that resolve to them, empty
-// theme script slots (FF-05) and the documented theme script supplements.
+// the fonts its author chose, plus theme references that resolve to them and the
+// documented theme script supplements. Empty presentation-theme ea/cs slots are
+// a violation since FF-49 (the exporter fills them). The embedded chart
+// workbooks' themes keep them empty, and allowEmptyThemeScripts: true also
+// allows them in the presentation theme of packages other tools wrote.
 
 const decoder = new TextDecoder();
 const NESTED_PACKAGE = /\.(?:xlsx|xlsm|docx|pptx)$/i;
@@ -90,12 +93,12 @@ export function checkPptxTypefaces(input, options = {}) {
   }
   const chosen = new Set(options.fonts);
   const monospace = new Set(options.monospace ?? []);
-  const allowEmpty = options.allowEmptyThemeScripts ?? true;
+  const allowEmpty = options.allowEmptyThemeScripts ?? false;
   const supplements = options.scriptSupplements ?? THEME_SCRIPT_SUPPLEMENTS;
   const inventory = inventoryPptxTypefaces(input);
   const violations = [];
   const fail = (entry, reason, details = {}) => violations.push({reason, part: entry.part, element: entry.element, typeface: entry.typeface, ...details});
-  const emptyAllowed = entry => allowEmpty && entry.theme && (entry.element === 'ea' || entry.element === 'cs');
+  const emptyAllowed = entry => entry.theme && (allowEmpty || entry.part.includes('!/')) && (entry.element === 'ea' || entry.element === 'cs');
   const pitches = new Map();
   for (const entry of inventory.typefaces) {
     const reference = THEME_REFERENCE.exec(entry.typeface);

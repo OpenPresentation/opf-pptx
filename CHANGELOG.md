@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- FF-49: the presentation theme's major and minor `a:ea` and `a:cs` typefaces are never empty. A slot the font scheme (`eastAsian`/`complexScript`) or the language's script font supplies names that family; every other slot repeats the theme's own latin face, so the theme names only the selected families. Before, every Latin, Cyrillic, Greek, Armenian, Georgian and Ethiopic deck (all 89 catalog font schemes with the default language) kept them empty. Only `ppt/theme/theme1.xml` and the `ppt/tags/opfDocument.xml` theme snapshot change, in 123 of the 126 example decks; run-level fonts, `lang` and paragraph direction do not change, and the output stays deterministic. Preview and export agree slot by slot for all 89 font schemes times all 93 languages (opf-render 0.11.4). `checkPptxTypefaces` now reports an empty presentation-theme `ea`/`cs` (`allowEmptyThemeScripts` defaults to false; chart workbook themes may still be empty). New `test/theme-script-slots.mjs`.
+
 ## 0.11.3
 
 - Release 0.11.3 (patch: opt-in native chartex export and chartex import; no API removed, no default output change, core floor stays `@openpresentation/opf` ^0.11.2 and the optional renderer peer stays ^0.11.0). `toPptx({ chartex: 'native' })` exports the seven chartex chart types (treemap, histogram, pareto, box-and-whisker, waterfall, funnel, world) as Office 2016 chartex parts; the default `chartex: 'fallback'` keeps the previous export of those ids byte for byte, and the default flips only after the native PowerPoint check. `fromPptx` reads chartex parts back to the same id and data in every mode. Details in the FF-22b entry below.

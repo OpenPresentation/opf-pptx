@@ -40,7 +40,8 @@ if (typeof opf.resolveScriptFonts !== 'function') {
   // language-bearing document is told why.
   const {xml, diagnostics} = await read(deck('japanese'));
   assert.deepEqual([...langs(xml)], ['en-US']);
-  assert.equal(themeFonts(xml, 'minorFont').ea, '');
+  assert.equal(themeFonts(xml, 'minorFont').ea, themeFonts(xml, 'minorFont').latin, 'FF-49: without the resolver the theme ea repeats its latin face');
+  assert.equal(themeFonts(xml, 'minorFont').cs, themeFonts(xml, 'minorFont').latin);
   assert.deepEqual(diagnostics.map(diagnostic => diagnostic.code).filter(code => code.startsWith('language')), ['language-export-unavailable']);
   console.log('Script fonts: core has no resolveScriptFonts; pre-FF-07 output and the language-export-unavailable diagnostic are verified.');
   process.exit(0);
@@ -83,13 +84,12 @@ for (const expected of cases) {
   assert.deepEqual([...langs(xml)], [record.ooxmlLang], `${expected.id} lang`);
   assert.ok(!Object.values(xml).some(value => /\saltLang="/.test(value)), `${expected.id} writes no altLang`);
 
-  // Theme: latin is the chosen heading/body family. Languages written in the
-  // latin slot keep the vendored empty ea/cs (gated on FF-05); other languages
-  // fill both with the resolved slots.
+  // Theme: latin is the chosen heading/body family. FF-49: ea/cs are never empty; a slot no script font supplies
+  // repeats the theme's own latin face, and the language's own slot names its script font.
   const major = themeFonts(xml, 'majorFont'), minor = themeFonts(xml, 'minorFont');
   assert.deepEqual([major.latin, minor.latin], [latin.heading.latin, latin.body.latin], `${expected.id} theme latin`);
   const own = expected.role === 'latin' ? null : schemeFamilies(record.fontScheme);
-  if (!own) assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], ['', '', '', ''], `${expected.id} keeps theme ea/cs empty`);
+  if (!own) assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], [latin.heading.latin, latin.heading.latin, latin.body.latin, latin.body.latin], `${expected.id} theme ea/cs repeat the latin family`);
   else assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], [resolved.heading.eastAsian, resolved.heading.complexScript, resolved.body.eastAsian, resolved.body.complexScript], `${expected.id} theme ea/cs`);
   for (const [slot, key] of own ? [['ea', 'eastAsian'], ['cs', 'complexScript']] : []) {
     const want = key === expected.role ? own : {heading: latin.heading.latin, body: latin.body.latin};
@@ -155,12 +155,13 @@ for (const expected of cases) {
   assert.equal(opf.validatePresentation(restored).valid, true);
 }
 
-// A document without a language is en-US and keeps the vendored empty theme ea/cs.
+// A document without a language is en-US; its theme ea/cs repeat the chosen latin family (FF-49).
 {
   const {xml} = await read(deck(undefined));
   assert.deepEqual([...langs(xml)], ['en-US']);
   const major = themeFonts(xml, 'majorFont'), minor = themeFonts(xml, 'minorFont');
-  assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], ['', '', '', '']);
+  assert.deepEqual([major.ea, major.cs, minor.ea, minor.cs], [major.latin, major.latin, minor.latin, minor.latin]);
+  assert.deepEqual([major.latin, minor.latin], ['Aptos Display', 'Aptos']);
   assert.equal((await fromPptx((await read(deck(undefined))).bytes)).language, 'english-us');
 }
 
@@ -176,7 +177,7 @@ for (const expected of cases) {
   assert.ok(!stored.includes('script-font-not-imported'), 'the restored scheme reproduces the theme ea');
   const observedOnly = (await read(deck('english-us', {design: {fontScheme}}), {provenance: false})).bytes;
   assert.equal(themeFonts(xml, 'minorFont').ea, 'Noto Sans JP');
-  assert.equal(themeFonts(xml, 'minorFont').cs, '', 'only the explicit slot fills');
+  assert.equal(themeFonts(xml, 'minorFont').cs, themeFonts(xml, 'minorFont').latin, 'only the explicit slot differs; cs repeats the latin family');
   assert.deepEqual(runFaces(xml, 'ea'), new Set(['Noto Sans JP']));
   assert.deepEqual([...langs(xml)], ['en-US']);
   const diagnostics = [];

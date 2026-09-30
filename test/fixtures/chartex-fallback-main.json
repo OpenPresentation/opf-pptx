@@ -1,8 +1,8 @@
 {
   "source": {
     "repository": "OpenPresentation/opf-pptx",
-    "commit": "6f6122cb7fb8cb89b17c1bea7981397a27ded8ed",
-    "note": "toPptx default output (chartex fallback) for chartex chart types; regenerate only with an owner decision to change the default export"
+    "commit": "ecdbb421816858a60d393138f45d8151e49857e1",
+    "note": "toPptx default output (chartex fallback) for chartex chart types; regenerate only with an owner decision to change the default export. Regenerated on top of this commit for FF-49, which fills the theme ea/cs typefaces (owner goal 2026-09-30); the chart parts are unchanged."
   },
   "decks": {
     "treemap-category": {
@@ -564,51 +564,51 @@
   },
   "entries": {
     "treemap-category": {
-      "sha256": "44784f36b89270b5d6198f238515e082e254c15466adfd2293f2841a37cd67b4",
-      "bytes": 22562,
+      "sha256": "127964e7e34dc0b1e87f68da6e4e66946fab9a435c4b4783d1012d091378de20",
+      "bytes": 22566,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "histogram-single": {
-      "sha256": "a8f3aa3fc6bcc4bf6e4d0399477cebb4aaccc399390dea327d1c209e539f7248",
-      "bytes": 22576,
+      "sha256": "d67f402d077a2a492f0c8b618f420db0fbd054329a40d946f87999553a941d0b",
+      "bytes": 22580,
       "diagnostics": [
         "chart-data-adapted/histogram-binned"
       ]
     },
     "histogram-category": {
-      "sha256": "c1be89a2ac0c8ed0e5dae6eae61c80199a11e458f9e56eaaff765e166eea549d",
-      "bytes": 22564,
+      "sha256": "147b61962fabcbd567139ad75b2dd19c08784e8ac052eb719b518e6fee876729",
+      "bytes": 22568,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "pareto-multi": {
-      "sha256": "f6c5bebe94fa66ad03f5ea56a66ddeffa005d5eb1ccfb77b01b8e7dc2e7a3d9b",
-      "bytes": 22658,
+      "sha256": "ea19c8175ffaf3c49c41072b3abcb9f8996d6621ec99cfc3da848817d2d81488",
+      "bytes": 22662,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "box-multi": {
-      "sha256": "a85ab730de0509c364faf4dac7cf2ff26bccc69b64994f6a7b44e216c1369358",
-      "bytes": 22656,
+      "sha256": "3e34a2fd9de2f908243d4066a5cf4909cd4ee9b3c98f8a49f6cfab1aa5ceb9bc",
+      "bytes": 22660,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "waterfall-single": {
-      "sha256": "cd568176657fd37c9d38a2ab504b5a5a5d4cc718578ae98f623846dd254c7192",
-      "bytes": 22612,
+      "sha256": "cc0cdf896a6f4751a858bf059d37e67e79b9434ff17406ba7e785597763ec17a",
+      "bytes": 22616,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback",
         "chart-data-adapted/row-numbers"
       ]
     },
     "funnel-category": {
-      "sha256": "76902054da35fdf83cffe96b47e03580c5e8a6cc88cb4f0d64aaad77c381785e",
-      "bytes": 22562,
+      "sha256": "42210f821e7de3bc0a820686572f6f9e64f4d43dd8ff80041552de54e2a2030d",
+      "bytes": 22566,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
@@ -621,8 +621,8 @@
       ]
     },
     "all-seven": {
-      "sha256": "d8692efbac1ebce93db4fb78b78b3810c5de7eca9be767ec561d624def0e0a22",
-      "bytes": 104355,
+      "sha256": "9b3fe2ddb68463034e1aa06fa3e6a3b1fe295ec5053cde782e6554c55a89c107",
+      "bytes": 104359,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback",
         "chart-data-adapted/chartex-fallback",
