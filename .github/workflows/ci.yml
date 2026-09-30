@@ -36,8 +36,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          # Core 0.11.2 (b9bb767): includes the visible-text quote-editor check (opf#172).
-          ref: b9bb767031aaa5c6c40a6174eef6c0b0481375d1
+          # Core 0.11.2 plus opf#206 (FF-57): the renderer-absent furniture and packed quote checks accept the restored quote payload. Re-pin to the merged commit after opf#206 lands.
+          ref: 9e25ee8637e2d9c88f1c06769ebb1ea743e4d5cd
           path: opf
           fetch-depth: 0
           persist-credentials: false
