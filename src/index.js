@@ -15,6 +15,7 @@ import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, r
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {importImageOrientation} from './image-import.js';
 import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
+import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
@@ -205,6 +206,7 @@ export async function toPptx(input, options = {}) {
   context.tableCells = new Map();
   context.imagePlacements = new Map();
   context.slideImages = new Map();
+  context.watermarks = new Map();
   context.backgroundFills = new Map();
   context.notesWithCarriageReturns = new Map();
   context.cardTags = new Map();
@@ -308,6 +310,12 @@ export async function fromPptx(input, options = {}) {
   for (let index = 0; index < slidePaths.length; index += 1) {
     furnitureContexts[index].mediaRegistry = mediaRegistry;
     imported.slides.push(importSlide(entries, slidePaths[index], index, dimensions, options, furniture.slides[index], furnitureContexts[index]));
+  }
+  // A watermark carried identically by every slide is the deck's design.watermark.
+  const carried = imported.slides.map(slide => slide.design?.watermark);
+  if (carried.length && carried[0] && carried.every(value => JSON.stringify(value) === JSON.stringify(carried[0]))) {
+    imported.design = {...imported.design, watermark: carried[0]};
+    for (const slide of imported.slides) { delete slide.design.watermark; if (!Object.keys(slide.design).length) delete slide.design; }
   }
   // Conflicting media asset IDs fall back to their current native URLs during import.
   for (const context of furnitureContexts) for (const [id, asset] of Object.entries(context.mediaAssets ?? {})) if (!Object.hasOwn(imported.assets ?? {}, id)) imported.assets = {...imported.assets, [id]: asset};
@@ -502,6 +510,15 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
   if (slideImage.design) slide.design = {...slide.design, ...slideImage.design};
   nativeContext.slideImagePictures = slideImage.consumed;
   nativeContext.slideImageShapes = slideImage.consumedShapes;
+  const watermarkPath = `slides.${slideIndex}.design.watermark`;
+  const watermark = importWatermark(nativeContext.pictures, relationships, entries, slideIndex,
+    picture => importPicture(entries, picture, slidePath, relationships, diagnostic => {
+      // The recorded fit is re-derived from design.watermark.
+      if (diagnostic.code !== 'unsupported-image-crop') options.onDiagnostic?.({...diagnostic, path: watermarkPath});
+    }),
+    diagnostic => options.onDiagnostic?.({...diagnostic, path: watermarkPath}));
+  if (watermark.design) slide.design = {...slide.design, ...watermark.design};
+  nativeContext.watermarkPictures = watermark.consumed;
 
   const items = collectSlideItems(entries, slideRoot, slidePath, relationships, dimensions, options, slideIndex, furniture, nativeContext)
     .sort(comparePositionedItems);
@@ -594,7 +611,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   }
 
   for (const [index, picture] of nativeContext.pictures.entries()) {
-    if (furniture.pictures.has(index) || nativeContext.slideImagePictures?.has(index)) continue;
+    if (furniture.pictures.has(index) || nativeContext.slideImagePictures?.has(index) || nativeContext.watermarkPictures?.has(index)) continue;
     const report = diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.pictures.${index}`});
     const item = importPicture(entries, picture, slidePath, relationships, report);
     if (item) items.push(item);
@@ -1225,6 +1242,8 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const alignmentFor=item=>item.alignment??fieldAlignment(item.field);
   const geometry = composeSlide(opfSlide, { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) });
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
+  // design.watermark paints first, beneath the slide image and all content, as the preview does.
+  await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);
   if (geometry.slideImage) await addSlideImage(slide, presentation, geometry.slideImage, slideIndex, slideContext, options);
   for (const item of geometry.items) {
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };
@@ -1461,6 +1480,32 @@ async function addImagePayload(slide, presentation, asset, region, path, context
     altText: assetAlt(asset, presentation)
   });
   return objectName;
+}
+
+// design.watermark: one native picture per slide, first in the shape tree. The
+// slide's own design.watermark replaces the deck's, and false suppresses it.
+// Frame, fit and opacity are written after PptxGenJS embeds the bytes.
+async function addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options) {
+  const local = opfSlide.design?.watermark !== undefined;
+  const watermark = local ? opfSlide.design.watermark : presentation.design?.watermark;
+  if (watermark === undefined || watermark === null || watermark === false) return;
+  const path = local ? `slides.${slideIndex}.design.watermark` : 'design.watermark';
+  const notExported = message => options.onDiagnostic?.({code: 'watermark-not-exported', path, message});
+  const asset = isPlainObject(watermark) || typeof watermark === 'string' ? watermark : null;
+  if (asset === null || (isPlainObject(asset) && typeof asset.src !== 'string')) {
+    notExported('The watermark needs an image source (a string, or an object with src); no watermark was exported for this slide.');
+    return;
+  }
+  const resolved = await resolveImage(asset, presentation, options, path);
+  if (!resolved) {
+    options.onDiagnostic?.({code: 'unresolved-asset', path, message: 'The watermark image needs an embedded raster, a declared asset or a host imageResolver; no watermark was exported for this slide.'});
+    return;
+  }
+  const {widthInches, heightInches} = slideContext.dimensions;
+  const box = watermarkBox(widthInches, heightInches);
+  const opacity = watermarkOpacity(watermark);
+  context.watermarks.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, box, opacity, path});
+  slide.addImage({...resolved, objectName: watermarkName(), ...box, altText: assetAlt(asset, presentation) ?? 'Watermark'});
 }
 
 // design.slideImage: one native picture at the shared frame, beneath content.
@@ -2368,7 +2413,7 @@ async function normalizePptxZip(raw, context) {
     const relationships = parseRelationships(entries, part);
     for (const [picture] of decodeText(bytes).matchAll(/<p:pic>[\s\S]*?<\/p:pic>/g)) {
       const name = picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1];
-      const placement = context.imagePlacements.get(name) ?? context.slideImages.get(name);
+      const placement = context.imagePlacements.get(name) ?? context.slideImages.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : undefined);
       const id = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
       if (placement) imageSources.set(relationships.get(id)?.path, placement.path);
     }
@@ -2396,6 +2441,9 @@ async function normalizePptxZip(raw, context) {
   // Slide images need the embedded dimensions; document provenance (FF-32)
   // later records the placed frames as slide geometry evidence.
   placeSlideImages(entries, context.slideImages, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
+    throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
+  });
+  placeWatermarks(entries, context.watermarks, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
   });
   // Charts and notes follow the language and fonts of the slide they belong to.
