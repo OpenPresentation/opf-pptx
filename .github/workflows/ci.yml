@@ -36,8 +36,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          # Core opf#219 (core 0.11.3 plus the recorded renderer 0.11.8 lazy font count; repinned to its merge commit); the published core this release requires is ^0.11.3.
-          ref: bbe0e3438b3b26f00f611f47443b0e4f173bffda
+          # Core main 3ae62f9 (core 0.11.3 plus the recorded renderer 0.11.8 lazy font count, opf#219); the published core this release requires is ^0.11.3.
+          ref: 3ae62f9a01102fd43a9fc301ef59fdbb1cd998c6
           path: opf
           fetch-depth: 0
           persist-credentials: false
