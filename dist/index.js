@@ -4,6 +4,7 @@ import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
 import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
+import {attachChartexParts,chartFromChartex,CHARTEX_GRAPHIC_DATA_URI} from './chartex.js';
 import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
 import {attachCardTags,importCardFrames} from './card-provenance.js';
@@ -224,6 +225,7 @@ export async function toPptx(input, options = {}) {
   context.metricTags = new Map();
   context.chartHeadings = new Map();
   context.chartFonts = new Map();
+  context.chartex = new Map();
   context.imageFormat = options.imageFormat ?? "compatible";
   Object.assign(context, exportTheme(presentation, context));
   context.reportedFontSchemes = new Set();
@@ -613,6 +615,15 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
     const item = importGraphicFrame(entries, frame, slidePath, relationships, tables[index]);
     if (item) items.push(item);
   }
+  // A chartex chart is an mc:AlternateContent: the choice frame references the cx:chartSpace part; the fallback is a classic chart frame
+  // (this exporter) or a text shape (PowerPoint). The choice is read first and the fallback only when it names no OPF chart type.
+  for (const alternate of asArray(tree?.["mc:AlternateContent"])) {
+    const choice = asArray(alternate?.["mc:Choice"]).map((node) => node?.["p:graphicFrame"]).find(Boolean);
+    const fallback = asArray(alternate?.["mc:Fallback"]).map((node) => node?.["p:graphicFrame"]).find(Boolean);
+    const chosen = choice ? importGraphicFrame(entries, choice, slidePath, relationships) : null;
+    const item = chosen?.payload?.type === "chart" ? chosen : fallback ? importGraphicFrame(entries, fallback, slidePath, relationships) : chosen;
+    if (item && item.kind !== "unknown") items.push(item);
+  }
 
   for (const [index, picture] of nativeContext.pictures.entries()) {
     if (furniture.pictures.has(index) || nativeContext.slideImagePictures?.has(index) || nativeContext.watermarkPictures?.has(index)) continue;
@@ -668,9 +679,12 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
     };
   }
 
-  const chartRelId = graphicData?.["c:chart"]?.["r:id"];
+  const chartExRelId = graphicData?.uri === CHARTEX_GRAPHIC_DATA_URI ? graphicData?.["cx:chart"]?.["r:id"] : undefined;
+  const chartRelId = graphicData?.["c:chart"]?.["r:id"] ?? chartExRelId;
   if (chartRelId) {
-    const chart = chartFromRelationship(entries, slidePath, relationships, chartRelId);
+    const chart = chartExRelId
+      ? chartexFromRelationship(entries, relationships, chartExRelId)
+      : chartFromRelationship(entries, slidePath, relationships, chartRelId);
     return {
       kind: "chart",
       bounds,
@@ -902,6 +916,23 @@ function scatterFromSeries(entries, chartPart, series, budget, cachePath) {
   // A chart without c:xVal plots against 1..n natively; a c:xVal gap stays a gap.
   for (let index = 0; index < rowCount; index += 1) rows.push([String(index + 1), xRole === undefined ? index + 1 : xs[index] ?? null, ...values.map((row) => row[index] ?? null)]);
   return { type: "scatter", data: { columns: ["Point", readChartCategoryHeading(entries, chartPart) ?? "X", ...names], rows } };
+}
+
+// A chartex part (cx:chartSpace): the series layoutIds name the kept OPF chart
+// type and the cached dimensions restore the category-major data, under the
+// same bounds as the classic chart cache.
+function chartexFromRelationship(entries, relationships, relId) {
+  const relationship = relationships.get(relId);
+  if (!relationship?.path || !entries[relationship.path]) return null;
+  const doc = parseRequiredXml(entries, relationship.path);
+  return chartFromChartex(doc, {
+    heading: readChartCategoryHeading(entries, relationship.path),
+    limits: {points: MAX_CHART_CACHE_POINTS, cells: MAX_CHART_CACHE_CELLS},
+    path: relationship.path,
+    invalid: (message, location) => {
+      throw new OPFPptxError('invalid-chart-cache', `Invalid chart cache: ${message}. Repair the chart data before importing.`, {path: location ?? relationship.path});
+    }
+  });
 }
 
 function firstChartNode(plotArea) {
@@ -1633,6 +1664,16 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
   const circular = chartData.type === 'pie' || chartData.type === 'doughnut';
   context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chartData.heading ?? chart.data.columns[0],labelColor,spec:chartData.spec});
   context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
+  const palette = CHART_COLORS.map(color=>normalizeHex(chartColorForFill(panelFill,`#${color}`)));
+  if (chartData.chartex) {
+    // The native chartex part is added when the package is normalized (attachChartexParts); the classic chart below becomes its fallback.
+    // PptxGenJS rewrites the series it is given (labels become nested levels), so the chartex part keeps its own copy.
+    const series = chartData.series.map((entry) => ({name: entry.name, labels: [...entry.labels], values: [...entry.values]}));
+    context.chartex.set(objectName, {spec: chartData.chartex, series, hasCategories: chartData.hasCategories, fill, labelColor, gridColor: context.colors.border, font: context.fonts.body, palette});
+    if (chartData.chartex.layoutId === 'regionMap') {
+      options.onDiagnostic?.({code: "chart-map-geodata", path, message: `The '${stringifyText(chart.type)}' chart is exported as a native PowerPoint map (chartex regionMap) without cached geography: PowerPoint matches the category names to regions and fetches their shapes from Bing Maps when the deck is opened online, so the map shows no regions offline or where Office map data is disabled. The clustered column fallback shows the same values in other readers.`});
+    }
+  }
   const percent = chartData.spec.grouping === 'percentStacked';
   slide.addChart(chartData.type, chartData.series, {
     objectName,
@@ -1642,7 +1683,7 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     h: region.h,
     showLegend: circular || chartData.series.length > (chartData.type === 'scatter' ? 2 : 1),
     showTitle: false,
-    chartColors: CHART_COLORS.map(color=>normalizeHex(chartColorForFill(panelFill,`#${color}`))),
+    chartColors: palette,
     chartArea: {fill:{...fill},roundedCorners:false},
     // Paint alpha once in the chart area, rather than stacking two alpha fills.
     plotArea: {fill:{color:null}},
@@ -2173,15 +2214,13 @@ function toPptxChartData(chart) {
   if (data.rows.length === 0) return unplottable("no-rows", "The chart has no data rows.", "The chart data has no rows.");
   if (data.columns.length === 0) return unplottable("no-columns", "The chart has no data columns.", "The chart data has no columns.");
   const resolved = resolveChartType(chart.type).spec;
-  // Chartex types (treemap, box & whisker, waterfall, ...) have no classic construct here: they export as a clustered column chart, never silently.
-  const chartex = resolved.family === 'chartex';
+  // A chartex type (treemap, histogram, pareto, box & whisker, waterfall, funnel, map) is written as its native
+  // cx:chartSpace part; the classic clustered column chart of the same data is its mc:Fallback (src/chartex.js).
+  const chartex = resolved.family === 'chartex' ? resolved : null;
   const spec = chartex ? CHARTEX_FALLBACK : resolved;
   const typeName = stringifyText(chart.type);
   const adaptations = [];
-  if (chartex) {
-    adaptations.push({adaptation: "chartex-fallback", message: `The '${typeName}' chart is a PowerPoint extension (chartex) chart that this exporter does not write; its data is exported as a native clustered column chart instead.`});
-  }
-  const mapped = {type: spec.pptx, spec, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined};
+  const mapped = {type: spec.pptx, spec, chartex, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined};
   if (data.columns.length === 1) {
     const heading = stringifyText(data.columns[0]);
     const cell = (row) => Array.isArray(row) ? row[0] : row;
@@ -2192,25 +2231,16 @@ function toPptxChartData(chart) {
     }
     const skipped = data.rows.length - points.length;
     const skippedNote = skipped ? ` (${skipped} non-numeric ${skipped === 1 ? "cell was" : "cells were"} skipped)` : "";
-    if (String(chart.type ?? "").toLowerCase() === "histogram") {
-      const bins = histogramBins(points.map((point) => point.value));
-      return {
-        type: "bar", spec: CHARTEX_FALLBACK, barDir: "col", barGrouping: "clustered", heading: "Bin",
-        series: [{name: "Frequency", labels: bins.map((bin) => bin.label), values: bins.map((bin) => bin.count)}],
-        adaptations: [{
-          adaptation: "histogram-binned",
-          message: `The histogram's single data column '${heading}' (${points.length} values${skippedNote}) was binned into ${bins.length} equal-width bins and exported as a column chart of the counts; PowerPoint's own histogram chart is not exported, and the binned counts do not restore the raw values on re-import.`
-        }]
-      };
-    }
     // Rows keep their own row numbers, so a skipped cell leaves a gap in the numbering.
     const labels = points.map((point) => String(point.row));
     const numbers = points.map((point) => point.value);
     const series = mapped.type === "scatter"
       ? [{name: "Row", labels, values: points.map((point) => point.row)}, {name: heading, labels, values: numbers}]
       : [{name: heading, labels, values: numbers}];
+    // A histogram or Pareto chart bins the values themselves (PowerPoint's automatic bins); only the classic fallback plots them against row numbers.
+    if (chartex?.binning) return {...mapped, series, heading: "Row", hasCategories: false, adaptations};
     adaptations.push({adaptation: "row-numbers", message: `The chart's single data column '${heading}' has no category column, so its ${points.length} values${skippedNote} are plotted against their row numbers.`});
-    return {...mapped, series, heading: "Row", adaptations};
+    return {...mapped, series, heading: "Row", hasCategories: true, adaptations};
   }
 
   const labels = data.rows.map((row) => stringifyText(row?.[0]));
@@ -2219,44 +2249,19 @@ function toPptxChartData(chart) {
     labels,
     values: data.rows.map((row) => numericValue(row?.[seriesIndex + 1]))
   }));
-  if (spec.family === 'circular' && series.length > 1) {
-    // A pie or doughnut plots one series; name the ones left out instead of dropping them silently.
-    const dropped = series.slice(1).map((entry) => `'${entry.name}'`);
+  const plotted = spec.family === 'circular' ? 1 : chartex ? chartex.series : Infinity;
+  if (series.length > plotted) {
+    // A pie, doughnut or single-series chartex construct plots one series; name the ones left out instead of dropping them silently.
+    const dropped = series.slice(plotted).map((entry) => `'${entry.name}'`);
     adaptations.push({adaptation: "series-dropped", message: `The ${typeName} chart plots one series, so its first series '${series[0].name}' is exported and the other ${dropped.length} (${dropped.join(", ")}) ${dropped.length === 1 ? "is" : "are"} not.`});
-    series = series.slice(0, 1);
+    series = series.slice(0, plotted);
   }
   if (spec.family === 'xy' && series.length === 1) {
     // [Point, X, Y...] carries its own X column; a lone value column is plotted against the row numbers.
     series = [{name: 'X', labels, values: data.rows.map((_, index) => index + 1)}, ...series];
     adaptations.push({adaptation: "row-numbers", message: `The scatter chart has no X column (a point label column and one value column), so its ${data.rows.length} values are plotted against their row numbers.`});
   }
-  return {type: spec.pptx, spec, series, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined, adaptations};
-}
-
-
-/**
- * Equal-width bins (Sturges' count, at most 50) from the minimum to the maximum; every bin but the last is [low, high).
- * Arithmetic stays finite for any finite input (values of +-1e308 and denormals included): the bin edges are
- * computed by interpolating the edges rather than from a width, and a value is placed by comparing it with the edges.
- */
-function histogramBins(values) {
-  const min = values.reduce((a, b) => Math.min(a, b)), max = values.reduce((a, b) => Math.max(a, b));
-  const count = min === max ? 1 : Math.min(50, Math.ceil(Math.log2(values.length)) + 1);
-  const edge = (index) => index === 0 ? min : index === count ? max : min / count * (count - index) + max / count * index;
-  const bins = Array.from({length: count}, (_, index) => ({low: edge(index), high: edge(index + 1), count: 0}));
-  // A value belongs to the last bin whose lower edge it reaches, so counts always agree with the labelled edges.
-  for (const value of values) {
-    let index = 0;
-    while (index + 1 < count && value >= bins[index + 1].low) index++;
-    bins[index].count++;
-  }
-  // Labels carry six significant digits, and more when that would make two bins read alike.
-  for (let precision = 6; ; precision++) {
-    const format = (value) => String(Number(value.toPrecision(precision)));
-    const labels = bins.map((bin) => min === max ? format(min) : `${format(bin.low)}\u2013${format(bin.high)}`);
-    if (new Set(labels).size === labels.length) return bins.map((bin, index) => ({...bin, label: labels[index]}));
-    if (precision === 17) return bins.map((bin, index) => ({...bin, label: `${labels[index]} (bin ${index + 1})`}));
-  }
+  return {...mapped, series, hasCategories: true, adaptations};
 }
 
 async function resolveImage(asset, presentation, options, path) {
@@ -2486,6 +2491,12 @@ async function normalizePptxZip(raw, context) {
     }
   }
   applyChartFonts(entries,context.chartFonts,parseRelationships);
+  // Chartex charts: the native cx:chartSpace part, its style parts and the mc:AlternateContent frame (the classic chart above is the fallback).
+  try {
+    attachChartexParts(entries, context.chartex, parseRelationships);
+  } catch (error) {
+    throw new OPFPptxError('packaging-failed', `Chartex chart parts could not be attached: ${errorMessage(error)}`);
+  }
   applyPitchFamilies(entries,context.fontPitch);
   const imageSources = new Map();
   for (const [part, bytes] of Object.entries(entries)) {
@@ -2535,7 +2546,7 @@ async function normalizePptxZip(raw, context) {
     if (!slide) continue;
     context.partSlides.set(part, Number(slide[1]) - 1);
     for (const relationship of parseRelationships(entries, part).values()) {
-      if (/\/(?:chart|notesSlide)$/.test(relationship.type)) context.partSlides.set(relationship.path, Number(slide[1]) - 1);
+      if (/\/(?:chart|chartEx|notesSlide)$/.test(relationship.type)) context.partSlides.set(relationship.path, Number(slide[1]) - 1);
     }
   }
   const output = {};
