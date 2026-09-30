@@ -36,21 +36,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf
-          ref: b8a1faf24203635bd36b09ea19f44bcd53781f16
+          # Core 0.11.2 (b9bb767): includes the visible-text quote-editor check (opf#172).
+          ref: b9bb767031aaa5c6c40a6174eef6c0b0481375d1
           path: opf
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-render
-          ref: 114bf596e9034c0b80a8c92df6a956a04ef18bef
+          # Renderer 0.11.0 published commit (gitHead): Intos previews Aptos and the open families are bundled.
+          ref: 17f7807e7e687444e7c466bf7edd3227593ba56d
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-editor
-          ref: 2622d6be718abd52a7241e098cfecf5eaa3bb8c1
+          # Editor 0.9.0 release commit.
+          ref: 31efdfe963bd1ac189b984701bfbe4d686acee05
           path: opf-editor
           fetch-depth: 0
           persist-credentials: false
@@ -117,6 +120,8 @@ jobs:
       - name: Install and exercise coordinated candidate tarballs
         working-directory: opf
         run: |
+          # Git-for-Windows GNU tar (first on PATH under bash) reads C:... as host:path; use Windows bsdtar.
+          if [ "$RUNNER_OS" = Windows ]; then export PATH="/c/Windows/System32:$PATH"; fi
           pnpm pack:ecosystem
           pnpm test:packed-ecosystem
           pnpm test:packed-browser
@@ -145,6 +150,10 @@ jobs:
             opf/artifacts/editor/*installed-code*.json
             opf-render/artifacts/golden/**
             opf-pptx/artifacts/packed-consumer-node24.json
+            opf-pptx/artifacts/zip-date/**
+            opf-pptx/artifacts/native-text-whitespace/**
+            opf-pptx/artifacts/native-underline/**
+            opf-pptx/artifacts/native-body-rich-text/**
             opf-pptx/artifacts/native-picture-harness/**
           retention-days: 7
           if-no-files-found: ignore

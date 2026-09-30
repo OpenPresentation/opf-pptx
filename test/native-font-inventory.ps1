@@ -5,6 +5,8 @@ param(
     [ValidateRange(5,60)][int]$TimeoutSeconds=45,
     [switch]$WithoutTemporaryFonts,
     [switch]$ControlDeck,
+    [switch]$CompareAfterContentFonts,
+    [switch]$RecordMasterPresence,
     [switch]$Worker,
     [switch]$PureRegression
 )
@@ -15,7 +17,9 @@ $ErrorActionPreference='Stop'
 # whole-range, paragraph and run Font2 slots, then closes that exact
 # presentation. It never edits, saves, exports, quits PowerPoint, or terminates
 # Office. -ControlDeck accepts any .pptx without the Carlito fixture contract
-# and never registers fonts.
+# and never registers fonts. Opt-in -RecordMasterPresence reads only the three
+# Presentation.Has*Master getters after the font snapshots and before close; it
+# never touches the HandoutMaster, NotesMaster or TitleMaster objects.
 
 function Get-InventorySha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Assert-InventoryHash([string]$Value,[string]$Context) { if($Value -notmatch '^[0-9a-f]{64}$') { throw "$Context must be a lowercase SHA-256" } }
@@ -91,7 +95,8 @@ function Select-InventoryNames($Names,[scriptblock]$Predicate) {
     return ,$selected
 }
 
-# The ledger is derived from raw observations after close. It records where a
+# The first-snapshot ledger is derived after content reads; comparison mode
+# persists it before the optional second collection read. It records where a
 # name was reported; it does not prove which physical font file drew a glyph.
 function Get-InventoryShapeSlotValues($Shapes) {
     $values=@()
@@ -130,6 +135,44 @@ function Get-InventoryFontLedger($Observation) {
     })
 }
 
+# Compare raw ordered entries, retaining duplicates, case, empty names and
+# flags. Only the multiset comparison ignores the enumerated index.
+function Get-InventoryFontsComparison($Before,$After) {
+    $beforeEntries=@($Before.entries); $afterEntries=@($After.entries)
+    $beforeKeys=@($beforeEntries | ForEach-Object { ConvertTo-Json -InputObject @($_.name,$_.embedded,$_.embeddable) -Compress })
+    $afterKeys=@($afterEntries | ForEach-Object { ConvertTo-Json -InputObject @($_.name,$_.embedded,$_.embeddable) -Compress })
+    $seen=@{}; $multiset=($beforeKeys.Count -eq $afterKeys.Count)
+    foreach($key in $beforeKeys) {
+        $found=$false
+        for($i=0;$i -lt $afterKeys.Count;$i++) { if(-not $seen.ContainsKey($i) -and [string]::Equals($key,$afterKeys[$i],[StringComparison]::Ordinal)) { $seen[$i]=$true; $found=$true; break } }
+        if(-not $found) { $multiset=$false }
+    }
+    $entriesEqual=[string]::Equals((ConvertTo-Json -InputObject $beforeEntries -Depth 5 -Compress),(ConvertTo-Json -InputObject $afterEntries -Depth 5 -Compress),[StringComparison]::Ordinal)
+    $namesEqual=[string]::Equals((ConvertTo-Json -InputObject @($beforeEntries | ForEach-Object {$_.name}) -Compress),(ConvertTo-Json -InputObject @($afterEntries | ForEach-Object {$_.name}) -Compress),[StringComparison]::Ordinal)
+    return ,([ordered]@{
+        beforeCount=$Before.count;afterCount=$After.count;entriesEqual=$entriesEqual;namesEqualInOrder=$namesEqual;entriesEqualIgnoringOrder=$multiset
+        outcome=$(if($entriesEqual){'unchanged'}elseif($multiset){'reordered'}else{'changed'})
+        beforeAptosReported=(@($beforeEntries | Where-Object {Test-InventoryAptosName $_.name}).Count -gt 0)
+        afterAptosReported=(@($afterEntries | Where-Object {Test-InventoryAptosName $_.name}).Count -gt 0)
+        beforeEmptyNameIndexes=@($beforeEntries | Where-Object {[string]::Equals($_.name,'',[StringComparison]::Ordinal)} | ForEach-Object {$_.index})
+        afterEmptyNameIndexes=@($afterEntries | Where-Object {[string]::Equals($_.name,'',[StringComparison]::Ordinal)} | ForEach-Object {$_.index})
+    })
+}
+
+# Raw msoTriState observations: each value must be an integral COM type (Int32 or Int16, recorded by type name beside the
+# value) and be exactly -1 (true) or 0 (false). Null, empty string, fractions, doubles, booleans and strings are never
+# coerced to 0; they are out of domain.
+function Test-InventoryMasterPresenceComplete($Presence,$Types) {
+    if($null -eq $Presence -or $null -eq $Types) { return $false }
+    foreach($member in @('hasHandoutMaster','hasNotesMaster','hasTitleMaster')) {
+        $value=Get-InventoryMember $Presence $member
+        $type=Get-InventoryMember $Types $member
+        $integral=((($value -is [int]) -or ($value -is [int16])) -and (@('System.Int32','System.Int16') -ccontains $type))
+        if(-not $integral -or ($value -ne 0 -and $value -ne -1)) { return $false }
+    }
+    return $true
+}
+
 function Get-InventoryParentDecision($Result,$LastDurable,$WorkerReport,[string]$Mode,$Registrations,[bool]$RegistrationFilePresent,[bool]$InputsUnchanged,$ParentFailure) {
     $timedOut=($null -ne $Result -and [bool](Get-InventoryMember $Result 'timedOut'))
     $exitCode=Get-InventoryMember $Result 'exitCode'
@@ -137,7 +180,9 @@ function Get-InventoryParentDecision($Result,$LastDurable,$WorkerReport,[string]
     $source=Get-InventoryMember $WorkerReport 'source'
     $lifecycle=($exitOk -and (Get-InventoryMember $LastDurable 'stage') -ceq 'worker.complete' -and (Get-InventoryMember $LastDurable 'status') -ceq 'success' -and (Get-InventoryMember $LastDurable 'cleanupConfirmed') -eq $true -and (Get-InventoryMember $WorkerReport 'cleanupConfirmed') -eq $true -and (Get-InventoryMember $WorkerReport 'officeOperationsStopped') -eq $false -and (Get-InventoryMember $WorkerReport 'ownedOpenCount') -eq 1 -and (Get-InventoryMember $WorkerReport 'ownedCloseCount') -eq 1 -and $null -eq (Get-InventoryMember $WorkerReport 'error'))
     $readOnlyConfirmed=($null -ne $source -and (Get-InventoryMember $source 'readOnly') -eq -1 -and (Get-InventoryMember $source 'openedPathMatches') -eq $true -and (Get-InventoryMember $source 'snapshotUnchangedAfterClose') -eq $true)
-    $inventoryComplete=((Test-InventoryMember $WorkerReport 'boundsExceeded') -and (Get-InventoryList $WorkerReport 'boundsExceeded').Count -eq 0 -and (Test-InventoryMember $WorkerReport 'semanticFailures') -and (Get-InventoryList $WorkerReport 'semanticFailures').Count -eq 0 -and $null -ne (Get-InventoryMember $WorkerReport 'fontLedger'))
+    $comparisonComplete=((Get-InventoryMember $WorkerReport 'compareAfterContentFonts') -ne $true -or $null -ne (Get-InventoryMember $WorkerReport 'fontQueryComparison'))
+    $masterPresenceComplete=$(if((Get-InventoryMember $WorkerReport 'recordMasterPresence') -eq $true){Test-InventoryMasterPresenceComplete (Get-InventoryMember $WorkerReport 'masterPresence') (Get-InventoryMember $WorkerReport 'masterPresenceTypes')}else{$true})
+    $inventoryComplete=((Test-InventoryMember $WorkerReport 'boundsExceeded') -and (Get-InventoryList $WorkerReport 'boundsExceeded').Count -eq 0 -and (Test-InventoryMember $WorkerReport 'semanticFailures') -and (Get-InventoryList $WorkerReport 'semanticFailures').Count -eq 0 -and $null -ne (Get-InventoryMember $WorkerReport 'fontLedger') -and $comparisonComplete -and $masterPresenceComplete)
     if($Mode -ceq 'temporary-session') { $fontCleanup=Test-InventoryFontCleanup $Registrations; $registrationOk=$fontCleanup }
     elseif($Mode -ceq 'none') { $fontCleanup=$null; $registrationOk=(-not $RegistrationFilePresent) }
     else { $fontCleanup=$false; $registrationOk=$false }
@@ -153,8 +198,8 @@ function Get-InventoryParentDecision($Result,$LastDurable,$WorkerReport,[string]
 # local report/evidence dictionaries, never COM objects.
 $script:inventoryAllowedComMembers=@('Open','Close','Item','Paragraphs','Runs')
 $script:inventoryAllowedInstanceMembers=@('Contains','ContainsKey','FindAll','GetCommandName','StartsWith','Substring','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
-$script:inventoryAllowedStaticMembers=@('GetExtension','GetFullPath','GetTempPath','IsNullOrEmpty','IsNullOrWhiteSpace','Max','Min','NewGuid','ParseFile','Sort','WriteAllText')
-$script:inventoryForbiddenCommands=@('Stop-Process','taskkill','taskkill.exe','kill','spps')
+$script:inventoryAllowedStaticMembers=@('Equals','GetExtension','GetFullPath','GetTempPath','IsNullOrEmpty','IsNullOrWhiteSpace','Max','Min','NewGuid','ParseFile','Sort','WriteAllText')
+$script:inventoryForbiddenCommands=@('Stop-Process','taskkill','taskkill.exe','kill','spps','Invoke-Expression','iex','Add-Type')
 $script:inventoryAssignmentRoots=@('report','slideRecord','shapeRecord','seen','wrongGeneration','sample','sampleRows','policyRejected','errorCloseOutcomes')
 function Get-InventoryAssignmentRoot($Expression) {
     while($Expression -is [System.Management.Automation.Language.MemberExpressionAst] -or $Expression -is [System.Management.Automation.Language.IndexExpressionAst]) {
@@ -162,6 +207,196 @@ function Get-InventoryAssignmentRoot($Expression) {
     }
     if($Expression -is [System.Management.Automation.Language.VariableExpressionAst]) { return ($Expression.VariablePath.UserPath -replace '^(script|global|local|private):','') }
     return $null
+}
+# Reviewed allowlists for this file's static policy. Every command, invoked member, static access, type literal and
+# non-literal & or . invocation must appear here; anything else is rejected. test/native-font-inventory-audit.mjs holds the same lists.
+$script:InventoryPolicyCommands=@('Add-Content','ConvertFrom-Json','ConvertTo-Json','Copy-Item','ForEach-Object','Get-Content','Get-Date','Get-FileHash','Get-ItemProperty','Get-Variable','Invoke-OpfNativeWorker','Invoke-OpfWithTemporaryFonts','Join-Path','New-Item','New-Object','Remove-Item','Resolve-Path','Set-Content','Set-Variable','Test-Path','Where-Object','Write-Host','Write-Output')
+$script:InventoryPolicyScopedCommands=@('Add-Member|Invoke-InventoryPureRegression')
+$script:InventoryPolicyCommandForms=@('New-Object|^New-Object -ComObject PowerPoint\.Application$','New-Object|^New-Object -TypeName ''System\.Collections\.Generic\.HashSet\[string\]'' -ArgumentList \$strings,\(\[StringComparer\]::Ordinal\)$','Get-Variable|^Get-Variable -Scope Script -Name \$TotalCounter -ValueOnly$','Set-Variable|^Set-Variable -Scope Script -Name \$TotalCounter -Value \(\$used\+\$allowed\)$')
+$script:InventoryPolicyInstanceMembers=@('Close','Contains','ContainsKey','FindAll','GetCommandName','Item','Open','Paragraphs','Runs','StartsWith','Substring','ToLowerInvariant','ToString','ToUniversalTime','TrimEnd')
+$script:InventoryPolicyStaticMembers=@('Array::Sort','Guid::NewGuid','IO.File::WriteAllText','IO.Path::GetExtension','IO.Path::GetFullPath','IO.Path::GetTempPath','Math::Max','Math::Min','string::Equals','string::IsNullOrEmpty','string::IsNullOrWhiteSpace','System.Management.Automation.Language.Parser::ParseFile')
+$script:InventoryPolicyStaticProperties=@('IO.Path::AltDirectorySeparatorChar','IO.Path::DirectorySeparatorChar','StringComparer::Ordinal','StringComparison::Ordinal','StringComparison::OrdinalIgnoreCase','System.Management.Automation.Language.TokenKind::Dot','System.Management.Automation.Language.TokenKind::Unknown','System.Management.Automation.Language.StringConstantType::BareWord','System.Management.Automation.Language.TokenKind::Equals')
+$script:InventoryPolicyTypes=@('Array','bool','double','Guid','int','int16','IO.File','IO.Path','long','Math','ordered','pscustomobject','ref','scriptblock','string','string[]','StringComparer','StringComparison','switch','void','ValidateRange','System.Collections.IDictionary','System.Management.Automation.Language.AssignmentStatementAst','System.Management.Automation.Language.AttributeBaseAst','System.Management.Automation.Language.CommandAst','System.Management.Automation.Language.ConvertExpressionAst','System.Management.Automation.Language.FunctionDefinitionAst','System.Management.Automation.Language.IndexExpressionAst','System.Management.Automation.Language.InvokeMemberExpressionAst','System.Management.Automation.Language.MemberExpressionAst','System.Management.Automation.Language.Parser','System.Management.Automation.Language.ScriptBlockExpressionAst','System.Management.Automation.Language.StringConstantExpressionAst','System.Management.Automation.Language.StringConstantType','System.Management.Automation.Language.TokenKind','System.Management.Automation.Language.TypeExpressionAst','System.Management.Automation.Language.UnaryExpressionAst','System.Management.Automation.Language.VariableExpressionAst','System.Management.Automation.Language.ArrayLiteralAst','System.Management.Automation.Language.CommandExpressionAst','System.Management.Automation.Language.CommandParameterAst','System.Management.Automation.Language.ForEachStatementAst','System.Management.Automation.Language.HashtableAst','System.Management.Automation.Language.ParameterAst','System.Management.Automation.Language.RedirectionAst')
+$script:InventoryPolicyInvocationSites=@('Invoke-InventoryCom|&|Operation','Invoke-InventoryPureRegression|&|decide','Invoke-InventoryPureRegression|&|mutate','|.|processSnapshot','|.|fontHelperSnapshot')
+$script:InventoryPolicyPipelineExceptions=@('Select-InventoryNames|Where-Object $Predicate')
+$script:InventoryPolicyAssignmentRoots=@('report','slideRecord','shapeRecord','seen','wrongGeneration','sample','sampleRows','policyRejected','errorCloseOutcomes')
+$script:InventoryPolicyComSetters=@()
+$script:InventoryPolicyRootSources=@('sampleRows|@($script:inventoryCanonicalFaces.Keys | ForEach-Object {@{file=$_;sha256=$script:inventoryCanonicalFaces[$_];added=1;removed=$true}})','sample|$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json')
+$script:InventoryPolicyBareArguments=@('Close','Directory','Leaf','PowerPoint.Application','SHA256','Script','ScriptMethod','SilentlyContinue','UTF8')
+$script:InventoryPolicyExactForms=@('Add-Content|Add-Content -LiteralPath $script:stageFile -Encoding UTF8','Set-Content|Set-Content -LiteralPath $script:progressFile -Encoding UTF8','Set-Content|Set-Content -LiteralPath $script:reportFile -Encoding UTF8','New-Item|New-Item -ItemType Directory -Path $pureRoot','Set-Content|Set-Content -LiteralPath $registrationPath -Encoding UTF8','Remove-Item|Remove-Item -LiteralPath $deleteRoot -Recurse -Force -ErrorAction SilentlyContinue','New-Item|New-Item -ItemType Directory -Path $outputRoot','New-Item|New-Item -ItemType Directory -Path $snapshotRoot','Copy-Item|Copy-Item -LiteralPath $PSCommandPath -Destination $verifierSnapshot','Copy-Item|Copy-Item -LiteralPath $processOriginal -Destination $processSnapshot','Copy-Item|Copy-Item -LiteralPath $fontHelperOriginal -Destination $fontHelperSnapshot','Copy-Item|Copy-Item -LiteralPath $inputPath -Destination $sourceSnapshot','New-Item|New-Item -ItemType Directory -Path (Join-Path $snapshotRoot ''fonts'')','Copy-Item|Copy-Item -LiteralPath $generationPath -Destination $generationSnapshot','Copy-Item|Copy-Item -LiteralPath $licensePath -Destination $licenseSnapshot','Copy-Item|Copy-Item -LiteralPath $external -Destination $snapshot','Set-Content|Set-Content -LiteralPath (Join-Path $outputRoot ''request.json'') -Encoding UTF8','Invoke-OpfWithTemporaryFonts|Invoke-OpfWithTemporaryFonts -Generation $generation -EvidenceRoot $snapshotRoot -RunRoot $outputRoot -Action { $script:inventoryWorkerResult=Invoke-OpfNativeWorker -ScriptPath $verifierSnapshot -WorkerArguments $workerArguments -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds }','Invoke-OpfNativeWorker|Invoke-OpfNativeWorker -ScriptPath $verifierSnapshot -WorkerArguments $workerArguments -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds','Set-Content|Set-Content -LiteralPath (Join-Path $outputRoot ''supervisor.json'') -Encoding UTF8')
+$script:InventoryPolicyExactApis=@('IO.File::WriteAllText|[IO.File]::WriteAllText($negativePath,$policyNegatives[$key])','IO.File::WriteAllText|[IO.File]::WriteAllText($positivePath,''$p=$a.Open($x,-1,0,0); $n=$p.Fonts.Item(1).Name; $report.name=$n; $p.Close()'')','string::Equals|[string]::Equals($key,$afterKeys[$i],[StringComparison]::Ordinal)','string::Equals|[string]::Equals((ConvertTo-Json -InputObject $beforeEntries -Depth 5 -Compress),(ConvertTo-Json -InputObject $afterEntries -Depth 5 -Compress),[StringComparison]::Ordinal)','string::Equals|[string]::Equals((ConvertTo-Json -InputObject @($beforeEntries | ForEach-Object {$_.name}) -Compress),(ConvertTo-Json -InputObject @($afterEntries | ForEach-Object {$_.name}) -Compress),[StringComparison]::Ordinal)','string::Equals|[string]::Equals($_.name,'''',[StringComparison]::Ordinal)')
+$script:InventoryPolicyExactMembers=@()
+$script:InventoryPolicyPinned=@('operation','decide','mutate','processsnapshot','fonthelpersnapshot','pureroot','deleteroot','outputroot','snapshotroot','verifiersnapshot','sourcesnapshot','generationsnapshot','licensesnapshot','snapshot','reportfile','stagefile','progressfile','registrationpath','temproot','root','negativepath','positivepath','workerarguments')
+$script:InventoryPolicyPinnedBindings=@('root|=|Get-InventoryAssignmentRoot $left','root|=|Get-InventoryAssignmentRoot $unary.Child','temproot|=|[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)','pureroot|=|Join-Path $tempRoot (''opf-font-inventory-pure-'' + [Guid]::NewGuid().ToString(''n''))','pureroot|=|(Resolve-Path -LiteralPath $pureRoot).Path','negativepath|=|Join-Path $pureRoot "policy-$key.ps1"','positivepath|=|Join-Path $pureRoot ''policy-positive.ps1''','stagefile|=|Join-Path $pureRoot ''stages.jsonl''','progressfile|=|Join-Path $pureRoot ''progress.json''','reportfile|=|Join-Path $pureRoot ''report.json''','stagefile|=|Join-Path $pureRoot "error-close-$($case[0]).jsonl"','progressfile|=|Join-Path $pureRoot "error-close-$($case[0]).progress.json"','registrationpath|=|Join-Path $pureRoot ''font-registration.json''','decide|=|{ param($Result,$Durable,$Report,$Mode,$Registrations,$Present,$Inputs) Get-InventoryParentDecision $Result $Durable $Report $Mode $Registrations $Present $Inputs $null }','mutate|=|{ param($Name,$Value) $sample=$goodReport | ConvertTo-Json -Depth 10 | ConvertFrom-Json; if($Name -like ''source.*''){ $sample.source.($Name.Substring(7))=$Value } else { $sample.$Name=$Value }; return ,$sample }','deleteroot|=|(Resolve-Path -LiteralPath $pureRoot).Path','outputroot|=|[IO.Path]::GetFullPath($OutputDirectory)','snapshotroot|=|Join-Path $outputRoot ''inputs''','verifiersnapshot|=|Join-Path $snapshotRoot ''native-font-inventory.ps1''','processsnapshot|=|Join-Path $snapshotRoot ''native-process.ps1''','fonthelpersnapshot|=|Join-Path $snapshotRoot ''native-text-fonts.ps1''','sourcesnapshot|=|Join-Path $snapshotRoot ''source.pptx''','generationsnapshot|=|Join-Path $snapshotRoot ''generation.json''','licensesnapshot|=|Join-Path $snapshotRoot ''LICENSE_FONT''','snapshot|=|Join-Path $snapshotRoot $font.file','workerarguments|=|@(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-Worker'')', 'workerarguments|=|@(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-Worker'',''-CompareAfterContentFonts'')','workerarguments|=|@(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-Worker'',''-RecordMasterPresence'')','workerarguments|=|@(''-OutputDirectory'',$outputRoot,''-InputPresentation'',$sourceSnapshot,''-Worker'',''-CompareAfterContentFonts'',''-RecordMasterPresence'')','registrationpath|=|Join-Path $outputRoot ''font-registration.json''','root|=|(Resolve-Path -LiteralPath $OutputDirectory).Path','sourcesnapshot|=|(Resolve-Path -LiteralPath $request.source.snapshotPath).Path','stagefile|=|Join-Path $root ''stages.jsonl''','progressfile|=|Join-Path $root ''progress.json''','reportfile|=|Join-Path $root ''report.json''','operation|param|Invoke-InventoryCom|ScriptBlock')
+function Get-InventoryOwnerName($Node) {
+    $owner=$Node.Parent
+    while($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner=$owner.Parent }
+    if($null -eq $owner) { return '' }
+    return $owner.Name
+}
+function Get-InventoryPairValues($Pairs,[string]$Key) {
+    $values=@()
+    foreach($pair in $Pairs) { $parts=$pair -split '\|',2; if($parts[0] -ieq $Key) { $values+=@($parts[1]) } }
+    return ,$values
+}
+function Get-InventoryAssignmentTarget($Expression) {
+    while($Expression -is [System.Management.Automation.Language.MemberExpressionAst] -or $Expression -is [System.Management.Automation.Language.IndexExpressionAst]) {
+        if($Expression -is [System.Management.Automation.Language.MemberExpressionAst]) { $Expression=$Expression.Expression } else { $Expression=$Expression.Target }
+    }
+    if($Expression -is [System.Management.Automation.Language.VariableExpressionAst]) { return ($Expression.VariablePath.UserPath -replace '^(script|global|local|private):','') }
+    return $null
+}
+function Assert-InventoryAllowlistAst($Ast,[string]$Label) {
+    $declared=@($Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | ForEach-Object { $_.Name })
+    foreach($command in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        $owner=Get-InventoryOwnerName $command
+        $first=$command.CommandElements[0]
+        if($command.InvocationOperator -ne [System.Management.Automation.Language.TokenKind]::Unknown) {
+            $operator=$(if($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot){'.'}else{'&'})
+            if($operator -eq '&' -and $first -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+            $variableName=$(if($first -is [System.Management.Automation.Language.VariableExpressionAst]){$first.VariablePath.UserPath -replace '^(script|global|local|private):',''}else{$null})
+            if($null -eq $variableName -or $script:InventoryPolicyInvocationSites -cnotcontains "$owner|$operator|$variableName") { throw "$Label must not use dynamic code (non-literal $operator invocation in $(if($owner){$owner}else{'script scope'}): $($command.Extent.Text))" }
+            continue
+        }
+        if(-not ($first -is [System.Management.Automation.Language.StringConstantExpressionAst]) -or $first.StringConstantType -ne [System.Management.Automation.Language.StringConstantType]::BareWord) { throw "$Label must not use dynamic code (command name $($first.Extent.Text))" }
+        $name=$first.Value
+        $scopes=Get-InventoryPairValues $script:InventoryPolicyScopedCommands $name
+        if($scopes.Count -gt 0) {
+            if($scopes -cnotcontains $owner) { throw "$Label must not run $name in $(if($owner){$owner}else{'script scope'}); it is not on the reviewed allowlist there" }
+        } elseif(-not ($script:InventoryPolicyCommands -contains $name -or $declared -contains $name)) { throw "$Label must not run $name; it is not on the reviewed allowlist" }
+        $forms=Get-InventoryPairValues $script:InventoryPolicyCommandForms $name
+        if($forms.Count -gt 0 -and @($forms | Where-Object { $command.Extent.Text -cmatch $_ }).Count -eq 0) { throw "$Label must not run $name in a form that is not on the reviewed allowlist: $($command.Extent.Text)" }
+        if($name -in @('ForEach-Object','Where-Object')) {
+            $scriptBlockOnly=($command.CommandElements.Count -eq 2 -and $command.CommandElements[1] -is [System.Management.Automation.Language.ScriptBlockExpressionAst])
+            if(-not $scriptBlockOnly -and $script:InventoryPolicyPipelineExceptions -cnotcontains "$owner|$($command.Extent.Text)") { throw "$Label must pass $name exactly one script block; other forms are not on the reviewed allowlist" }
+        }
+    }
+    foreach($member in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.MemberExpressionAst]},$true)) {
+        if(-not ($member.Member -is [System.Management.Automation.Language.StringConstantExpressionAst])) {
+            if($member -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) { throw "$Label must not use dynamic code (dynamic member name: $($member.Extent.Text))" }
+            continue
+        }
+        $memberName=$member.Member.Value
+        if($memberName -in @('Quit','Kill')) { throw "$Label must not reference .$memberName on any object" }
+        if($memberName -in @('HandoutMaster','NotesMaster','TitleMaster')) { throw "$Label must not access the .$memberName object; reading it can create a master (use the Has*Master getters)" }
+        if($member.Static) {
+            if(-not ($member.Expression -is [System.Management.Automation.Language.TypeExpressionAst])) { throw "$Label must not use dynamic code (static access on an expression: $($member.Extent.Text))" }
+            $pair="$($member.Expression.TypeName.FullName)::$memberName"
+            $list=$(if($member -is [System.Management.Automation.Language.InvokeMemberExpressionAst]){$script:InventoryPolicyStaticMembers}else{$script:InventoryPolicyStaticProperties})
+            if($list -notcontains $pair) { throw "$Label must not use $pair; it is not on the reviewed allowlist" }
+        } elseif($member -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $script:InventoryPolicyInstanceMembers -notcontains $memberName) { throw "$Label must not invoke .$memberName(); it is not on the reviewed allowlist" }
+    }
+    foreach($typeNode in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.TypeExpressionAst] -or $node -is [System.Management.Automation.Language.AttributeBaseAst]},$true)) {
+        $typeName=$typeNode.TypeName.FullName
+        if($script:InventoryPolicyTypes -notcontains $typeName) { throw "$Label must not use type [$typeName]; it is not on the reviewed allowlist" }
+    }
+    foreach($variable in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if(($variable.VariablePath.UserPath -replace '^(script|global|local|private):','') -ieq 'ExecutionContext') { throw "$Label must not use dynamic code ($variable)" }
+    }
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        if(-not ($left -is [System.Management.Automation.Language.MemberExpressionAst] -or $left -is [System.Management.Automation.Language.IndexExpressionAst])) { continue }
+        $assignmentRoot=Get-InventoryAssignmentTarget $left
+        if($null -ne $assignmentRoot -and $script:InventoryPolicyAssignmentRoots -ccontains $assignmentRoot) { continue }
+        $setter=$null
+        if($left -is [System.Management.Automation.Language.MemberExpressionAst] -and $left.Expression -is [System.Management.Automation.Language.VariableExpressionAst] -and $left.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $setter="$($left.Expression.VariablePath.UserPath -replace '^(script|global|local|private):','').$($left.Member.Value)" }
+        if($null -eq $setter -or $script:InventoryPolicyComSetters -cnotcontains $setter) { throw "$Label must not assign $($left.Extent.Text); only local report roots and the documented COM setters are on the reviewed allowlist" }
+    }
+    foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -contains [string]$node.TokenKind},$true)) {
+        if($unary.Child -is [System.Management.Automation.Language.MemberExpressionAst] -or $unary.Child -is [System.Management.Automation.Language.IndexExpressionAst]) {
+            $assignmentRoot=Get-InventoryAssignmentTarget $unary.Child
+            if($null -eq $assignmentRoot -or $script:InventoryPolicyAssignmentRoots -cnotcontains $assignmentRoot) { throw "$Label must not increment $($unary.Child.Extent.Text); only local report roots are on the reviewed allowlist" }
+        }
+    }
+    # A local report root is bound only to a hashtable literal ([ordered] or [pscustomobject] casts included) or to one of
+    # the reviewed exact sources, never through a multiple assignment, a parameter, a foreach variable or a
+    # variable-binding common parameter, so it cannot alias a COM object whose members the roots may then assign.
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        $targets=@($(if($left -is [System.Management.Automation.Language.ArrayLiteralAst]){$left.Elements}else{$left}))
+        foreach($target in $targets) {
+            if($target -is [System.Management.Automation.Language.ConvertExpressionAst]) { $target=$target.Child }
+            if(-not ($target -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+            $name=$target.VariablePath.UserPath -replace '^(script|global|local|private):',''
+            if($script:InventoryPolicyAssignmentRoots -cnotcontains $name) { continue }
+            if($left -is [System.Management.Automation.Language.ArrayLiteralAst]) { throw "$Label must not bind local report root `$$name through a multiple assignment" }
+            $right=$assignment.Right
+            $expression=$(if($right -is [System.Management.Automation.Language.CommandExpressionAst]){$right.Expression}else{$null})
+            $literal=($assignment.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and ($expression -is [System.Management.Automation.Language.HashtableAst] -or ($expression -is [System.Management.Automation.Language.ConvertExpressionAst] -and $expression.Child -is [System.Management.Automation.Language.HashtableAst] -and @('ordered','pscustomobject') -contains $expression.Type.TypeName.FullName)))
+            if(-not $literal -and $script:InventoryPolicyRootSources -cnotcontains "$name|$($right.Extent.Text)") { throw "$Label must not bind local report root `$$name to $($right.Extent.Text); only literals and the reviewed sources are on the allowlist" }
+        }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ParameterAst]},$true)) {
+        if($script:InventoryPolicyAssignmentRoots -ccontains $parameter.Name.VariablePath.UserPath) { throw "$Label must not bind local report root $($parameter.Name) as a parameter" }
+    }
+    foreach($loop in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst]},$true)) {
+        if($script:InventoryPolicyAssignmentRoots -ccontains ($loop.Variable.VariablePath.UserPath -replace '^(script|global|local|private):','')) { throw "$Label must not bind local report root $($loop.Variable) as a foreach variable" }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandParameterAst]},$true)) {
+        if($parameter.ParameterName -match '^(ov|pv|ev|wv|iv|outv[a-z]*|errorv[a-z]*|warningv[a-z]*|informationv[a-z]*|pipelinev[a-z]*|pi|pip|pipe|pipel|pipeli|pipelin|pipeline)$') { throw "$Label must not use the variable-binding parameter -$($parameter.ParameterName)" }
+    }
+    # Each function name is defined once, so a redefinition cannot inherit an invocation site or a scoped command.
+    $functionNames=@($Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | ForEach-Object { $_.Name.ToLowerInvariant() })
+    for($outer=0; $outer -lt $functionNames.Count; $outer++) {
+        for($inner=$outer+1; $inner -lt $functionNames.Count; $inner++) {
+            if($functionNames[$outer] -ceq $functionNames[$inner]) { throw "$Label must not define function $($functionNames[$outer]) more than once" }
+        }
+    }
+    # Drive-qualified variables (${variable:...}, $function:...) other than $env: reach runtime state or redefine
+    # functions; splatting and redirection bypass the reviewed argument forms.
+    foreach($variable in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if($variable.VariablePath.IsDriveQualified -and $variable.VariablePath.DriveName -ine 'env') { throw "$Label must not use dynamic code (drive-qualified variable $($variable.Extent.Text))" }
+        if(($variable.VariablePath.UserPath -replace '^.*:','') -ieq 'ExecutionContext') { throw "$Label must not use dynamic code ($($variable.Extent.Text))" }
+        if($variable.Splatted) { throw "$Label must not use dynamic code (splatted arguments $($variable.Extent.Text))" }
+    }
+    foreach($redirection in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.RedirectionAst]},$true)) { throw "$Label must not use redirection $($redirection.Extent.Text); it is not on the reviewed allowlist" }
+    # Bare-word arguments, exact forms of file-system writes, native helper calls and COM path writes.
+    foreach($command in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
+        for($position=1; $position -lt $command.CommandElements.Count; $position++) {
+            $element=$command.CommandElements[$position]
+            if($element -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $element.StringConstantType -eq [System.Management.Automation.Language.StringConstantType]::BareWord -and $script:InventoryPolicyBareArguments -notcontains $element.Value) { throw "$Label must not pass bare argument $($element.Value); it is not on the reviewed allowlist" }
+        }
+        $commandName=$command.GetCommandName()
+        if($null -eq $commandName) { continue }
+        $exact=Get-InventoryPairValues $script:InventoryPolicyExactForms $commandName
+        if($exact.Count -gt 0 -and $exact -cnotcontains (($command.Extent.Text -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not run $commandName with arguments that are not on the reviewed allowlist: $($command.Extent.Text)" }
+    }
+    foreach($invoke in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]},$true)) {
+        if($invoke.Static -and $invoke.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) {
+            $exact=Get-InventoryPairValues $script:InventoryPolicyExactApis "$($invoke.Expression.TypeName.FullName)::$($invoke.Member.Value)"
+            if($exact.Count -gt 0 -and $exact -cnotcontains (($invoke.Extent.Text -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not call $($invoke.Extent.Text); that form is not on the reviewed allowlist" }
+        } elseif(-not $invoke.Static) {
+            $exact=Get-InventoryPairValues $script:InventoryPolicyExactMembers $invoke.Member.Value
+            if($exact.Count -gt 0 -and $exact -cnotcontains (($invoke.Extent.Text.Substring($invoke.Expression.Extent.Text.Length) -replace '\s+',' ') -replace '^ | $','')) { throw "$Label must not call $($invoke.Extent.Text); that form is not on the reviewed allowlist" }
+        }
+    }
+    # Pinned variables (invocation-site variables and owned paths) keep exactly their reviewed bindings.
+    foreach($assignment in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
+        $left=$assignment.Left
+        if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
+        $targets=@($(if($left -is [System.Management.Automation.Language.ArrayLiteralAst]){$left.Elements}else{$left}))
+        foreach($target in $targets) {
+            if($target -is [System.Management.Automation.Language.ConvertExpressionAst]) { $target=$target.Child }
+            if(-not ($target -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+            $pinnedName=($target.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+            if($script:InventoryPolicyPinned -notcontains $pinnedName) { continue }
+            $binding="$pinnedName|=|$(($assignment.Right.Extent.Text -replace '\s+',' ') -replace '^ | $','')"
+            if($left -is [System.Management.Automation.Language.ArrayLiteralAst] -or $assignment.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals -or $script:InventoryPolicyPinnedBindings -cnotcontains $binding) { throw "$Label must not bind pinned variable `$$pinnedName to $($assignment.Right.Extent.Text); only its reviewed bindings are on the allowlist" }
+        }
+    }
+    foreach($loop in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst]},$true)) {
+        $pinnedName=($loop.Variable.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+        if($script:InventoryPolicyPinned -contains $pinnedName -and $script:InventoryPolicyPinnedBindings -cnotcontains "$pinnedName|foreach|$(($loop.Condition.Extent.Text -replace '\s+',' ') -replace '^ | $','')") { throw "$Label must not bind pinned variable `$$pinnedName in an unreviewed foreach" }
+    }
+    foreach($parameter in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.ParameterAst]},$true)) {
+        $pinnedName=($parameter.Name.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()
+        if($script:InventoryPolicyPinned -contains $pinnedName -and $script:InventoryPolicyPinnedBindings -cnotcontains "$pinnedName|param|$(Get-InventoryOwnerName $parameter)|$($parameter.StaticType.Name)") { throw "$Label must not declare pinned variable `$$pinnedName as an unreviewed parameter" }
+    }
+    foreach($unary in $Ast.FindAll({param($node) $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and $node.Child -is [System.Management.Automation.Language.VariableExpressionAst]},$true)) {
+        if([string]$unary.TokenKind -in @('PlusPlus','MinusMinus','PostfixPlusPlus','PostfixMinusMinus') -and $script:InventoryPolicyPinned -contains ($unary.Child.VariablePath.UserPath -replace '^(script|global|local|private):','').ToLowerInvariant()) { throw "$Label must not modify pinned variable $($unary.Child.Extent.Text)" }
+    }
 }
 function Assert-InventoryWorkerAst([string]$Path) {
     $tokens=$null; $parseErrors=$null
@@ -180,8 +415,9 @@ function Assert-InventoryWorkerAst([string]$Path) {
     if($closeCount -ne 1) { throw "Inventory worker must contain exactly one owned Close invocation; found $closeCount" }
     foreach($command in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]},$true)) {
         $commandName=$command.GetCommandName()
-        if($null -ne $commandName -and $script:inventoryForbiddenCommands -contains $commandName) { throw "Inventory worker must not run $commandName" }
+        if($null -ne $commandName -and $script:inventoryForbiddenCommands -contains ($commandName -replace '^.*\\','')) { throw "Inventory worker must not run $commandName" }
     }
+    Assert-InventoryAllowlistAst $ast 'Inventory worker'
     foreach($assignment in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst]},$true)) {
         $left=$assignment.Left
         if($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left=$left.Child }
@@ -248,6 +484,10 @@ function New-InventorySampleObservation([string[]]$FontNames,[string]$FarEast=''
     })
 }
 
+function New-InventorySampleWorkerReport($Ledger,[bool]$Record,$Presence,$Types) {
+    return ,([pscustomobject]@{cleanupConfirmed=$true;officeOperationsStopped=$false;ownedOpenCount=1;ownedCloseCount=1;error=$null;source=[pscustomobject]@{readOnly=-1;openedPathMatches=$true;snapshotUnchangedAfterClose=$true};boundsExceeded=@();semanticFailures=@();fontLedger=$Ledger;recordMasterPresence=$Record;masterPresence=$Presence;masterPresenceTypes=$Types})
+}
+
 function Invoke-InventoryPureRegression {
     $null=Assert-InventoryWorkerAst $PSCommandPath
     $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
@@ -259,6 +499,11 @@ function Invoke-InventoryPureRegression {
             saveAs='$p=$a.Open($x,-1,0,0); $p.SaveAs($y,24,0); $p.Close()'
             save='$p=$a.Open($x,-1,0,0); $p.Save(); $p.Close()'
             quit='$p=$a.Open($x,-1,0,0); $p.Close(); $a.Quit()'
+            handoutMasterObject='$p=$a.Open($x,-1,0,0); $m=$p.HandoutMaster; $p.Close()'
+            notesMasterObject='$p=$a.Open($x,-1,0,0); $m=$p.NotesMaster; $p.Close()'
+            titleMasterObject='$p=$a.Open($x,-1,0,0); $m=$p.TitleMaster; $p.Close()'
+            stringNamedMasterObject='$p=$a.Open($x,-1,0,0); $m=$p.''NotesMaster''; $p.Close()'
+            chainedMasterObject='$p=$a.Open($x,-1,0,0); $n=$p.NotesMaster.Shapes.Count; $p.Close()'
             export='$p=$a.Open($x,-1,0,0); $p.ExportAsFixedFormat($y,2); $p.Close()'
             comPropertySet='$p=$a.Open($x,-1,0,0); $shape.Name=''edited''; $p.Close()'
             comFontSet='$p=$a.Open($x,-1,0,0); $font.Name=''Aptos''; $p.Close()'
@@ -275,6 +520,18 @@ function Invoke-InventoryPureRegression {
             replaceFont='$p=$a.Open($x,-1,0,0); $p.Fonts.Replace(''Aptos'',''Carlito''); $p.Close()'
             staticCall='$p=$a.Open($x,-1,0,0); [IO.File]::Delete($y); $p.Close()'
             memberIncrement='$p=$a.Open($x,-1,0,0); $shape.Top++; $p.Close()'
+            invokeExpression='$p=$a.Open($x,-1,0,0); Invoke-Expression $y; $p.Close()'
+            iexAlias='$p=$a.Open($x,-1,0,0); iex $y; $p.Close()'
+            qualifiedInvokeExpression='$p=$a.Open($x,-1,0,0); Microsoft.PowerShell.Utility\Invoke-Expression $y; $p.Close()'
+            stringNamedIex='$p=$a.Open($x,-1,0,0); & ''iex'' $y; $p.Close()'
+            addType='$p=$a.Open($x,-1,0,0); Add-Type -TypeDefinition $y; $p.Close()'
+            scriptBlockCreate='$p=$a.Open($x,-1,0,0); $null=[scriptblock]::Create($y); $p.Close()'
+            invokeScript='$p=$a.Open($x,-1,0,0); $null=$Host.Runspace.InvokeScript($y); $p.Close()'
+            executionContext='$p=$a.Open($x,-1,0,0); $null=$ExecutionContext.SessionState; $p.Close()'
+            invokeCommand='$p=$a.Open($x,-1,0,0); Invoke-Command -ScriptBlock $y; $p.Close()'
+            callVariable='$p=$a.Open($x,-1,0,0); & $y; $p.Close()'
+            dotSourceVariable='$p=$a.Open($x,-1,0,0); . $y; $p.Close()'
+            operationOutsideComWrapper='$p=$a.Open($x,-1,0,0); & $Operation; $p.Close()'
         }
         $policyRejected=[ordered]@{}
         foreach($key in $policyNegatives.Keys) {
@@ -361,7 +618,11 @@ function Invoke-InventoryPureRegression {
         $ledgerJson=$aptosFontsLedger | ConvertTo-Json -Depth 5 -Compress
         if($ledgerJson -notmatch '"aptosPresentationFontNames":\["Aptos"\]' -or $ledgerJson -notmatch '"aptosSlideTextSlotNames":\[\]') { throw 'Ledger arrays did not serialize as JSON arrays' }
 
-        $goodReport=[pscustomobject]@{cleanupConfirmed=$true;officeOperationsStopped=$false;ownedOpenCount=1;ownedCloseCount=1;error=$null;source=[pscustomobject]@{readOnly=-1;openedPathMatches=$true;snapshotUnchangedAfterClose=$true};boundsExceeded=@();semanticFailures=@();fontLedger=$carlitoLedger}
+        $goodReport=New-InventorySampleWorkerReport $carlitoLedger $false $null $null
+        $validPresence=[pscustomobject]@{hasHandoutMaster=0;hasNotesMaster=-1;hasTitleMaster=0}
+        $int32Types=[pscustomobject]@{hasHandoutMaster='System.Int32';hasNotesMaster='System.Int32';hasTitleMaster='System.Int32'}
+        $masterOnReport=New-InventorySampleWorkerReport $carlitoLedger $true $validPresence $int32Types
+        $masterInt16Report=New-InventorySampleWorkerReport $carlitoLedger $true $validPresence ([pscustomobject]@{hasHandoutMaster='System.Int16';hasNotesMaster='System.Int16';hasTitleMaster='System.Int16'})
         $goodDurable=[pscustomobject]@{stage='worker.complete';status='success';cleanupConfirmed=$true}
         $goodResult=[pscustomobject]@{timedOut=$false;exitCode=0}
         $cleanRows=@($script:inventoryCanonicalFaces.Keys | ForEach-Object {[pscustomobject]@{file=$_;added=1;removed=$true}})
@@ -383,11 +644,23 @@ function Invoke-InventoryPureRegression {
             stringExitCode=(& $decide ([pscustomobject]@{timedOut=$false;exitCode='0'}) $goodDurable $goodReport 'temporary-session' $cleanRows $true $true)
             inputsChanged=(& $decide $goodResult $goodDurable $goodReport 'temporary-session' $cleanRows $true $false)
             failedDurable=(& $decide $goodResult ([pscustomobject]@{stage='worker.failure';status='error';cleanupConfirmed=$true}) $goodReport 'temporary-session' $cleanRows $true $true)
+            masterPresenceMissing=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true $null $null) 'temporary-session' $cleanRows $true $true)
+            masterPresenceTypesMissing=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true $validPresence $null) 'temporary-session' $cleanRows $true $true)
+            masterPresenceUnread=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=0;hasNotesMaster=$null;hasTitleMaster=$null}) ([pscustomobject]@{hasHandoutMaster='System.Int32';hasNotesMaster=$null;hasTitleMaster=$null})) 'temporary-session' $cleanRows $true $true)
+            masterPresenceOutOfDomain=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=0;hasNotesMaster=1;hasTitleMaster=0}) $int32Types) 'temporary-session' $cleanRows $true $true)
+            masterPresenceString=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=0;hasNotesMaster='0';hasTitleMaster=0}) ([pscustomobject]@{hasHandoutMaster='System.Int32';hasNotesMaster='System.String';hasTitleMaster='System.Int32'})) 'temporary-session' $cleanRows $true $true)
+            masterPresenceBoolean=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=$false;hasNotesMaster=0;hasTitleMaster=0}) ([pscustomobject]@{hasHandoutMaster='System.Boolean';hasNotesMaster='System.Int32';hasTitleMaster='System.Int32'})) 'temporary-session' $cleanRows $true $true)
+            masterPresenceNull=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=0;hasNotesMaster=0;hasTitleMaster=$null}) ([pscustomobject]@{hasHandoutMaster='System.Int32';hasNotesMaster='System.Int32';hasTitleMaster=$null})) 'temporary-session' $cleanRows $true $true)
+            masterPresenceEmptyString=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster='';hasNotesMaster=0;hasTitleMaster=0}) ([pscustomobject]@{hasHandoutMaster='System.String';hasNotesMaster='System.Int32';hasTitleMaster='System.Int32'})) 'temporary-session' $cleanRows $true $true)
+            masterPresenceFraction=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=0;hasNotesMaster=0.5;hasTitleMaster=0}) ([pscustomobject]@{hasHandoutMaster='System.Int32';hasNotesMaster='System.Double';hasTitleMaster='System.Int32'})) 'temporary-session' $cleanRows $true $true)
+            masterPresenceDoubleZero=(& $decide $goodResult $goodDurable (New-InventorySampleWorkerReport $carlitoLedger $true ([pscustomobject]@{hasHandoutMaster=0;hasNotesMaster=0;hasTitleMaster=0}) ([pscustomobject]@{hasHandoutMaster='System.Double';hasNotesMaster='System.Int32';hasTitleMaster='System.Int32'})) 'temporary-session' $cleanRows $true $true)
         }
-        if(-not $goodTemporary.passed -or -not $goodNone.passed -or $null -ne $goodNone.fontCleanupConfirmed) { throw 'Parent decision rejected a valid control' }
+        $goodMasterPresence=& $decide $goodResult $goodDurable $masterOnReport 'temporary-session' $cleanRows $true $true
+        $goodMasterInt16=& $decide $goodResult $goodDurable $masterInt16Report 'temporary-session' $cleanRows $true $true
+        if(-not $goodTemporary.passed -or -not $goodNone.passed -or $null -ne $goodNone.fontCleanupConfirmed -or -not $goodMasterPresence.passed -or -not $goodMasterInt16.passed) { throw 'Parent decision rejected a valid control' }
         $accepted=@($negativeDecisions.Keys | Where-Object {$negativeDecisions[$_].passed})
         if($accepted.Count -ne 0) { throw "Parent decision accepted negative controls: $($accepted -join ',')" }
-        [ordered]@{passed=$true;officeOrComCalls=0;fontApiCalls=0;readOnlyStaticPolicy=$true;policyNegativesRejected=$policyRejected;stopLatchPassed=$true;nonErrorStageErrorIsNull=$true;canonicalGenerationNegativesRejected=$true;registrationArrayDecodedRows=$decoded.Count;closeOnFailure=$errorCloseOutcomes;urlFullNameNotOwned=$true;ledgerAptosControlsPassed=$true;parentDecisionNegativesRejected=@($negativeDecisions.Keys)} | ConvertTo-Json -Depth 6
+        [ordered]@{passed=$true;officeOrComCalls=0;fontApiCalls=0;readOnlyStaticPolicy=$true;policyNegativesRejected=$policyRejected;stopLatchPassed=$true;nonErrorStageErrorIsNull=$true;canonicalGenerationNegativesRejected=$true;registrationArrayDecodedRows=$decoded.Count;closeOnFailure=$errorCloseOutcomes;urlFullNameNotOwned=$true;ledgerAptosControlsPassed=$true;parentDecisionNegativesRejected=@($negativeDecisions.Keys);masterPresenceDecisionPassed=$true} | ConvertTo-Json -Depth 6
     } finally {
         if(Test-Path -LiteralPath $pureRoot) {
             $deleteRoot=(Resolve-Path -LiteralPath $pureRoot).Path
@@ -476,7 +749,7 @@ if(-not $Worker) {
         $fixtureRequest=[ordered]@{path=$fixtureRoot;generation=[ordered]@{path=$generationPath;sha256=(Get-InventorySha256 $generationPath);snapshotPath=$generationSnapshot;snapshotSha256=(Get-InventorySha256 $generationSnapshot)};license=[ordered]@{path=$licensePath;sha256=$script:inventoryLicenseSha256;snapshotPath=$licenseSnapshot;snapshotSha256=(Get-InventorySha256 $licenseSnapshot);spdx='OFL-1.1'};fonts=$fontInputs}
     }
     $request=[ordered]@{
-        schemaVersion=1;kind='native-font-inventory';inputMode=$inputMode
+        schemaVersion=1;kind='native-font-inventory';inputMode=$inputMode;compareAfterContentFonts=[bool]$CompareAfterContentFonts;recordMasterPresence=[bool]$RecordMasterPresence
         source=[ordered]@{path=$inputPath;sha256=(Get-InventorySha256 $inputPath);snapshotPath=$sourceSnapshot;snapshotSha256=(Get-InventorySha256 $sourceSnapshot)}
         fixture=$fixtureRequest
         verifier=[ordered]@{path=$PSCommandPath;sha256=(Get-InventorySha256 $PSCommandPath);snapshotPath=$verifierSnapshot;snapshotSha256=(Get-InventorySha256 $verifierSnapshot)}
@@ -484,7 +757,7 @@ if(-not $Worker) {
         fontHelper=[ordered]@{path=$fontHelperOriginal;sha256=(Get-InventorySha256 $fontHelperOriginal);snapshotPath=$fontHelperSnapshot;snapshotSha256=(Get-InventorySha256 $fontHelperSnapshot)}
         fontRegistration=[ordered]@{mode=$registrationMode;flags=$(if($registrationMode -ceq 'none'){$null}else{0})}
         bounds=$script:inventoryBounds
-        scope='Open one owned input snapshot read-only, enumerate Presentation.Fonts first, then theme font slots and bounded whole-range, paragraph and run Font2 slots on slides and the first slide master, then close that exact presentation. No edit, save, export, reopen, embedding or application quit.'
+        scope=('Open one owned input snapshot read-only, enumerate Presentation.Fonts first, then theme font slots and bounded whole-range, paragraph and run Font2 slots on slides and the first slide master. Optionally reacquire Presentation.Fonts after content reads and before closing that exact presentation. No edit, save, export, reopen, embedding or application quit.'+$(if($RecordMasterPresence){' With -RecordMasterPresence, also read only the Presentation.HasHandoutMaster, HasNotesMaster and HasTitleMaster getters after those reads and before closing, never the master objects.'}else{''}))
     }
     $request | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot 'request.json') -Encoding UTF8
     $generation=$null
@@ -498,6 +771,9 @@ if(-not $Worker) {
     . $processSnapshot; . $fontHelperSnapshot
     $script:inventoryWorkerResult=$null; $parentFailure=$null
     $workerArguments=@('-OutputDirectory',$outputRoot,'-InputPresentation',$sourceSnapshot,'-Worker')
+    if($CompareAfterContentFonts -and $RecordMasterPresence) { $workerArguments=@('-OutputDirectory',$outputRoot,'-InputPresentation',$sourceSnapshot,'-Worker','-CompareAfterContentFonts','-RecordMasterPresence') }
+    elseif($CompareAfterContentFonts) { $workerArguments=@('-OutputDirectory',$outputRoot,'-InputPresentation',$sourceSnapshot,'-Worker','-CompareAfterContentFonts') }
+    elseif($RecordMasterPresence) { $workerArguments=@('-OutputDirectory',$outputRoot,'-InputPresentation',$sourceSnapshot,'-Worker','-RecordMasterPresence') }
     try {
         if($registrationMode -ceq 'temporary-session') {
             Invoke-OpfWithTemporaryFonts -Generation $generation -EvidenceRoot $snapshotRoot -RunRoot $outputRoot -Action {
@@ -519,7 +795,7 @@ if(-not $Worker) {
     $ledgerFontNames=$null; if($null -ne $ledger) { $ledgerFontNames=[string[]]@($ledger.presentationFontNames) }
     $terminal=[ordered]@{
         timestamp=(Get-Date).ToUniversalTime().ToString('o');passed=$decision.passed;timedOut=$decision.timedOut;exitCode=$decision.exitCode
-        inputMode=$inputMode;fontRegistrationMode=$registrationMode;officeLifecycleComplete=$decision.officeLifecycleComplete;readOnlyConfirmed=$decision.readOnlyConfirmed;inventoryComplete=$decision.inventoryComplete
+        inputMode=$inputMode;compareAfterContentFonts=[bool]$CompareAfterContentFonts;recordMasterPresence=[bool]$RecordMasterPresence;fontRegistrationMode=$registrationMode;officeLifecycleComplete=$decision.officeLifecycleComplete;readOnlyConfirmed=$decision.readOnlyConfirmed;inventoryComplete=$decision.inventoryComplete
         fontCleanupConfirmed=$decision.fontCleanupConfirmed;registrationFilePresent=$registrationFilePresent;inputsUnchanged=$inputsUnchanged
         ownedOpenCount=$(if($null -eq $workerReport){0}else{$workerReport.ownedOpenCount});ownedCloseCount=$(if($null -eq $workerReport){0}else{$workerReport.ownedCloseCount})
         lastDurableStage=$(if($null -eq $lastDurable){$null}else{$lastDurable.stage});lastDurableStatus=$(if($null -eq $lastDurable){$null}else{$lastDurable.status});parentError=$parentFailure
@@ -535,6 +811,8 @@ if(-not $Worker) {
 
 $root=(Resolve-Path -LiteralPath $OutputDirectory).Path
 $request=Get-Content -LiteralPath (Join-Path $root 'request.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if($request.compareAfterContentFonts -isnot [bool] -or $request.compareAfterContentFonts -cne [bool]$CompareAfterContentFonts) { throw 'Worker comparison switch must match the strict boolean request mode before Office startup' }
+if($request.recordMasterPresence -isnot [bool] -or $request.recordMasterPresence -cne [bool]$RecordMasterPresence) { throw 'Worker master-presence switch must match the strict boolean request mode before Office startup' }
 $sourceSnapshot=(Resolve-Path -LiteralPath $request.source.snapshotPath).Path
 if(-not (Test-InventoryPathEqual $sourceSnapshot (Join-Path $root 'inputs/source.pptx'))) { throw 'Worker source snapshot must be inputs/source.pptx inside the output directory' }
 if(-not (Test-InventoryPathEqual $sourceSnapshot $InputPresentation)) { throw 'Worker InputPresentation must be the recorded source snapshot' }
@@ -558,11 +836,12 @@ $script:paragraphsRead=0; $script:runsRead=0
 $bounds=$script:inventoryBounds
 $os=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $script:report=[ordered]@{
-    schemaVersion=1;kind='native-font-inventory';inputMode=$inputMode
+    schemaVersion=1;kind='native-font-inventory';inputMode=$inputMode;compareAfterContentFonts=$request.compareAfterContentFonts;recordMasterPresence=$request.recordMasterPresence
     source=[ordered]@{path=$request.source.path;sha256=$request.source.sha256;snapshotPath=$sourceSnapshot;snapshotSha256=(Get-InventorySha256 $sourceSnapshot);fullName=$null;openedPathMatches=$false;readOnly=$null;snapshotUnchangedAfterClose=$null}
     fontRegistration=[ordered]@{mode=$registrationMode;flags=$request.fontRegistration.flags}
     bounds=$bounds
     presentationFonts=[ordered]@{count=$null;entries=@()}
+    presentationFontsAfterContent=$null;fontQueryComparison=$null;masterPresence=$null;masterPresenceTypes=$null
     theme=[ordered]@{major=[ordered]@{latin=$null;complexScript=$null;eastAsian=$null};minor=[ordered]@{latin=$null;complexScript=$null;eastAsian=$null}}
     slides=[ordered]@{count=$null;entries=@()}
     slideMaster=[ordered]@{shapeCount=$null;shapes=@()}
@@ -591,19 +870,37 @@ function Assert-InventoryPresentationNotOpen($Application,[string]$Path) {
         if(Test-InventoryPathEqual ([string]$actual) $Path) { throw "Presentation is already open, so ownership cannot be established: $Path" }
     }
 }
-function Read-InventoryPresentationFonts {
-    $collection=Invoke-InventoryCom 'owned.presentation.fonts.get' {return ,$script:presentation.Fonts}
-    $count=[int](Invoke-InventoryCom 'owned.presentation.fonts.count.get' {$collection.Count})
-    $script:report.presentationFonts.count=$count
-    if($count -gt $bounds.maxPresentationFonts) { $script:report.boundsExceeded+=@('presentationFonts'); return }
+function Read-InventoryPresentationFonts([switch]$AfterContent) {
+    $prefix=$(if($AfterContent){'owned.presentation.fonts-after-content'}else{'owned.presentation.fonts'})
+    if($AfterContent) { $script:report.presentationFontsAfterContent=[ordered]@{count=$null;entries=@()}; Write-InventoryReport }
+    $collection=Invoke-InventoryCom "$prefix.get" {return ,$script:presentation.Fonts}
+    $count=[int](Invoke-InventoryCom "$prefix.count.get" {$collection.Count})
+    if($AfterContent) { $script:report.presentationFontsAfterContent.count=$count } else { $script:report.presentationFonts.count=$count }
+    if($count -gt $bounds.maxPresentationFonts -or $count -lt 0) { $script:report.boundsExceeded+=@($(if($AfterContent){'presentationFontsAfterContent'}else{'presentationFonts'})); Write-InventoryReport; return }
     for($index=1;$index -le $count;$index++) {
-        $font=Invoke-InventoryCom "owned.presentation.fonts.item-$index.get" {return ,$collection.Item($index)}
-        $name=[string](Invoke-InventoryCom "owned.presentation.fonts.item-$index.name.get" {$font.Name})
-        $embedded=[int](Invoke-InventoryCom "owned.presentation.fonts.item-$index.embedded.get" {$font.Embedded})
-        $embeddable=[int](Invoke-InventoryCom "owned.presentation.fonts.item-$index.embeddable.get" {$font.Embeddable})
-        $script:report.presentationFonts.entries+=@([ordered]@{index=$index;name=$name;embedded=$embedded;embeddable=$embeddable})
+        $font=Invoke-InventoryCom "$prefix.item-$index.get" {return ,$collection.Item($index)}
+        $name=[string](Invoke-InventoryCom "$prefix.item-$index.name.get" {$font.Name})
+        $embedded=[int](Invoke-InventoryCom "$prefix.item-$index.embedded.get" {$font.Embedded})
+        $embeddable=[int](Invoke-InventoryCom "$prefix.item-$index.embeddable.get" {$font.Embeddable})
+        if($AfterContent) { $script:report.presentationFontsAfterContent.entries+=@([ordered]@{index=$index;name=$name;embedded=$embedded;embeddable=$embeddable}); Write-InventoryReport }
+        else { $script:report.presentationFonts.entries+=@([ordered]@{index=$index;name=$name;embedded=$embedded;embeddable=$embeddable}) }
     }
     Write-InventoryReport
+}
+# Raw msoTriState getters only (-1 true, 0 false). The HandoutMaster, NotesMaster and TitleMaster objects are never
+# accessed: reading them can create a master in memory. Each getter is its own staged pair under the stop latch. The
+# value is recorded exactly as returned, with its type name beside it: no [int] cast, so a null, empty, fractional,
+# boolean or string read is never coerced to 0 (which would look like "no master").
+function Read-InventoryMasterPresence {
+    $script:report.masterPresence=[ordered]@{hasHandoutMaster=$null;hasNotesMaster=$null;hasTitleMaster=$null}
+    $script:report.masterPresenceTypes=[ordered]@{hasHandoutMaster=$null;hasNotesMaster=$null;hasTitleMaster=$null}; Write-InventoryReport
+    $raw=Invoke-InventoryCom 'owned.presentation.hasHandoutMaster.get' {$script:presentation.HasHandoutMaster}
+    $script:report.masterPresence.hasHandoutMaster=$raw; $script:report.masterPresenceTypes.hasHandoutMaster=$(if($null -eq $raw){$null}else{[string]$raw.PSTypeNames[0]}); Write-InventoryReport
+    $raw=Invoke-InventoryCom 'owned.presentation.hasNotesMaster.get' {$script:presentation.HasNotesMaster}
+    $script:report.masterPresence.hasNotesMaster=$raw; $script:report.masterPresenceTypes.hasNotesMaster=$(if($null -eq $raw){$null}else{[string]$raw.PSTypeNames[0]}); Write-InventoryReport
+    $raw=Invoke-InventoryCom 'owned.presentation.hasTitleMaster.get' {$script:presentation.HasTitleMaster}
+    $script:report.masterPresence.hasTitleMaster=$raw; $script:report.masterPresenceTypes.hasTitleMaster=$(if($null -eq $raw){$null}else{[string]$raw.PSTypeNames[0]}); Write-InventoryReport
+    if(-not (Test-InventoryMasterPresenceComplete $script:report.masterPresence $script:report.masterPresenceTypes)) { $script:report.semanticFailures+=@('master-presence-out-of-domain'); Write-InventoryReport }
 }
 function Read-InventoryThemeFonts($Master) {
     $theme=Invoke-InventoryCom 'owned.slideMaster.theme.get' {return ,$Master.Theme}
@@ -726,11 +1023,22 @@ try {
         Read-InventoryThemeFonts $master
         Read-InventorySlides
         Read-InventoryMasterShapes $master
+        if($request.compareAfterContentFonts -or $request.recordMasterPresence) {
+            # Persist the original first-snapshot ledger before any later
+            # COM access; a latched later-read failure must not erase it.
+            $script:report.fontLedger=Get-InventoryFontLedger $script:report; Write-InventoryReport
+        }
+        if($request.compareAfterContentFonts) {
+            Read-InventoryPresentationFonts -AfterContent
+            if(@($script:report.boundsExceeded).Count -eq 0) { $script:report.fontQueryComparison=Get-InventoryFontsComparison $script:report.presentationFonts $script:report.presentationFontsAfterContent; Write-InventoryReport }
+        }
+        # After both Presentation.Fonts snapshots and before the owned close.
+        if($request.recordMasterPresence) { Read-InventoryMasterPresence }
     } else { $script:report.semanticFailures+=@('presentation-not-read-only') }
     Close-OwnedInventoryPresentation $sourceSnapshot
     $script:report.source.snapshotUnchangedAfterClose=((Get-InventorySha256 $sourceSnapshot) -ceq [string]$request.source.sha256)
     if(-not $script:report.source.snapshotUnchangedAfterClose) { $script:report.semanticFailures+=@('source-snapshot-changed') }
-    $script:report.fontLedger=Get-InventoryFontLedger $script:report; Write-InventoryReport
+    if(-not ($request.compareAfterContentFonts -or $request.recordMasterPresence)) { $script:report.fontLedger=Get-InventoryFontLedger $script:report }; Write-InventoryReport
     if(@($script:report.boundsExceeded).Count -ne 0 -or @($script:report.semanticFailures).Count -ne 0) { throw "Inventory incomplete after owned close: $((@($script:report.boundsExceeded)+@($script:report.semanticFailures)) -join ',')" }
     Write-InventoryStage 'worker.complete' 'success'; Write-InventoryReport
     Write-Output 'Read-only native font inventory completed; run native-font-inventory-audit.mjs on this directory.'

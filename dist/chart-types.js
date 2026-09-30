@@ -38,6 +38,10 @@ export const CHART_TYPES = Object.freeze({
   world: { family: 'chartex', layoutId: 'regionMap', aspose: 'Map' },
 });
 
+// A chartex id (treemap, histogram, ...) has no classic construct; the exporter
+// writes it as a clustered column chart and reports chart-data-adapted.
+export const CHARTEX_FALLBACK = CHART_TYPES.column;
+
 const variants = (base, target) => Object.fromEntries([base, `${base}-2x`, `${base}-3x`].map((id) => [id, target]));
 
 // Deprecated core ids (opf 0.12.0 removes them) -> replacement id.
@@ -154,6 +158,8 @@ function asArray(value) {
 // PptxGenJS omits or cannot express parts of these constructs. Rewrite only
 // the generated chart-type element so the part states the exact grouping.
 export function applyChartConstruct(xml, spec) {
+  // ScatterWithMarkers: the core catalog records scatterStyle "marker" (markers, no connecting line). PptxGenJS writes lineMarker and relies on the series line being noFill.
+  if (spec?.family === 'xy') return xml.replace(/<c:scatterStyle val="[^"]*"\/>/, '<c:scatterStyle val="marker"/>');
   if (!spec || spec.family !== 'category') return xml;
   const element = { bar: 'barChart', line: 'lineChart', area: 'areaChart', radar: 'radarChart' }[spec.pptx];
   if (!element || element === 'radarChart') return xml;
