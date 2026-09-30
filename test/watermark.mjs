@@ -105,15 +105,26 @@ for (const [label, [width, height]] of Object.entries(dimensions)) {
   checked++;
 }
 
-// 3. It stays beneath the slide image, which the preview draws after it.
+// 3. Paint order against a slide image is the traced preview's order, not an assumption:
+// the preview paints the slide image, its overlay, then the watermark, then content.
 {
-  const deck = { design: { watermark: { src: wide, opacity: 0.2 } },
-    slides: [{ title: 'Layered', text: 'Body', design: { slideImage: { src: square, position: 'background' } } }] };
-  const { xml } = await exported(deck);
-  const names = shapeNames(xml[0]);
-  assert.ok(names.indexOf('OPF watermark') < names.indexOf('OPF slide image slides.0'), 'Watermark is beneath the slide image');
-  assert.equal(names.indexOf('OPF watermark'), 0);
-  checked++;
+  for (const position of ['background', 'left', 'right', 'top', 'bottom']) for (const overlay of [false, true]) {
+    const slideImage = { src: square, position, ...(overlay ? { overlay: { color: '#000000', opacity: 0.3 } } : {}) };
+    const deck = { design: { watermark: { src: wide, opacity: 0.2 } }, slides: [{ title: 'Layered', text: 'Body', design: { slideImage } }] };
+    const svg = renderSvgDeck(deck, { trace: true })[0];
+    const at = path => svg.indexOf(`data-opf-path="${path}"`);
+    const previewOrder = [['OPF slide image slides.0', 'slides.0.design.slideImage'], ['OPF watermark', 'design.watermark'], ['OPF heading slides.0.title line 0', 'slides.0.title']]
+      .map(([name, path]) => ({ name, at: at(path) })).sort((x, y) => x.at - y.at).map(entry => entry.name);
+    assert.ok(previewOrder.indexOf('OPF slide image slides.0') < previewOrder.indexOf('OPF watermark') && previewOrder.indexOf('OPF watermark') < previewOrder.indexOf('OPF heading slides.0.title line 0'), 'The traced preview paints slide image, watermark, then content');
+    const { xml } = await exported(deck);
+    const names = shapeNames(xml[0]).filter(name => previewOrder.includes(name));
+    assert.deepEqual(names, previewOrder, `${position}${overlay ? ' with overlay' : ''}: native order equals the preview's`);
+    if (overlay) {
+      const all = shapeNames(xml[0]);
+      assert.ok(all.indexOf('OPF slide image overlay slides.0') < all.indexOf('OPF watermark'), 'The watermark also lies above the slide image overlay');
+    }
+    checked++;
+  }
 }
 
 // 4. Never silent: unrepresentable variants report a specific diagnostic.
@@ -188,5 +199,10 @@ for (const [label, [width, height]] of Object.entries(dimensions)) {
   assert.ok(media.length >= 1);
   checked++;
 }
+
+// An SVG watermark has no readable raster dimensions: it follows the same contract as every
+// other SVG image and throws instead of being dropped.
+await assert.rejects(exported({ design: { watermark: { src: 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>').toString('base64'), opacity: 0.1 } }, slides: [{ title: 'A' }] }), error => error.code === 'unsupported-image-dimensions' && error.details?.path === 'design.watermark');
+checked++;
 
 console.log(`Watermark export checks passed (${checked}).`);

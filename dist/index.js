@@ -15,6 +15,7 @@ import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, r
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {importImageOrientation} from './image-import.js';
 import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
+import {dedupeMedia} from './media-dedupe.js';
 import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
@@ -1242,9 +1243,9 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const alignmentFor=item=>item.alignment??fieldAlignment(item.field);
   const geometry = composeSlide(opfSlide, { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) });
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
-  // design.watermark paints first, beneath the slide image and all content, as the preview does.
-  await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);
+  // The preview paints background, slide image (and its overlay), then design.watermark, then content.
   if (geometry.slideImage) await addSlideImage(slide, presentation, geometry.slideImage, slideIndex, slideContext, options);
+  await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);
   for (const item of geometry.items) {
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };
     if (item.frameBox) {
@@ -1482,7 +1483,8 @@ async function addImagePayload(slide, presentation, asset, region, path, context
   return objectName;
 }
 
-// design.watermark: one native picture per slide, first in the shape tree. The
+// design.watermark: one native picture per slide, added after the slide image
+// (and its overlay) and before all content, the preview's paint order. The
 // slide's own design.watermark replaces the deck's, and false suppresses it.
 // Frame, fit and opacity are written after PptxGenJS embeds the bytes.
 async function addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options) {
@@ -2446,6 +2448,8 @@ async function normalizePptxZip(raw, context) {
   placeWatermarks(entries, context.watermarks, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
   });
+  // A picture repeated across slides embeds once (after fitting, which needs each slide's own relationship).
+  dedupeMedia(entries, imageMetadata, resolveRelationshipTarget);
   // Charts and notes follow the language and fonts of the slide they belong to.
   context.partSlides = new Map();
   for (const part of Object.keys(entries)) {
