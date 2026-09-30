@@ -1,4 +1,5 @@
 import {nativeBodyReader, joinNativeParagraphs} from './body-text-import.js';
+import {isFaceStyleSuffix} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
@@ -1234,7 +1235,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
       const surface=slideContext.colorScheme[isDarkHex(slideContext.colors.background)?'dark2':'light2']??`#${slideContext.colors.surface}`;
       slide.addShape('roundRect',{x:frame.x/96,y:frame.y/96,w:frame.width/96,h:frame.height/96,
         rectRadius:8*Math.min(widthInches,heightInches)/720,
-        fill:paint(surface),line:{...paint(slideContext.colorScheme.accent5??`#${slideContext.colors.border}`),pt:.75},objectName:`OPF card ${item.path}`});
+        fill:paint(surface),line:{...paint(slideContext.colorScheme.accent5??`#${slideContext.colors.border}`),width:.75},objectName:`OPF card ${item.path}`});
     }
     if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
       addMeasuredPayloadText(slide,item.value,item.box,slideContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:alignmentFor(item),diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?slideContext.colors.accent:slideContext.colors.text});
@@ -1738,7 +1739,7 @@ function addCodePayload(slide, value, layout, region, context, path) {
   const group = String(context.codeTags.size + 1), panelName = `OPF code ${group} panel`;
   for (const part of layout.parts) if (!part.fit) throw new OPFPptxError('layout-overflow', 'Code content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
   context.codeTags.set(panelName,codeManifest(value,layout,group));
-  slide.addShape('rect', {...region, fill: {color: '111827'}, line: {color: '334155', pt: .75}, objectName:panelName});
+  slide.addShape('rect', {...region, fill: {color: '111827'}, line: {color: '334155', width: .75}, objectName:panelName});
   for (const [partIndex,part] of layout.parts.entries()) {
     if (!part.fit) throw new OPFPptxError('layout-overflow', 'Code content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
     for (const [index,line] of part.fit.sourceLines.entries()) {
@@ -1801,7 +1802,7 @@ function addTimelinePayload(slide, value, layout, context, options, path) {
   const scale=Math.min(context.dimensions.widthInches,context.dimensions.heightInches)*96/720;
   const group=String(context.timelineTags.size),anchor=timelineManifest(value,layout),connectorName=`OPF timeline ${group} connector`;
   const {x1,y1,x2,y2}=layout.connector;
-  slide.addShape('line',{objectName:connectorName,x:x1/96,y:y1/96,w:(x2-x1)/96,h:(y2-y1)/96,line:{color:context.colors.border,pt:3*scale*.75}});
+  slide.addShape('line',{objectName:connectorName,x:x1/96,y:y1/96,w:(x2-x1)/96,h:(y2-y1)/96,line:{color:context.colors.border,width:3*scale*.75}});
   context.timelineTags.set(connectorName,{v:1,group,role:'connector'});
   for(const marker of layout.markers){
     const objectName=`OPF timeline ${group} marker ${marker.eventIndex}`;
@@ -1829,7 +1830,7 @@ function addMediaPayload(slide, presentation, value, region, path, context, opti
     context.mediaTags.set(names.badge, {v: 1, role: "badge", path});
     context.mediaTags.set(names.play, {v: 1, role: "play", path});
   }
-  slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, pt: 0.75}, hyperlink, objectName: names.frame});
+  slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, width: 0.75}, hyperlink, objectName: names.frame});
   slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.badge});
   slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.play});
   addMeasuredPayloadText(slide, mediaCaption(value), {...box, y: icon.y + 72 + 20, height: 50}, context, options,
@@ -1914,7 +1915,7 @@ function addPlaceholderPayload(slide, label, description, region, context) {
     w: region.w,
     h: region.h,
     fill: { color: context.colors.surface, transparency: 10 },
-    line: { color: context.colors.border, pt: 0.75 }
+    line: { color: context.colors.border, width: 0.75 }
   });
   slide.addText(`${label}\n${description}`, {
     x: region.x + 0.12,
@@ -1937,12 +1938,11 @@ function addPlaceholderPayload(slide, label, description, region, context) {
 // always names the developer's chosen family. Measurement still uses the
 // substitute, because the provider resolves the chosen family again on every
 // measure/outline call, so layout is unchanged.
-const FACE_STYLE_WORDS = /^(?:(?:thin|hairline|extra ?light|ultra ?light|light|semi ?light|demi ?light|book|regular|normal|medium|semi ?bold|demi ?bold|bold|extra ?bold|ultra ?bold|black|heavy|extra ?black|ultra ?black|italic|oblique)\s*)+$/i;
 function sameTypeface(requested, resolved) {
   if (typeof resolved !== 'string') return false;
   const want = requested.trim().toLowerCase(), got = resolved.trim().toLowerCase();
   // A legacy four-style family such as "Roboto Medium" is the chosen typeface.
-  return got === want || got.startsWith(`${want} `) && FACE_STYLE_WORDS.test(got.slice(want.length + 1));
+  return got === want || got.startsWith(`${want} `) && isFaceStyleSuffix(got.slice(want.length + 1));
 }
 function chosenFamilyMeasurement(measurement) {
   if (!measurement || typeof measurement.resolveStyle !== 'function') return measurement;
