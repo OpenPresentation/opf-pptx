@@ -21,7 +21,7 @@ jobs:
         # multiline step. Bash's Actions wrapper stops on the first failure.
         shell: bash
     env:
-      OPF_GOLDEN_BASELINE: ${{ github.workspace }}/opf-render/test/golden/opf-examples-png.furniture.sha256.json
+      OPF_GOLDEN_BASELINE: ${{ github.workspace }}/opf-render/test/golden/opf-examples-png.cover-centering.sha256.json
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +37,8 @@ jobs:
         with:
           repository: OpenPresentation/opf
           # Core main 1228351 (core 0.11.3 plus the recorded renderer 0.11.8 lazy font count and the FF-56 evidence, opf#222) plus opf#231 (lane scripts accept the root payload form that content topology restores, opf-pptx#122); the published core this release requires is ^0.11.3.
-          ref: 61316e6d29f3f9b284e48167a63e47600a96b7b7
+          # Spec-gap closure A (P2) pins core PR opf#229 at 0bcd3f6 (logos, picture bullets, accent font, contentDirection, chartPrimary, merged with the cover alignment change opf#230), which does not contain the merged opf#231; the next step cherry-picks opf#231 onto it. Move to the merged core commit before release. Lockstep: the PPTX floor moves to the next core release.
+          ref: 0bcd3f6e638df6faaddd20adc92152c4664ad263
           path: opf
           fetch-depth: 0
           persist-credentials: false
@@ -45,18 +46,24 @@ jobs:
         with:
           repository: OpenPresentation/opf-render
           # opf-render 0.11.8 release commit (the tag draws in the primary colour, as opf-pptx writes it).
-          ref: 0ce9bb959247fbb706f670240e55fd7a09a2eedd
+          # Spec-gap closure A (P2) pins opf-render PR #83 head 7086afb (draws the same logos, picture bullets and accent font on the combined core); move to the merged renderer commit before release.
+          ref: 7086afb0e1f2c44f2a1590b54855f9e963a0ef4f
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: OpenPresentation/opf-editor
-          # opf-editor 0.10.5 release commit plus opf-editor#57 (code-browser accepts the root payload form that content topology restores, opf-pptx#122).
-          ref: 601470cf8513b54cb6a98a26524c1c61396a4ba7
+          # opf-editor main dea8a79 (0.10.5 plus #57: code-browser accepts the root payload form that content topology restores, opf-pptx#122).
+          ref: dea8a7957b322b1e0b837c6512b15af5073aa081
           path: opf-editor
           fetch-depth: 0
           persist-credentials: false
+      - name: Add opf#231 to the pinned core (lane scripts accept the root payload form opf-pptx#122 restores)
+        working-directory: opf
+        run: |
+          git fetch --no-tags origin af0afbb396b73412937105ee3a537649819c3187
+          git -c user.name=ci -c user.email=ci@example.invalid cherry-pick af0afbb396b73412937105ee3a537649819c3187
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.33.2
@@ -110,6 +117,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native font inventory controls failed' }
       - run: npm run validate
       - run: npm test
+      # A design-fields export still imports with the released importer without losing provenance (needs the registry).
+      - run: npm run test:published-import
       - run: npm run test:font-variants
       - run: npm run test:code
       - name: Verify Playwright image version

@@ -13,7 +13,7 @@ import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
 import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
-import {attachFurnitureTags, furnitureManifest, importFurniture, staticDateFallback} from './furniture-provenance.js';
+import {attachFurnitureTags, furnitureManifest, importFurniture, manifestPartIndex, staticDateFallback} from './furniture-provenance.js';
 import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance} from './document-provenance.js';
 import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './sections.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
@@ -21,6 +21,7 @@ import {importImageOrientation} from './image-import.js';
 import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
 import {dedupeMedia} from './media-dedupe.js';
 import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
+import {placeLogos, importLogo, logoName} from './logo-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
@@ -213,6 +214,8 @@ export async function toPptx(input, options = {}) {
   context.pictureText = new Map();
   context.slideImages = new Map();
   context.watermarks = new Map();
+  context.logos = new Map();
+  context.bulletImages = new Map();
   context.backgroundFills = new Map();
   context.notesWithCarriageReturns = new Map();
   context.cardTags = new Map();
@@ -223,6 +226,7 @@ export async function toPptx(input, options = {}) {
   context.timelineTags = new Map();
   context.quoteTags = new Map();
   context.furnitureTags = new Map();
+  context.furnitureLogoTags = new Map();
   context.furnitureFields = new Map();
   context.furnitureManifests = new Map();
   context.codeTags = new Map();
@@ -375,6 +379,7 @@ export async function fromPptx(input, options = {}) {
     report({code: "invalid-document-provenance", path: "", message: `${errorMessage(error)} Ordinary import keeps the values observed in the PPTX.`});
   }
   if (slideProvenance.length !== imported.slides.length) throw new OPFPptxError("invalid-import-opf", "Slide provenance does not match the imported slides.");
+  restoreLogoFallback(imported, furnitureContexts);
   if (imported.design?.theme === undefined) for (const diagnostic of themeDesign.diagnostics) if (diagnostic.code === "theme-unverified") report(diagnostic);
   languageDiagnostics(imported, observedLanguage, options.onDiagnostic && report);
 
@@ -387,6 +392,22 @@ export async function fromPptx(input, options = {}) {
   }
 
   return imported;
+}
+
+// A consumed logo picture (OPF_LOGO_V1) never becomes content. Its own image restores the logo only when nothing else
+// did: the stored document and slide design (or the organization) win and carry LogoSet variants, so a package exported
+// without provenance still keeps its logo. A slide-level logo path restores slide design; every other path the deck's.
+function restoreLogoFallback(imported, contexts) {
+  const organizations = asArray(imported.organization);
+  contexts.forEach((context, index) => {
+    const fallback = context.logoFallback;
+    if (!fallback) return;
+    const slide = imported.slides[index];
+    if (slide.design?.logo !== undefined || imported.design?.logo !== undefined || organizations.some(item => item?.logo !== undefined)) return;
+    const image = fallback.image;
+    if (fallback.path.startsWith('slides.')) slide.design = {...slide.design, logo: image};
+    else imported.design = {...imported.design, logo: image};
+  });
 }
 
 function readPptxZip(input) {
@@ -560,6 +581,15 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
     diagnostic => options.onDiagnostic?.({...diagnostic, path: watermarkPath}));
   if (watermark.design) slide.design = {...slide.design, ...watermark.design};
   nativeContext.watermarkPictures = watermark.consumed;
+  // The generated deck logo picture is not content; its value returns from the stored design (or, without one, from the picture).
+  const logoPath = `slides.${slideIndex}.design.logo`;
+  const logo = importLogo(nativeContext.pictures, relationships, entries, slideIndex,
+    picture => importPicture(entries, picture, slidePath, relationships, diagnostic => {
+      if (diagnostic.code !== 'unsupported-image-crop') options.onDiagnostic?.({...diagnostic, path: logoPath});
+    }),
+    diagnostic => options.onDiagnostic?.({...diagnostic, path: logoPath}));
+  nativeContext.logoPictures = logo.consumed;
+  nativeContext.logoFallback = logo.fallback;
 
   const items = collectSlideItems(entries, slideRoot, slidePath, relationships, dimensions, options, slideIndex, furniture, nativeContext)
     .sort(comparePositionedItems);
@@ -670,7 +700,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   }
 
   for (const [index, picture] of nativeContext.pictures.entries()) {
-    if (furniture.pictures.has(index) || nativeContext.slideImagePictures?.has(index) || nativeContext.watermarkPictures?.has(index)) continue;
+    if (furniture.pictures.has(index) || nativeContext.slideImagePictures?.has(index) || nativeContext.watermarkPictures?.has(index) || nativeContext.logoPictures?.has(index)) continue;
     const report = diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.pictures.${index}`});
     const item = importPicture(entries, picture, slidePath, relationships, report);
     if (item) items.push(item);
@@ -815,7 +845,7 @@ function readParagraphs(txBody) {
       }
       return {
         text: texts.join(""),
-        bullet: asArray(paragraph?.["a:pPr"]).some(props => props?.["a:buChar"] !== undefined || props?.["a:buAutoNum"] !== undefined),
+        bullet: asArray(paragraph?.["a:pPr"]).some(props => props?.["a:buChar"] !== undefined || props?.["a:buBlip"] !== undefined || props?.["a:buAutoNum"] !== undefined),
         level: Number(asArray(paragraph?.["a:pPr"])[0]?.lvl ?? 0),
         maxFontSize: sizes.length > 0 ? Math.max(...sizes) : 0
       };
@@ -1411,13 +1441,15 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   // Core composition resolves one alignment per composed item for every engine
   // (FF-29); the design fallback keeps cores published before item.alignment working.
   const alignmentFor=item=>item.alignment??fieldAlignment(item.field);
-  const geometry = composeSlide(opfSlide, { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) });
+  const geometry = composeSlide(opfSlide, { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, darkBackground: isDarkHex(slideContext.colors.background), textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) });
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   // The content topology (groups, regions, root form, block ids) with the leaf boxes this geometry draws.
   recordContentTopology(context.documentProvenance, opfSlide, slideIndex, geometry.items);
   // The preview paints background, slide image (and its overlay), then design.watermark, then content.
   if (geometry.slideImage) await addSlideImage(slide, presentation, geometry.slideImage, slideIndex, slideContext, options);
   await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);
+  // Cover and section slides: the deck logo core composed at the top-left of the free area, after the watermark and before content.
+  if (geometry.logo) await addLogo(slide, presentation, geometry.logo, slideIndex, slideContext, context, options);
   for (const item of geometry.items) {
     // Card text sits on a literal card fill, not the slide background: keep it literal.
     const itemContext = item.frameBox ? {...slideContext, textColor: slideContext.colors.text, mutedColor: slideContext.colors.mutedText} : slideContext;
@@ -1447,7 +1479,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         breakLine: false
       });
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
-      addMeasuredList(slide,item.text,itemContext,item.path);
+      await addMeasuredList(slide,item.text,itemContext,item.path,item.bulletImage,presentation,slideIndex,options);
     } else if (item.field === "text" && item.text?.richLines) {
       const alignment=item.text.placement?.alignment??alignmentFor(item)??'left';
       for(const [index,line] of item.text.richLines.entries()){
@@ -1585,7 +1617,25 @@ function richLineRuns(line,color,native,context) {
 // the other measured text shapes. A reader maps lines to their list by name, not
 // by geometry, so lines of an overflowing list that fall below its box still
 // belong to it.
-function addMeasuredList(slide,fit,context,path) {
+// design.listBullet: image (core's item.bulletImage, the deck's icon logo) makes every entry marker a native picture bullet.
+// PptxGenJS embeds the media and its relationship through one picture per slide (OPF bullet image); packaging removes
+// that picture and points each marker paragraph at the relationship with a:buBlip. An icon that cannot be embedded
+// keeps the character bullets, as the preview does.
+async function addMeasuredList(slide,fit,context,path,bulletImage,presentation,slideIndex,options) {
+  let picture=false;
+  if(bulletImage){
+    const part=`ppt/slides/slide${slideIndex+1}.xml`;
+    if(context.bulletImages.has(part))picture=context.bulletImages.get(part);
+    else{
+      const outcome={};
+      const resolved=await resolveImage(bulletImage.source,presentation,options,bulletImage.path,outcome);
+      if(resolved){
+        slide.addImage({...resolved,objectName:bulletImageName(),x:0,y:0,w:.1,h:.1,altText:''});
+        picture=true;
+      }else if(!outcome.reported)options.onDiagnostic?.({code:'unresolved-asset',path:bulletImage.path,message:'A picture bullet needs an embedded raster, a declared asset or a host imageResolver; the character bullets were exported instead.'});
+      context.bulletImages.set(part,picture);
+    }
+  }
   let lineNumber=0;
   for(const entry of fit.listEntries){
     const addLines=(text,box,color,native,withBullet)=>{
@@ -1593,7 +1643,7 @@ function addMeasuredList(slide,fit,context,path) {
         const first=withBullet&&index===0,level=Math.min(8,entry.level),inset=first?entry.marker.indent*(level+1):0;
         const region={x:(box.x-inset)/96,y:(box.y+line.y)/96,w:(box.width+inset)/96,h:line.height/96};
         const objectName=`OPF list ${path} line ${lineNumber++}`;
-        if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:pptxColor(context.textColor)});
+        if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:pptxColor(context.textColor),picture});
         const paragraph=first?{bullet:{characterCode:entry.marker.text.codePointAt(0).toString(16).padStart(4,'0'),indent:entry.marker.indent*.75},indentLevel:level}:{bullet:false};
         const runs=richLineRuns(line,color,native,context);
         if(!runs.length)runs.push({text:'',options:{}});
@@ -1694,6 +1744,23 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   const opacity = watermarkOpacity(watermark);
   context.watermarks.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, box, opacity, path});
   slide.addImage({...resolved, objectName: watermarkName(), ...box, altText: assetAlt(asset, presentation) ?? 'Watermark'});
+}
+
+// The deck logo (design.logo, a slide's own logo or the primary organization's) on a cover or section slide: one native
+// picture per slide at core's geometry.logo box, fitted without cropping, anchored left and vertically centered, after
+// the watermark and before content (the preview's paint order). The frame and the provenance tag are written after
+// PptxGenJS embeds the bytes. An unresolved source draws the preview's "Image unavailable" panel in the logo box.
+async function addLogo(slide, presentation, logo, slideIndex, slideContext, context, options) {
+  const region = {x: logo.box.x / 96, y: logo.box.y / 96, w: logo.box.width / 96, h: logo.box.height / 96};
+  const outcome = {};
+  const resolved = await resolveImage(logo.source, presentation, options, logo.path, outcome);
+  if (!resolved) {
+    if (!outcome.reported) options.onDiagnostic?.({code: 'unresolved-asset', path: logo.path, message: 'The logo needs an embedded raster, a declared asset or a host imageResolver; the logo panel shows "Image unavailable" instead.'});
+    addImagePlaceholder(slide, presentation, logo.source, region, logo.path, slideContext, options);
+    return;
+  }
+  context.logos.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, box: region, path: logo.path, variant: logo.variant});
+  slide.addImage({...resolved, objectName: logoName(), ...region, altText: assetAlt(logo.source, presentation) ?? 'Logo'});
 }
 
 // design.slideImage: one native picture at the shared frame, beneath content.
@@ -1978,7 +2045,9 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
     if(part.type==='image'){
       const region={x:part.box.x/96,y:part.box.y/96,w:part.box.width/96,h:part.box.height/96};
       const objectName = await addImagePayload(slide,presentation,part.image,region,part.path,{...context,imageFill:'fit'},options);
-      if (objectName) context.furnitureTags.set(objectName, {v:1, role:'image', group:String(slideIndex), part:index});
+      // A generated deck logo is listed beside the manifest topology (see furnitureManifest) and tagged as a logo.
+      if (objectName && part.field === 'logo') context.furnitureLogoTags.set(objectName, {v:1, role:'furniture', group:String(slideIndex), furniture:part.kind, zone:part.zone});
+      else if (objectName) context.furnitureTags.set(objectName, {v:1, role:'image', group:String(slideIndex), part:manifestPartIndex(layout.parts, index)});
     }else{
       if(!part.fit?.sourceLines)throw new OPFPptxError('missing-furniture-layout','Repeated text requires accepted source lines from core.',{path:part.path});
       // Slide numbers and current dates become native PowerPoint fields; {total}
@@ -1998,12 +2067,14 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
           if(marker) staticDates.set(index,marker);
         }
       }
-      addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,color:context.mutedColor,keepEmpty:true,objectName:`OPF furniture ${slideIndex} part ${index}`,furniture:{group:String(slideIndex),part:index},liveFields,links:part.links});
+      addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,color:context.mutedColor,keepEmpty:true,objectName:`OPF furniture ${slideIndex} part ${index}`,furniture:{group:String(slideIndex),part:manifestPartIndex(layout.parts,index)},liveFields,links:part.links});
     }
   }
   const manifest = furnitureManifest(presentation, source, layout, slideIndex, staticDates);
   if (manifest) context.furnitureManifests.set(`ppt/slides/slide${slideIndex + 1}.xml`, manifest);
 }
+
+const bulletImageName = () => 'OPF bullet image';
 
 function addCodePayload(slide, value, layout, region, context, path) {
   if (!layout) throw new OPFPptxError('missing-code-layout', 'Code export requires a coordinated core build with shared code geometry.', {path});
@@ -2700,7 +2771,7 @@ async function normalizePptxZip(raw, context) {
   attachTimelineTags(entries,context.timelineTags);
   attachQuoteTags(entries,context.quoteTags);
   attachFurnitureFields(entries,context.furnitureFields);
-  attachFurnitureTags(entries,context.furnitureTags,context.furnitureManifests);
+  attachFurnitureTags(entries,context.furnitureTags,context.furnitureManifests,context.furnitureLogoTags);
   for(const [part,bytes]of Object.entries(entries)){
     if(!/^ppt\/slides\/slide\d+\.xml$/.test(part))continue;
     const relationships=parseRelationships(entries,part);
@@ -2737,7 +2808,7 @@ async function normalizePptxZip(raw, context) {
     const relationships = parseRelationships(entries, part);
     for (const [picture] of decodeText(bytes).matchAll(/<p:pic>[\s\S]*?<\/p:pic>/g)) {
       const name = picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1];
-      const placement = context.imagePlacements.get(name) ?? context.slideImages.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : undefined);
+      const placement = context.imagePlacements.get(name) ?? context.slideImages.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : name === logoName() ? context.logos.get(part) : undefined);
       const id = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
       if (placement) imageSources.set(relationships.get(id)?.path, placement.path);
     }
@@ -2768,6 +2839,9 @@ async function normalizePptxZip(raw, context) {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
   });
   placeWatermarks(entries, context.watermarks, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
+    throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
+  });
+  placeLogos(entries, context.logos, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
   });
   // A picture repeated across slides embeds once (after fitting, which needs each slide's own relationship).
@@ -2973,7 +3047,13 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
       // Image data is already resolved and embedded by PptxGenJS. Read those
       // exact bytes instead of fetching or resolving the source a second time.
       const relationships = parseRelationships(entries, path);
+      let bulletRelationship;
       xml = xml.replace(/<p:pic>([\s\S]*?)<\/p:pic>/g, picture => {
+        if (picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1] === bulletImageName()) {
+          // Only its media part and relationship are wanted: every picture-bullet paragraph points at them (a:buBlip).
+          bulletRelationship = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
+          return '';
+        }
         const text = context.pictureText.get(picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1]);
         if (text) picture = writePictureText(picture, text);
         const placement = context.imagePlacements.get(picture.match(/name="(OPF image \d+)"/)?.[1]);
@@ -2996,6 +3076,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
       xml=xml.replace(/<p:sp>([\s\S]*?)<\/p:sp>/g,(shape)=>{
         const marker=context.listMarkers.get(shape.match(/name="(OPF list [^"]* line \d+)"/)?.[1]);
         if(!marker)return shape;
+        if(marker.picture&&bulletRelationship)return shape.replace(/<a:buChar\b[^>]*\/>/g,`<a:buBlip><a:blip r:embed="${bulletRelationship}"/></a:buBlip>`);
         const family=marker.fontFamily.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
         return shape.replace(/<a:buSzPct val="100000"\/>/g,`<a:buClr>${solidColorXml(marker.color)}</a:buClr><a:buSzPts val="${Math.round(marker.fontSize*100)}"/><a:buFont typeface="${family}"/>`);
       });
