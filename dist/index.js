@@ -2599,7 +2599,7 @@ function histogramBins(values) {
 async function resolveImage(asset, presentation, options, path, outcome = {}) {
   const resolved = await resolveImageSource(asset, presentation, options, path);
   // A local SVG file is read here (PptxGenJS cannot size it); a raster path is read by PptxGenJS itself.
-  if (resolved?.path && /.svg$/i.test(resolved.path)) {
+  if (resolved?.path && /\.svg$/i.test(resolved.path)) {
     let file;
     try { file = await readLocalFile(resolved.path); }
     catch (error) {

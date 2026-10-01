@@ -383,6 +383,8 @@ for (const [name, svg, raster, aspect] of [['wide', wide, widePng, 2], ['tall', 
     const {entries, diagnostics} = await open({slides: [{title: 'T', image: 'logo.svg'}]}, {baseDir: directory, strictAssets: true});
     assert.deepEqual(diagnostics, []);
     await assertNative(entries, 0, pictures(slideXml(entries))[0], wideText, 'path source');
+    // A name that merely ends in "svg" is no SVG path: it follows the raster path (PptxGenJS cannot read it here, so the export fails as for any missing raster).
+    await assert.rejects(open({slides: [{title: 'T', image: 'logosvg'}]}, {baseDir: directory}), error => error.code !== 'invalid-svg-image');
     const missing = await open({slides: [{title: 'T', image: 'missing.svg'}]}, {baseDir: directory});
     assert.deepEqual(missing.diagnostics.map(({code, reason}) => ({code, reason})), [{code: 'unresolved-asset', reason: 'svg-unreadable'}]);
     await assert.rejects(open({slides: [{title: 'T', image: 'missing.svg'}]}, {baseDir: directory, strictAssets: true}), error => error.code === 'invalid-svg-image');
