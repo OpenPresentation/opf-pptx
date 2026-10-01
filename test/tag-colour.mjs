@@ -89,8 +89,8 @@ console.log(`default dark2 slide: ${lowCount} of ${catalogs.colorSchemes.length}
 }
 // 6. FF-61: when the primary is under 4.5:1 (WCAG 2.x) against the slide background the tag takes the slide text
 // color, the value the title gets (the scheme text slot where the theme holds it, else the literal); otherwise it keeps
-// the primary. The same color pairs are pinned in opf-render test/tag-colour.mjs: the ten corpus tags that were under
-// 4.5:1 (core example corpus, FF-59) and four that pass.
+// the primary. The same color pairs are pinned in opf-render test/tag-colour.mjs: the eight distinct pairs of the ten corpus tags that were under
+// 4.5:1 (core example corpus, FF-59; 9E9E9E on white occurs three times) and four that pass.
 const pairs = [
   ['#FE938C', '#FFFFFF', 2.15], ['#6A1B9A', '#000000', 2.24], ['#4A1BE4', '#000000', 2.57], ['#F77F00', '#FFFFFF', 2.63],
   ['#9E9E9E', '#FFFFFF', 2.68], ['#A41410', '#000000', 2.69], ['#FD3223', '#FFFFFF', 3.71], ['#997929', '#FFFFFF', 4.10],
