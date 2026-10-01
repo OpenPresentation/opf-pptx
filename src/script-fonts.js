@@ -320,6 +320,12 @@ export function reconcileLanguage(groups, observed, report) {
  * language, and theme East Asian/complex-script fonts the document does not
  * reproduce.
  */
+/** Whether the language observed in the runs is written right to left. */
+export function observedRtl(observed) {
+  if (observed.lang === undefined) return false;
+  try { return resolver ? resolver({language: observed.language}).rtl === true : observed.match?.record.direction === "rtl"; } catch { return false; }
+}
+
 export function languageDiagnostics(imported, observed, report) {
   if (!report) return;
   const {lang, match, ranked, rtlParagraphs, theme} = observed;
@@ -327,9 +333,11 @@ export function languageDiagnostics(imported, observed, report) {
     if (rtlParagraphs) report({code: "rtl-language-mismatch", path: "language", message: `${rtlParagraphs} right-to-left paragraph(s) carry no run language, so no presentation language was imported.`});
     return;
   }
-  if (ranked.length > 1) {
+  // RR-05: a right-to-left deck's Latin phrases are their own en-US runs; they are not a second presentation language.
+  const languages = observedRtl(observed) ? ranked.filter(([tag]) => tag === lang || tag !== "en-US") : ranked;
+  if (languages.length > 1) {
     report({code: "mixed-run-languages", path: "language",
-      message: `Runs use ${ranked.length} languages (${ranked.map(([tag, count]) => `${tag} x${count}`).join(", ")}). OPF has one presentation language, so ${lang} was imported.`});
+      message: `Runs use ${languages.length} languages (${languages.map(([tag, count]) => `${tag} x${count}`).join(", ")}). OPF has one presentation language, so ${lang} was imported.`});
   }
   const kept = imported.language === observed.language;
   if (kept && !match) report({code: "language-uncatalogued", path: "language", message: `Run language ${lang} matches no languages catalog record; it was imported as a BCP-47 tag.`});
