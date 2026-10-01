@@ -2840,7 +2840,7 @@ function isDarkHex(value) {
 function writeNativeFurnitureMasters(output, context) {
   // A deck with no native footer part keeps the master and layout exactly as before.
   if (!context.nativePlaceholders.used.size) return;
-  const size = /<p:sldSz[^>]*cx="(d+)"[^>]*cy="(d+)"/.exec(decodeText(output['ppt/presentation.xml'][0]));
+  const size = /<p:sldSz\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(decodeText(output['ppt/presentation.xml'][0]));
   const defaults = new Map((context.defaultFooterOptions ? defaultFooterParts(context.defaultFooterOptions) ?? [] : []).flatMap(part => {
     const ph = {date: 'dt', text: 'ftr', slideNumber: 'sldNum'}[part.field];
     const geometry = ph && defaultPlaceholderGeometry(part);
