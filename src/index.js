@@ -17,7 +17,9 @@ import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
 import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
 import {attachFurnitureTags, furnitureManifest, importFurniture, manifestPartIndex, staticDateFallback} from './furniture-provenance.js';
-import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance} from './document-provenance.js';
+import {restoreRunColors} from './run-colors.js';
+import {joinWrappedText} from './content-topology.js';
+import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance, joinAuthors, splitAuthors, slideListBreaks, DEFAULT_AUTHOR} from './document-provenance.js';
 import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './sections.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, writeNativeMasters} from './native-furniture.js';
@@ -332,7 +334,7 @@ export async function fromPptx(input, options = {}) {
   });
   if (observedLanguage.language !== undefined) imported.language = observedLanguage.language;
   if (core.description) imported.description = core.description;
-  if (core.author) imported.author = core.author;
+  if (core.author) imported.author = splitAuthors(core.author);
   const themeDesign = importThemeDesign(entries, presentationRoot, presentationRels);
   const design = {...themeDesign.design, ...(dimensions ? {dimensions} : {})};
   if (Object.keys(design).length) imported.design = design;
@@ -405,6 +407,7 @@ export async function fromPptx(input, options = {}) {
   // from the stored record and the footnote boxes (an edited note keeps its edited text).
   restoreCitations(imported, furnitureContexts.map(context => context.annotations?.notes ?? []), report);
   restoreLogoFallback(imported, furnitureContexts);
+  applyRunColors(imported, slideProvenance, restoredGroups, report, options);
   if (imported.design?.theme === undefined) for (const diagnostic of themeDesign.diagnostics) if (diagnostic.code === "theme-unverified") report(diagnostic);
   languageDiagnostics(imported, observedLanguage, options.onDiagnostic && report);
 
@@ -424,6 +427,24 @@ export async function fromPptx(input, options = {}) {
   const signals = extractSignals({archive, presentationRoot, slidePaths, themeFacts: themeFactsFor(slidePaths[0], archive), limits: signalLimits,
     recorded: furnitureContexts.map(context => context.signalSources), slideProvenance, contentPaths});
   return {document: imported, signals};
+}
+
+// RR-08: run colours named by a ColorRef (variable, scheme slot, role) come back as that name where the document's own
+// colour resolution still gives the run's colour; see run-colors.js.
+function applyRunColors(imported, slideProvenance, restoredGroups, report, options) {
+  const restoredContent = new Set(restoredGroups.filter(group => group.applied && group.contentPaths).map(group => group.contentPaths.slide));
+  const info = slideProvenance.map((entry, index) => entry.structure === "untagged" ? undefined : {record: entry.record, structure: entry.structure === "match", content: restoredContent.has(index)});
+  const contexts = new Map();
+  const resolve = (slide, name) => {
+    try {
+      const key = slide.design ?? imported.design ?? null;
+      if (!contexts.has(key)) contexts.set(key, resolvePresentationContext(slide.design ? {...imported, design: {...imported.design, ...slide.design}} : imported, options));
+      return resolveColorRefValue(name, colorContext(contexts.get(key)));
+    } catch {
+      return undefined;
+    }
+  };
+  restoreRunColors(imported.slides, info, resolve, report);
 }
 
 // A consumed logo picture (OPF_LOGO_V1) never becomes content. Its own image restores the logo only when nothing else
@@ -647,7 +668,8 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
       item.text = current.map(paragraph => paragraph.text).join('\n');
     }
   }
-  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items))
+  const listBreaks = slideListBreaks(entries, slidePath, slideRoot, relationships);
+  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items, listBreaks, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`})))
     .map((item) => ({payload: payloadFromSlideItem(item), bounds: item.visualBounds ?? item.bounds, sources: item.sources ?? []}))
     .filter((entry) => entry.payload);
   const blocks = content.map((entry) => entry.payload);
@@ -693,6 +715,12 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   const shapes = nativeContext.shapes;
   if (tree?.['p:grpSp']) options.onDiagnostic?.({code:'grouped-text-reflow',path:`slides.${slideIndex}`,message:'Grouped native text and pictures are retained, but group transforms and unsupported group members are not reconstructed; review the reflowed OPF.'});
   const paragraphs = nativeContext.paragraphs;
+  // FF-45: OMML equations (a14:m math zones) have no OPF model. Their fallback text is imported as plain text; the equation
+  // layout (fractions, radicals, limits, matrices) is lost, and that loss is diagnosed per shape instead of passing silently.
+  paragraphs.forEach((list, index) => {
+    const zones = list.reduce((count, paragraph) => count + (paragraph.math?.zones ?? 0), 0);
+    if (zones) options.onDiagnostic?.({code: 'math-equation-flattened', path: `slides.${slideIndex}`, message: `Native shape ${index} holds ${zones} OMML equation${zones === 1 ? '' : 's'} (a14:m); OPF has no equation model, so its fallback text is imported as plain text and the equation layout is not represented.`});
+  });
   // Native shape keys (indexes in nativeTextShapes / nativePictures / frame order) for import signals.
   const shapeKeys = new Map(shapes.map((shape, index) => [shape, `sp:${index}`]));
   const sourcesOf = group => group.flatMap(shape => shapeKeys.has(shape) ? [shapeKeys.get(shape)] : []);
@@ -914,9 +942,15 @@ function importPicture(entries, picture, slidePath, relationships, report) {
 function readParagraphs(txBody) {
   return asArray(txBody?.["a:p"])
     .map((paragraph) => {
+      // FF-45: an a14:m math zone (OMML equation) inside mc:AlternateContent has no OPF model; its mc:Fallback runs are read as
+      // text (or, without them, the equation's m:t text), and `math` records the zones so the importer can diagnose the loss.
+      const alternates = asArray(paragraph?.["mc:AlternateContent"]);
+      const zones = alternates.flatMap(alternate => asArray(alternate?.["mc:Choice"])).filter(choice => choice?.["a14:m"] !== undefined);
+      const fallbackRuns = alternates.flatMap(alternate => asArray(alternate?.["mc:Fallback"])).flatMap(fallback => [...asArray(fallback?.["a:r"]), ...asArray(fallback?.["a:fld"])]);
       const runs = [
         ...asArray(paragraph?.["a:r"]),
-        ...asArray(paragraph?.["a:fld"])
+        ...asArray(paragraph?.["a:fld"]),
+        ...fallbackRuns
       ];
       const texts = [];
       const sizes = [];
@@ -926,13 +960,22 @@ function readParagraphs(txBody) {
         const size = Number(run?.["a:rPr"]?.sz);
         if (Number.isFinite(size)) sizes.push(size / 100);
       }
+      const linear = zones.map(choice => keyedMathText(choice["a14:m"])).join("");
+      if (zones.length && !fallbackRuns.some(run => scalarText(run?.["a:t"]))) texts.push(linear);
       return {
         text: texts.join(""),
         bullet: asArray(paragraph?.["a:pPr"]).some(props => props?.["a:buChar"] !== undefined || props?.["a:buBlip"] !== undefined || props?.["a:buAutoNum"] !== undefined),
         level: Number(asArray(paragraph?.["a:pPr"])[0]?.lvl ?? 0),
-        maxFontSize: sizes.length > 0 ? Math.max(...sizes) : 0
+        maxFontSize: sizes.length > 0 ? Math.max(...sizes) : 0,
+        ...(zones.length ? {math: {zones: zones.length, text: linear}} : {})
       };
     });
+}
+/** The m:t text of a keyed OMML tree (an a14:m zone) in document order: the equation's linear reading without its layout. */
+function keyedMathText(node) {
+  if (Array.isArray(node)) return node.map(keyedMathText).join("");
+  if (!node || typeof node !== "object") return "";
+  return Object.entries(node).map(([key, value]) => key === "m:t" ? asArray(value).map(scalarText).join("") : keyedMathText(value)).join("");
 }
 
 function shapePlaceholderType(shape) {
@@ -999,7 +1042,10 @@ function joinRich(a, b) {
   }
   return joined;
 }
-function mergeOpfListShapes(items) {
+// `breaks` (slideListBreaks) holds the whitespace of the hard breaks the export recorded, by list path and line number: the
+// continuation line after a break joins with it, so a newline inside an item (or a description) returns. A blank line is a
+// native shape with no text: it is never a description. Without a record the lines join without a separator, as before.
+function mergeOpfListShapes(items, breaks = null, report = () => {}) {
   const lists = new Map();
   for (const item of items) {
     const match = /^OPF list (.+) line (\d+)$/.exec(item.name ?? '');
@@ -1013,17 +1059,23 @@ function mergeOpfListShapes(items) {
     entries.sort((a, b) => a.line - b.line);
     if (!entries[0].item.paragraphs[0].bullet) continue;
     const paragraphs = [];
+    const recorded = breaks?.get(path), applied = new Set();
     let bounds, size = 0;
-    for (const {item} of entries) {
+    for (const {item, line} of entries) {
       const [paragraph] = item.paragraphs, current = paragraphs.at(-1);
+      const gap = recorded?.get(line);
+      const join = (a, b) => gap === undefined ? joinRich(a, b) : joinWrappedText([a, b], [gap]);
       if (paragraph.bullet) { paragraphs.push({...paragraph}); size = paragraph.maxFontSize; }
+      else if (paragraph.text === '') { /* a blank line of the entry: no text, no description */ }
       else if (paragraph.maxFontSize < size - 0.01) {
         const text = paragraph.richText ?? paragraph.text;
-        current.description = current.description === undefined ? text : joinRich(current.description, text);
+        if (current.description === undefined) current.description = text;
+        else { current.description = join(current.description, text); applied.add(line); }
       } else {
         const before = current.text;
-        current.text += paragraph.text;
-        if (current.richText !== undefined || paragraph.richText !== undefined) current.richText = joinRich(current.richText ?? before, paragraph.richText ?? paragraph.text);
+        current.text += (gap === undefined ? '' : Array.isArray(gap) ? gap[0] : gap) + paragraph.text;
+        if (current.richText !== undefined || paragraph.richText !== undefined) current.richText = join(current.richText ?? before, paragraph.richText ?? paragraph.text);
+        applied.add(line);
       }
       const b = item.visualBounds ?? item.bounds;
       if (b) {
@@ -1032,6 +1084,7 @@ function mergeOpfListShapes(items) {
       }
       consumed.add(item);
     }
+    if (recorded && [...recorded.keys()].some(line => !applied.has(line))) report({code: 'list-line-break-changed', message: `A hard line break recorded at export inside the list ${path} no longer has the continuation line it belonged to (a line was edited away, or became an entry), so that break was not restored; the list keeps the lines it has.`});
     const first = entries[0].item;
     merged.set(first, {...first, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join('\n'), bounds, visualBounds: undefined, sources: entries.flatMap(({item}) => item.sources ?? [])});
   }
@@ -1522,7 +1575,7 @@ function configurePresentation(pptx, presentation, context) {
     height: context.dimensions.heightInches
   });
   pptx.layout = context.layoutName;
-  pptx.author = normalizeAuthor(presentation.author) ?? "OpenPresentation";
+  pptx.author = normalizeAuthor(presentation.author) ?? DEFAULT_AUTHOR;
   pptx.company = "OpenPresentation";
   pptx.subject = presentation.description ?? "";
   pptx.title = presentation.name ?? presentation.filename ?? "OPF Presentation";
@@ -3578,7 +3631,7 @@ function numericValue(value) {
 
 function normalizeAuthor(author) {
   if (typeof author === "string") return author;
-  if (Array.isArray(author)) return author.join("; ");
+  if (Array.isArray(author)) return joinAuthors(author);
   return null;
 }
 
