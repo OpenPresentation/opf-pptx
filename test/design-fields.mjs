@@ -331,4 +331,74 @@ if (!hasCore) {
   checked++;
 }
 
+// ---- A PowerPoint save renames media parts (here a rotation, so a stored part name holds another picture), renumbers
+// relationships, renames tag parts and drops whitespace between elements, keeping the bytes. Every logo and the picture
+// bullet still restore, matched by content, and an unchanged picture-bullet list round-trips with its structure.
+const powerpointSave = bytes => {
+  const original = unzipSync(bytes), enc = new TextEncoder(), names = Object.keys(original);
+  const media = names.filter(path => /^ppt\/media\/[^/]+$/.test(path)).sort();
+  const tags = names.filter(path => /^ppt\/tags\/[^/]+$/.test(path)).sort();
+  const moved = new Map([...media.map((path, index) => [path, media[(index + 1) % media.length]]), ...tags.map((path, index) => [path, `ppt/tags/tag${tags.length - index}.xml`])]);
+  const relsOf = path => path.replace(/([^/]+)$/, '_rels/$1.rels');
+  const ids = new Map();
+  for (const path of names.filter(path => /^ppt\/slides\/slide\d+\.xml$/.test(path))) {
+    const all = [...decoder.decode(original[relsOf(path)]).matchAll(/Id="([^"]+)"/g)].map(match => match[1]);
+    ids.set(path, new Map(all.map((id, index) => [id, `rIdPP${all.length - index}`])));
+  }
+  const result = {};
+  for (const [path, data] of Object.entries(original)) {
+    let out = data;
+    if (/\.rels$/.test(path)) {
+      const owner = path.replace('_rels/', '').replace(/\.rels$/, ''), directory = owner.replace(/[^/]*$/, '');
+      let xml = decoder.decode(data).replace(/Target="([^"]+)"/g, (match, value) => {
+        if (/^[a-z]+:/i.test(value)) return match;
+        const full = new URL(value, `http://x/${directory}`).pathname.slice(1), to = moved.get(full);
+        return to ? `Target="${value.replace(/[^/]+$/, to.split('/').pop())}"` : match;
+      });
+      for (const [from, to] of ids.get(owner) ?? []) xml = xml.replace(`Id="${from}"`, `Id="${to}"`);
+      out = enc.encode(xml);
+    } else if (path === '[Content_Types].xml') {
+      out = enc.encode(decoder.decode(data).replace(/PartName="\/([^"]+)"/g, (match, part) => `PartName="/${moved.get(part) ?? part}"`));
+    } else if (ids.has(path)) {
+      let xml = decoder.decode(data).replace(/>\s+</g, '><');
+      for (const [from, to] of ids.get(path)) xml = xml.replaceAll(`"${from}"`, `"${to}"`);
+      out = enc.encode(xml);
+    }
+    result[moved.get(path) ?? path] = out;
+  }
+  return zipSync(result);
+};
+{
+  const deck = {design: {logo: {default: wide, light: tall, dark: square, icon: jpg}, listBullet: 'image', background: light, footer: {left: {logo: true}, right: {slideNumber: true}}},
+    organization: {id: 'acme', name: 'Acme', logo: tall},
+    slides: [
+      {title: 'Cover', subtitle: 'On light', layout: 'title-subtitle'},
+      {title: 'Own', layout: 'title', design: {logo: jpg}},
+      {title: 'Items', items: ['Alpha', {text: 'Beta wraps ' + 'word '.repeat(40)}, {text: 'Gamma', description: 'A description line'}, {text: 'Nested', level: 1}]},
+    ]};
+  const original = await open(deck);
+  const saved = powerpointSave(original.bytes);
+  const before = unzipSync(original.bytes), after = unzipSync(saved);
+  assert.ok(Object.keys(before).some(path => /^ppt\/media\/image-1/.test(path)) && !Object.keys(after).some(path => /^ppt\/tags\/opf/.test(path)), 'the simulated save renamed parts');
+  for (const [label, input] of [['original', original.bytes], ['saved by PowerPoint', saved]]) {
+    const diagnostics = [];
+    const imported = await fromPptx(input, {onDiagnostic: item => diagnostics.push(item)});
+    assert.deepEqual(imported.design.logo, deck.design.logo, `${label}: design.logo restores with every variant`);
+    assert.equal(imported.organization.logo, tall, `${label}: organization.logo restores`);
+    assert.equal(imported.slides[1].design.logo, jpg, `${label}: a slide's own logo restores`);
+    assert.equal(imported.design.listBullet, 'image', `${label}: listBullet`);
+    assert.deepEqual(imported.design.footer.left, {logo: true}, `${label}: footer logo flag`);
+    for (const code of ['invalid-logo-provenance', 'unresolved-asset-reference', 'content-structure-changed', 'invalid-document-provenance', 'invalid-furniture-provenance']) {
+      assert.deepEqual(diagnostics.filter(item => item.code === code).map(item => item.path), [], `${label}: no ${code}`);
+    }
+    assert.ok(!imported.slides[0].blocks && !imported.slides[0].image && !imported.slides[1].blocks, `${label}: logo pictures are not content`);
+    // The picture-bullet list is the authored list again: entries, wrapped line, description and level.
+    const [list] = imported.slides[2].items ? [imported.slides[2].items] : [imported.slides[2].blocks?.[0]?.items];
+    const plain = value => Array.isArray(value) ? value.map(run => run.text).join('') : value;
+    assert.deepEqual(list.map(entry => typeof entry === 'object' && !Array.isArray(entry) ? [plain(entry.text).trim(), plain(entry.description), entry.level] : [plain(entry).trim()]),
+      [['Alpha'], [('Beta wraps ' + 'word '.repeat(40)).trim()], ['Gamma', 'A description line', undefined], ['Nested', undefined, 1]], `${label}: list entries`);
+  }
+  checked++;
+}
+
 console.log(`Design fields passed: ${checked} groups (cover and section logo, variants and organization fallback, unresolved logo, footer logo, picture bullets, accent font, provenance).`);

@@ -613,7 +613,7 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
       item.text = current.map(paragraph => paragraph.text).join('\n');
     }
   }
-  const content = mergeAdjacentBulletShapes(items)
+  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items))
     .map((item) => ({payload: payloadFromSlideItem(item), bounds: item.visualBounds ?? item.bounds}))
     .filter((entry) => entry.payload);
   const blocks = content.map((entry) => entry.payload);
@@ -902,6 +902,59 @@ function takeSubtitleItem(items, titleItem, dimensions, inferHeadings) {
   return null;
 }
 
+// The export writes every native line of a list as its own shape named "OPF list <path> line N". The lines of one list
+// import as one list: a bulleted line starts an entry, an unbulleted line of the entry's own size continues it (a wrapped
+// entry) and a smaller one is its description. Without a bulleted first line the shapes stay as they are.
+const richRuns = value => typeof value === 'string' ? [{text: value}] : value;
+function joinRich(a, b) {
+  if (typeof a === 'string' && typeof b === 'string') return a + b;
+  const runs = [...richRuns(a), ...richRuns(b)], joined = [];
+  for (const run of runs) {
+    const last = joined.at(-1);
+    if (last && JSON.stringify({...last, text: ''}) === JSON.stringify({...run, text: ''})) last.text += run.text;
+    else joined.push({...run});
+  }
+  return joined;
+}
+function mergeOpfListShapes(items) {
+  const lists = new Map();
+  for (const item of items) {
+    const match = /^OPF list (.+) line (\d+)$/.exec(item.name ?? '');
+    if (match && item.kind === 'text' && item.paragraphs?.length === 1) {
+      if (!lists.has(match[1])) lists.set(match[1], []);
+      lists.get(match[1]).push({item, line: Number(match[2])});
+    }
+  }
+  const merged = new Map(), consumed = new Set();
+  for (const [path, entries] of lists) {
+    entries.sort((a, b) => a.line - b.line);
+    if (!entries[0].item.paragraphs[0].bullet) continue;
+    const paragraphs = [];
+    let bounds, size = 0;
+    for (const {item} of entries) {
+      const [paragraph] = item.paragraphs, current = paragraphs.at(-1);
+      if (paragraph.bullet) { paragraphs.push({...paragraph}); size = paragraph.maxFontSize; }
+      else if (paragraph.maxFontSize < size - 0.01) {
+        const text = paragraph.richText ?? paragraph.text;
+        current.description = current.description === undefined ? text : joinRich(current.description, text);
+      } else {
+        const before = current.text;
+        current.text += paragraph.text;
+        if (current.richText !== undefined || paragraph.richText !== undefined) current.richText = joinRich(current.richText ?? before, paragraph.richText ?? paragraph.text);
+      }
+      const b = item.visualBounds ?? item.bounds;
+      if (b) {
+        const x = Math.min(bounds?.x ?? b.x, b.x), y = Math.min(bounds?.y ?? b.y, b.y);
+        bounds = {x, y, w: Math.max((bounds ? bounds.x + bounds.w : -Infinity), b.x + b.w) - x, h: Math.max((bounds ? bounds.y + bounds.h : -Infinity), b.y + b.h) - y};
+      }
+      consumed.add(item);
+    }
+    const first = entries[0].item;
+    merged.set(first, {...first, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join('\n'), bounds, visualBounds: undefined});
+  }
+  return items.flatMap(item => merged.has(item) ? [merged.get(item)] : consumed.has(item) ? [] : [item]);
+}
+
 // Adjacent native bullet boxes on the same text column form one imported list.
 // This is a geometry heuristic, not a lossless reconstruction of arbitrary PPTX.
 function mergeAdjacentBulletShapes(items) {
@@ -929,8 +982,8 @@ function payloadFromSlideItem(item) {
         type: "list",
         items: item.paragraphs.map((paragraph) => (
           paragraph.level > 0
-            ? { text: paragraph.richText ?? paragraph.text, level: paragraph.level }
-            : (paragraph.richText ?? paragraph.text)
+            ? { text: paragraph.richText ?? paragraph.text, level: paragraph.level, ...(paragraph.description !== undefined ? {description: paragraph.description} : {}) }
+            : paragraph.description !== undefined ? { text: paragraph.richText ?? paragraph.text, description: paragraph.description } : (paragraph.richText ?? paragraph.text)
         ))
       };
     }

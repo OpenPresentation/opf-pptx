@@ -15,8 +15,9 @@ const EMUS_PER_INCH = 914400;
 const parser = new XMLParser({ignoreAttributes:false, attributeNamePrefix:'', parseTagValue:false, trimValues:false});
 const decoder = new TextDecoder('utf-8', {fatal:true}), encoder = new TextEncoder();
 const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
+// Whitespace-only text between elements is not identity: the vendored writer indents, PowerPoint drops it on save.
 const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
-  ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+  ? Object.fromEntries(Object.keys(item).sort().filter(key => !(key === '#text' && typeof item[key] === 'string' && !item[key].trim())).map(key => [key, item[key]])) : item);
 // The OPF paths core reports for a logo source.
 const LOGO_PATH = /^(?:slides\.\d{1,9}\.design\.logo|design\.logo|organization(?:\.\d{1,9})?\.logo)(?:\.[A-Za-z]{1,16})?$/;
 
