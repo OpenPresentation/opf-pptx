@@ -318,6 +318,7 @@ function readSlide(context, entries, slideIndex, slideCount, report, taggedText)
       if (removedNative) {
         // The slide no longer follows the deck's definition: it is its own override, and the other slides can still agree.
         candidate.scope = 'local';
+        candidate.derived = true;
         if (value !== false) {
           for (const zone of Object.keys(value)) if (!Object.keys(value[zone]).length) delete value[zone];
           if (!Object.keys(value).length) candidate.value = false;
@@ -421,6 +422,10 @@ export function importFurniture(contexts, entries, onDiagnostic) {
     if (inherited.length && candidates.every(slide => slide[kind]) && inherited.every(candidate => same(candidate.value, inherited[0].value))) {
       result.design[kind] = inherited[0].value;
       candidates.forEach((slide, index) => { if (slide[kind].scope === 'global') delete result.slides[index].design[kind]; });
+    } else if (!inherited.length && candidates.every(slide => slide[kind]?.derived && same(slide[kind].value, candidates[0][kind].value))) {
+      // Every slide's inherited definition lost the same native placeholder (the dialog's Apply to All): the deck's footer changed.
+      result.design[kind] = candidates[0][kind].value;
+      candidates.forEach((slide, index) => delete result.slides[index].design[kind]);
     }
   }
   // A deck with no OPF footer provenance (PowerPoint's Header & Footer dialog, another tool): the footer most slides share is the

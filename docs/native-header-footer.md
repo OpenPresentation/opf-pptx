@@ -73,6 +73,7 @@ The footer manifest marks such a part with `ph` (`dt`, `ftr` or `sldNum`). A sli
 | In PowerPoint | Imports as |
 | --- | --- |
 | Slide number unchecked on slide 3 (Apply) | `slides[2].design.footer` without `slideNumber`; the other slides keep `design.footer` |
+| Slide number unchecked with Apply to All | `design.footer` loses `slideNumber` (no per-slide copies) |
 | Everything unchecked on slide 3 | `slides[2].design.footer: false` |
 | Footer text retyped, Apply to All | `design.footer.<zone>.text` is the new text |
 | Date changed to "Fixed" and typed | `date` is that text (literal) |

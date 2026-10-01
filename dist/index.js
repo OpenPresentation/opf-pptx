@@ -2846,7 +2846,7 @@ function writeNativeFurnitureMasters(output, context) {
     const geometry = ph && defaultPlaceholderGeometry(part);
     return geometry ? [[ph, geometry]] : [];
   }));
-  const info = {used: context.nativePlaceholders.used, first: context.nativePlaceholders.first, defaults,
+  const info = {used: context.nativePlaceholders.used, first: context.nativePlaceholders.first, names: new Set(context.nativeFurniture.keys()), defaults,
     slideSize: {width: size ? Number(size[1]) : 12192000, height: size ? Number(size[2]) : 6858000}, dateText: nativeDateText(context.hostDate)};
   const paths = Object.keys(output);
   try {

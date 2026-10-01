@@ -105,15 +105,18 @@ export function attachNativePlaceholders(entries, records) {
 }
 
 // The text style a footer placeholder defaults to: the run properties of the deck's
-// first generated furniture shape, read from the finished slide (colors already
-// theme references), so a footer added natively matches the exported ones.
-function furnitureRunStyle(slideXmls) {
-  for (const xml of slideXmls) for (const [shape] of xml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)) {
-    if (!/<p:cNvPr\b[^>]*\bname="OPF furniture \d+ part \d+ line \d+"/.test(shape)) continue;
+// first native footer shape (else its first furniture shape), read from the finished
+// slide (colors already theme references), so a footer added natively matches the
+// exported ones. A hyperlink belongs to one slide's relationships and is dropped.
+function furnitureRunStyle(slideXmls, names) {
+  for (const native of [true, false]) for (const xml of slideXmls) for (const [shape] of xml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)) {
+    const name = shape.match(/<p:cNvPr\b[^>]*\bname="(OPF furniture \d+ part \d+ line \d+)"/)?.[1];
+    if (!name || names.has(name) !== native) continue;
     const run = shape.match(/<a:(?:r|fld)\b[^>]*>(<a:rPr\b[^>]*\/>|<a:rPr\b[^>]*>[\s\S]*?<\/a:rPr>)/)?.[1];
     if (!run) continue;
     const sz = run.match(/\bsz="(\d+)"/)?.[1];
-    const inner = run.match(/^<a:rPr\b[^>]*>([\s\S]*)<\/a:rPr>$/)?.[1] ?? '';
+    const inner = (run.match(/^<a:rPr\b[^>]*>([\s\S]*)<\/a:rPr>$/)?.[1] ?? '')
+      .replace(/<a:hlink(Click|MouseOver)\b[^>]*\/>|<a:hlink(Click|MouseOver)\b[^>]*>[\s\S]*?<\/a:hlink(?:Click|MouseOver)>/g, '');
     return {sz: sz ? Number(sz) : undefined, inner};
   }
   return undefined;
@@ -180,7 +183,7 @@ function insertPlaceholders(xml, shapes, part) {
  */
 export function writeNativeMasters(paths, read, write, info) {
   const slideXmls = paths.filter(path => /^ppt\/slides\/slide\d+\.xml$/.test(path)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0])).map(path => dec.decode(read(path)));
-  const style = furnitureRunStyle(slideXmls);
+  const style = furnitureRunStyle(slideXmls, info.names);
   const flags = headerFooterFlags(info.used);
   for (const path of paths.filter(path => /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(path))) {
     let xml = dec.decode(read(path));

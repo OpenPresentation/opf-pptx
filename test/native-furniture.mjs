@@ -167,6 +167,14 @@ for (const measured of [false, true]) {
   assert.equal(shapesOf(text(entries, 'ppt/slideMasters/slideMaster1.xml')).length, 3);
 }
 {
+  // Linked socials come first in the slide: their hyperlink never leaks into the master's default text style.
+  const source = {organization: {id: 'acme', name: 'Acme', socials: {linkedin: 'acme'}}, design: {fontScheme: 'roboto', header: {right: {socials: true}}, footer: {left: {organization: true}, center: {slideNumber: true}}}, slides: [{title: 'A', text: 'Body'}]};
+  const {entries} = await exportDeck(source);
+  assert.match(text(entries, slidePath(1)), /<a:hlinkClick\b/, 'The header socials are linked.');
+  assert.doesNotMatch(text(entries, 'ppt/slideMasters/slideMaster1.xml'), /hlinkClick|r:id="rId[3-9]/);
+  assert.deepEqual(placeholderShapes(text(entries, slidePath(1))).map(phType), ['sldNum']);
+}
+{
   // A header-only deck, and a deck without furniture, keep their masters exactly as they were: no placeholders, flags off.
   for (const design of [{fontScheme: 'roboto', header: {left: {text: 'Header only'}}}, {fontScheme: 'roboto'}]) {
     const {entries} = await exportDeck({design, slides: [{title: 'A', text: 'Body', notes: 'Spoken'}]});
@@ -269,6 +277,14 @@ const footerOnly = {design: {fontScheme: 'roboto', footer: {left: {date: true, d
     assert.deepEqual(invalid, []);
     assert.equal(imported.slides[2].design.footer, false);
     assert.deepEqual(imported.design.footer, footerOnly.design.footer);
+  }
+  // Slide number unchecked with Apply to All removes it from every slide: the deck's footer loses it (no per-slide copies).
+  const noNumbers = mutate(entries, Object.fromEntries([1, 2, 3].map(index => [slidePath(index), xml => xml.replace(/<p:sp>[\s\S]*?<\/p:sp>/g, shape => phType(shape) === 'sldNum' ? '' : shape)])));
+  for (const base of [noNumbers, stripTags(unzipSync(noNumbers))]) {
+    const {imported, invalid} = await read(base);
+    assert.deepEqual(invalid, []);
+    assert.deepEqual(imported.design.footer, {left: footerOnly.design.footer.left, center: footerOnly.design.footer.center});
+    assert.ok(imported.slides.every(slide => slide.design?.footer === undefined));
   }
   // Apply to All with a new footer text changes every slide's placeholder: the deck's footer changes.
   const retyped = mutate(entries, Object.fromEntries([1, 2, 3].map(index => [slidePath(index), xml => xml.replace('<a:t>Confidential</a:t>', '<a:t>Draft v2</a:t>')])));
