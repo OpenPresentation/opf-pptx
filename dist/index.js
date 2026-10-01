@@ -2175,10 +2175,7 @@ function codeSyntax(value, layout, context, path, options) {
   const body = layout.parts.find(part => part.role === 'body');
   const language = typeof value?.language === 'string' ? value.language : layout.parts.find(part => part.role === 'language')?.text;
   if (!body || !language) return undefined;
-  if (typeof opfCore.tokenizeCode !== 'function') {
-    options?.onDiagnostic?.({code:'code-highlight-unavailable',path:`${path}.language`,message:'The installed @openpresentation/opf has no tokenizeCode (RR-07), so the code is exported without syntax colours. Use a core release with code highlighting.'});
-    return undefined;
-  }
+  if (typeof opfCore.tokenizeCode !== 'function') return undefined;
   const tokens = opfCore.tokenizeCode(body.text, language);
   return tokens.length ? {tokens, palette: opfCore.codeSyntaxPaletteForScheme(context.colorScheme)} : undefined;
 }
@@ -2188,7 +2185,6 @@ function addMetricPayload(slide,value,layout,context,path,options) {
   const group=String(context.metricTags.size+1),manifest=metricManifest(value,layout,group);
   // RR-07: a trend colours the trend and delta text and adds one native arrow shape, from core's accepted geometry.
   const trendMark=typeof opfCore.metricTrendMark==='function'?opfCore.metricTrendMark(layout,{background:`#${normalizeHex(context.colors.background)}`}):undefined;
-  if(typeof opfCore.metricTrendMark!=='function'&&layout.parts.some(part=>part.role==='trend'&&part.visible))options?.onDiagnostic?.({code:'metric-trend-unavailable',path:`${path}.trend`,message:'The installed @openpresentation/opf has no metricTrendMark (RR-07), so the trend word is exported without an arrow or colour. Use a core release with metric trend marks.'});
   const partColor=part=>trendMark&&(part.role==='trend'||part.role==='delta')?trendMark.color.slice(1):part.role==='value'?context.colors.accent:context.textColor;
   for (const [partIndex,part] of layout.parts.entries()) {
     const invalid=/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/u.exec(part.text);
