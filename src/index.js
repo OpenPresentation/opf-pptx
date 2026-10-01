@@ -43,6 +43,9 @@ import {
   catalogs as bundledCatalogs,
   validatePresentation
 } from "@openpresentation/opf";
+// Optional core exports are read from the namespace so an older published core still loads;
+// resolveVariables ships with core RR-32.
+import * as opfCore from "@openpresentation/opf";
 
 export {checkPptxTypefaces, inventoryPptxTypefaces, packageFontsUsed, THEME_SCRIPT_SUPPLEMENTS} from './typeface-inventory.js';
 export {DEFAULT_SIGNAL_LIMITS, SIGNALS_VERSION, isMonospaceFamily} from './import-signals.js';
@@ -208,7 +211,7 @@ export async function toPptx(input, options = {}) {
   if (options.provenance !== undefined && !['full', 'references-only', false].includes(options.provenance)) {
     throw new OPFPptxError('invalid-provenance-option', "provenance must be 'full', 'references-only' or false.", {path: 'options.provenance'});
   }
-  const presentation = parseInput(input);
+  const presentation = resolveTemplateInput(parseInput(input), options);
   assertValidBoundary(presentation);
   options = {...options, textMeasurement: chosenFamilyMeasurement(options.textMeasurement), svgRasters: new Map()};
 
@@ -687,6 +690,12 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   const shapes = nativeContext.shapes;
   if (tree?.['p:grpSp']) options.onDiagnostic?.({code:'grouped-text-reflow',path:`slides.${slideIndex}`,message:'Grouped native text and pictures are retained, but group transforms and unsupported group members are not reconstructed; review the reflowed OPF.'});
   const paragraphs = nativeContext.paragraphs;
+  // FF-45: OMML equations (a14:m math zones) have no OPF model. Their fallback text is imported as plain text; the equation
+  // layout (fractions, radicals, limits, matrices) is lost, and that loss is diagnosed per shape instead of passing silently.
+  paragraphs.forEach((list, index) => {
+    const zones = list.reduce((count, paragraph) => count + (paragraph.math?.zones ?? 0), 0);
+    if (zones) options.onDiagnostic?.({code: 'math-equation-flattened', path: `slides.${slideIndex}`, message: `Native shape ${index} holds ${zones} OMML equation${zones === 1 ? '' : 's'} (a14:m); OPF has no equation model, so its fallback text is imported as plain text and the equation layout is not represented.`});
+  });
   // Native shape keys (indexes in nativeTextShapes / nativePictures / frame order) for import signals.
   const shapeKeys = new Map(shapes.map((shape, index) => [shape, `sp:${index}`]));
   const sourcesOf = group => group.flatMap(shape => shapeKeys.has(shape) ? [shapeKeys.get(shape)] : []);
@@ -904,9 +913,15 @@ function importPicture(entries, picture, slidePath, relationships, report) {
 function readParagraphs(txBody) {
   return withDisplayedNumbers(asArray(txBody?.["a:p"])
     .map((paragraph) => {
+      // FF-45: an a14:m math zone (OMML equation) inside mc:AlternateContent has no OPF model; its mc:Fallback runs are read as
+      // text (or, without them, the equation's m:t text), and `math` records the zones so the importer can diagnose the loss.
+      const alternates = asArray(paragraph?.["mc:AlternateContent"]);
+      const zones = alternates.flatMap(alternate => asArray(alternate?.["mc:Choice"])).filter(choice => choice?.["a14:m"] !== undefined);
+      const fallbackRuns = alternates.flatMap(alternate => asArray(alternate?.["mc:Fallback"])).flatMap(fallback => [...asArray(fallback?.["a:r"]), ...asArray(fallback?.["a:fld"])]);
       const runs = [
         ...asArray(paragraph?.["a:r"]),
-        ...asArray(paragraph?.["a:fld"])
+        ...asArray(paragraph?.["a:fld"]),
+        ...fallbackRuns
       ];
       const texts = [];
       const sizes = [];
@@ -916,11 +931,14 @@ function readParagraphs(txBody) {
         const size = Number(run?.["a:rPr"]?.sz);
         if (Number.isFinite(size)) sizes.push(size / 100);
       }
+      const linear = zones.map(choice => keyedMathText(choice["a14:m"])).join("");
+      if (zones.length && !fallbackRuns.some(run => scalarText(run?.["a:t"]))) texts.push(linear);
       return {
         text: texts.join(""),
         bullet: asArray(paragraph?.["a:pPr"]).some(props => props?.["a:buChar"] !== undefined || props?.["a:buBlip"] !== undefined || props?.["a:buAutoNum"] !== undefined),
         level: Number(asArray(paragraph?.["a:pPr"])[0]?.lvl ?? 0),
         maxFontSize: sizes.length > 0 ? Math.max(...sizes) : 0,
+        ...(zones.length ? {math: {zones: zones.length, text: linear}} : {}),
         ...autoNumberOf(asArray(paragraph?.["a:pPr"])[0])
       };
     }));
@@ -930,6 +948,12 @@ function autoNumberOf(properties) {
   if (properties?.["a:buAutoNum"] === undefined) return {};
   const attributes = asArray(properties["a:buAutoNum"])[0] ?? {};
   return {autoNum: {type: attributes.type, startAt: attributes.startAt}};
+}
+/** The m:t text of a keyed OMML tree (an a14:m zone) in document order: the equation's linear reading without its layout. */
+function keyedMathText(node) {
+  if (Array.isArray(node)) return node.map(keyedMathText).join("");
+  if (!node || typeof node !== "object") return "";
+  return Object.entries(node).map(([key, value]) => key === "m:t" ? asArray(value).map(scalarText).join("") : keyedMathText(value)).join("");
 }
 
 function shapePlaceholderType(shape) {
@@ -1350,6 +1374,30 @@ function parseInput(input) {
   }
 
   throw new OPFPptxError("invalid-input", "OPF input must be a parsed object, JSON string, or Uint8Array.");
+}
+
+// Template variables (core resolveVariables, RR-32): a deck that uses content variables, or a template, is resolved to a
+// concrete deck before export, so the PPTX holds exactly the text, numbers, dates and images the preview shows. A template
+// exports with each unfilled variable's example (reported as variable-example-used); a normal deck with an unfilled
+// required variable is refused. Decks without content variables are returned untouched. The package stores the resolved
+// deck, not the template form, so fromPptx returns the filled deck.
+function resolveTemplateInput(presentation, options) {
+  if (typeof opfCore.resolveVariables !== "function" || !isPlainObject(presentation)) return presentation;
+  const values = options.variables;
+  if (values !== undefined && !isPlainObject(values)) {
+    throw new OPFPptxError("invalid-variables", "The variables option must be an object keyed by variable id.", {path: "options.variables"});
+  }
+  const template = opfCore.isTemplate(presentation);
+  if (!template && !opfCore.hasContentVariables(presentation) && !(values && Object.keys(values).length)) return presentation;
+  const result = opfCore.resolveVariables(presentation, values ?? {}, {examples: template});
+  const errors = result.diagnostics.filter(entry => entry.severity === "error");
+  if (errors.length) {
+    throw new OPFPptxError(errors.some(entry => entry.code === "variable-unfilled") ? "unfilled-variables" : "invalid-variables", errors[0].message, {issues: errors, path: errors[0].path});
+  }
+  for (const entry of result.diagnostics) {
+    if (entry.code === "variable-example-used") options.onDiagnostic?.({code: "variable-example-used", path: entry.path, message: entry.message, id: entry.id});
+  }
+  return result.presentation;
 }
 
 function assertValidBoundary(presentation) {

@@ -222,6 +222,16 @@ Exports report `language-unresolved` when the document's language cannot be reso
 
 A list with `numbering` (`{ "items": ["Define", "Build"], "numbering": ["arabic", { "style": "alpha-lower", "suffix": "paren" }] }`) exports as native PowerPoint auto-numbers, not typed digits. Each marker line is the text box it already was, now with `a:buAutoNum` (`arabicPeriod`, `arabicParenR`, `arabicParenBoth`, `romanUc`/`romanLc`..., `alphaUc`/`alphaLc`...) whose `startAt` is the number core counted (written only when it is not 1), the measured marker size, colour and family (`a:buClr`, `a:buSzPts`, `a:buFont`) and `marL`/`indent` from core's hanging indent, so the number and the text sit where the preview draws them. A numbered list is not renumbered by PowerPoint when an entry is inserted (each line is its own box; this is how lists export today), the numbers are core's. `fromPptx` maps `a:buAutoNum` back: the scheme to a style and suffix, `startAt` to `start`, per level to an array, and a list whose numbers are not the plain count to per-entry `start` values; native counting follows PowerPoint (consecutive paragraphs of one scheme and start count up, a shallower or unnumbered paragraph ends the deeper sequences). The authored spelling comes back in its shortest form (`"arabic"` for `{ "style": "arabic" }`). A scheme OPF has no equivalent for imports as `arabic` with `numbering-scheme-adapted`, a list that mixes numbered and bullet paragraphs imports as bullets with `numbering-mixed`, and different schemes at one level report `numbering-style-adapted`. A numbered list exported with a core that does not compose `numbering` reports `numbering-unsupported-core` and exports bullets. Lists without `numbering` export unchanged. See core's [numbered lists](https://github.com/OpenPresentation/opf/blob/main/docs/numbered-lists.md).
 
+## Templates and variables (RR-32)
+
+A deck that declares content variables, or is marked `"template": true`, is resolved by core `resolveVariables` before it is exported, so the PPTX holds exactly the text, numbers, dates and images the preview shows. Pass the values as `variables`:
+
+```js
+const pptx = await toPptx(template, { variables: { client: 'Globex', revenue: 1250000 } });
+```
+
+A template exports with each unfilled variable's `example` and reports `variable-example-used` through `onDiagnostic`; a normal deck with an unfilled required variable throws `OPFPptxError` with code `unfilled-variables`, and a value of the wrong kind throws `invalid-variables`. A template plus values exports the same bytes as the equivalent hand-written deck (`test/template-variables.mjs`). The package stores the resolved deck, not the template form: `fromPptx` returns the filled deck. Decks without content variables are untouched. Needs the core release that ships `resolveVariables` (read from the namespace, so an older core still loads and ignores the option). See [templates and variables](https://github.com/OpenPresentation/opf/blob/main/docs/templates-and-variables.md).
+
 ## Runtime Policy
 
 The package runtime must stay local and deterministic:
