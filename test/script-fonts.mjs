@@ -150,7 +150,9 @@ for (const expected of cases) {
   const flip = {l: 'r', r: 'l', ctr: 'ctr'};
   const ownParagraphs = paragraphs(slides(xml)), baseline = paragraphs(slides((await read(deck(undefined, {}, expected.text))).xml));
   assert.equal(ownParagraphs.length, baseline.length, `${expected.id} paragraph count`);
-  assert.deepEqual(ownParagraphs.map(paragraph => paragraph.algn), baseline.map((paragraph, index) => ownParagraphs[index].rtl === '1' ? flip[paragraph.algn] : paragraph.algn), `${expected.id} logical alignment`);
+  // A core without right-to-left composition (the published 0.11 line, which test:packed runs) keeps the composed absolute alignment.
+  const logical = typeof opf.physicalAlignment === 'function';
+  assert.deepEqual(ownParagraphs.map(paragraph => paragraph.algn), baseline.map((paragraph, index) => logical && ownParagraphs[index].rtl === '1' ? flip[paragraph.algn] : paragraph.algn), `${expected.id} logical alignment`);
 
   // Import maps lang back to the catalog language without new diagnostics.
   const imported = [];
