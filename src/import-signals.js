@@ -488,7 +488,8 @@ function tableSignal(frameKids, limits, budget, report) {
       text = paragraphs.join('\n');
       if (count >= limits.maxTableCells || budget.chars <= 0) { clipped = true; line.push(null); continue; }
       count += 1;
-      if (text.length > limits.maxTableCellChars) { text = text.slice(0, limits.maxTableCellChars); clipped = true; }
+      const room = Math.min(limits.maxTableCellChars, budget.chars);
+      if (text.length > room) { text = text.slice(0, room); clipped = true; }
       budget.chars -= text.length;
       line.push(text);
     }

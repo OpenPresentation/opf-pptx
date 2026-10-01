@@ -300,6 +300,8 @@ export function rebuildContent(topology, blocks, bounds, placed) {
   }
   for (const leaf of leaves) {
     if (leaf.matches.length <= 1) continue;
+    // Every flat block that rejoins here lands at this leaf (reported to `placed`), not only the first.
+    leaf.rejoined = leaf.matches;
     // A list's native lines can arrive as several bullet blocks when another
     // object interleaves with them in reading order; they rejoin their list.
     if (leaf.kind === 'list' && leaf.matches.every(index => blocks[index]?.type === 'list' && Array.isArray(blocks[index].items))) {
@@ -352,13 +354,13 @@ export function rebuildContent(topology, blocks, bounds, placed) {
   const place = (item, prefix) => {
     if (item.t !== 'group') {
       const leaf = leaves.find(entry => entry.node === item);
-      if (leaf) for (const index of leaf.matches) paths.set(index, prefix);
+      if (leaf) for (const index of leaf.rejoined ?? leaf.matches) paths.set(index, prefix);
       return;
     }
     let position = 0;
     for (const child of item.blocks) if (built(child)) place(child, `${prefix}.blocks.${position++}`);
   };
-  if (topology.form === 'root') { for (const leaf of leaves) for (const index of leaf.matches) paths.set(index, leaf.field); }
+  if (topology.form === 'root') { for (const leaf of leaves) for (const index of leaf.rejoined ?? leaf.matches) paths.set(index, leaf.field); }
   else if (topology.form === 'blocks') { let position = 0; for (const item of topology.blocks) if (built(item)) place(item, `blocks.${position++}`); }
   else for (const [key, item] of Object.entries(topology.regions)) if (built(item)) place(item, key);
   const fields = {blocks: null};

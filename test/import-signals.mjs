@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {unzipSync, zipSync} from 'fflate';
+import {rebuildContent} from '../dist/content-topology.js';
 import PptxGenJS from '../vendor/pptxgenjs/pptxgen.es.js';
 import {buildThirdPartyDeck} from './signals-deck.mjs';
 const {fromPptx, toPptx, DEFAULT_SIGNAL_LIMITS, SIGNALS_VERSION, isMonospaceFamily, runtimePolicy} = await import(process.env.OPF_TEST_PPTX_MODULE ?? '../dist/index.js');
@@ -312,6 +313,10 @@ await check('limits bound the output and are reported', async () => {
 
 await check('table cells are bounded', async () => {
   const limited = (await importWith(deck, {signals: {maxTableCells: 4, maxTableCellChars: 3}})).signals.slides[3].shapes.find(shape => shape.kind === 'table');
+  // The deck-wide text budget is a hard bound for table cells too.
+  const tight = (await importWith(deck, {signals: {maxTextCharsTotal: 8}})).signals;
+  const spent = tight.slides.flatMap(slide => slide.shapes).reduce((sum, shape) => sum + (shape.text?.paragraphs ?? []).reduce((n, paragraph) => n + paragraph.text.length, 0) + (shape.table?.cells ?? []).flat().reduce((n, cell) => n + cell.length, 0), 0);
+  assert.ok(spent <= 8, `budget: ${spent}`);
   assert.equal(limited.table.truncated, true);
   assert.deepEqual(limited.table.cells, [['Reg', 'ARR'], ['EME', '$4.'], ['', '']]);
   assert.equal(limited.table.rows, 3);
@@ -394,6 +399,19 @@ await check('formatting and unusual objects are read without failing', async () 
   assert.equal(named('Embedded object').kind, 'ole');
   assert.deepEqual([named('Mystery').kind, named('Mystery').graphicType], ['unknown', 'urn:example:unknown']);
   assert.deepEqual([named('Clip').kind, named('Clip').mediaKind, named('Clip').picture], ['media', 'video', {unresolved: true}]);
+});
+
+await check('blocks that rejoin into one stored leaf all link to it', async () => {
+  const at = y => ({x: 0, y, width: 100, height: 10});
+  const placed = (topology, blocks, bounds) => { let map; const result = rebuildContent(topology, blocks, bounds, paths => { map = paths; }); assert.equal(result.reason, undefined); return [...map]; };
+  // A soft-wrapped text exported as three native lines: all three flat blocks are the one root text.
+  const lines = [{type: 'text', text: 'one '}, {type: 'text', text: 'two '}, {type: 'text', text: 'three'}];
+  assert.deepEqual(placed({form: 'root', field: 'text', box: [0, 0, 100, 100], lines: 3}, lines, [at(0), at(10), at(20)]), [[0, 'text'], [1, 'text'], [2, 'text']]);
+  assert.deepEqual(placed({form: 'blocks', blocks: [{t: 'leaf', k: 'text', box: [0, 0, 100, 100], lines: 3}]}, lines, [at(0), at(10), at(20)]), [[0, 'blocks.0'], [1, 'blocks.0'], [2, 'blocks.0']]);
+  // A list whose native lines interleave with another object: both list blocks land on the list's path.
+  const lists = [{type: 'list', items: ['a']}, {type: 'text', text: 'between'}, {type: 'list', items: ['b']}];
+  const topology = {form: 'blocks', blocks: [{t: 'leaf', k: 'list', box: [0, 0, 100, 40]}, {t: 'leaf', k: 'text', box: [0, 50, 100, 20]}]};
+  assert.deepEqual(placed(topology, lists, [at(0), at(50), at(20)]), [[0, 'blocks.0'], [2, 'blocks.0'], [1, 'blocks.1']]);
 });
 
 await check('no network, models or clock: the runtime policy is unchanged', async () => {
