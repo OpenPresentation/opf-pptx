@@ -1,4 +1,5 @@
 import {XMLParser} from 'fast-xml-parser';
+import {withoutSvgBlip} from './svg-image.js';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 import {pictureTransform} from './image-geometry.js';
 
@@ -31,7 +32,7 @@ export function watermarkOpacity(value) {
 
 function blipFillIdentity(blipFill) {
   const {['a:blip']: blip, ...rest} = blipFill ?? {};
-  const {['r:embed']: _embed, ...blipRest} = blip ?? {};
+  const {['r:embed']: _embed, ...blipRest} = withoutSvgBlip(blip) ?? {};
   return {...rest, 'a:blip': blipRest};
 }
 

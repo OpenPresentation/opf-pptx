@@ -1,4 +1,5 @@
 import {XMLParser} from 'fast-xml-parser';
+import {withoutSvgBlip} from './svg-image.js';
 import {attachTextTags, decodeTextTag} from './code-provenance.js';
 import {framedPictureTransform} from './image-geometry.js';
 
@@ -36,7 +37,7 @@ function blipEffects(effects) {
 // Native blip fill without its package-local relationship id.
 function blipFillIdentity(blipFill) {
   const {['a:blip']: blip, ...rest} = blipFill ?? {};
-  const {['r:embed']: _embed, ...blipRest} = blip ?? {};
+  const {['r:embed']: _embed, ...blipRest} = withoutSvgBlip(blip) ?? {};
   return {...rest, 'a:blip': blipRest};
 }
 
