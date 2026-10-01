@@ -14,7 +14,8 @@ import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
 import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
 import {attachFurnitureTags, furnitureManifest, importFurniture, manifestPartIndex, staticDateFallback} from './furniture-provenance.js';
-import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance} from './document-provenance.js';
+import {restoreRunColors} from './run-colors.js';
+import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance, joinAuthors, splitAuthors, DEFAULT_AUTHOR} from './document-provenance.js';
 import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './sections.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {importImageOrientation} from './image-import.js';
@@ -322,7 +323,7 @@ export async function fromPptx(input, options = {}) {
   });
   if (observedLanguage.language !== undefined) imported.language = observedLanguage.language;
   if (core.description) imported.description = core.description;
-  if (core.author) imported.author = core.author;
+  if (core.author) imported.author = splitAuthors(core.author);
   const themeDesign = importThemeDesign(entries, presentationRoot, presentationRels);
   const design = {...themeDesign.design, ...(dimensions ? {dimensions} : {})};
   if (Object.keys(design).length) imported.design = design;
@@ -387,6 +388,7 @@ export async function fromPptx(input, options = {}) {
   }
   if (slideProvenance.length !== imported.slides.length) throw new OPFPptxError("invalid-import-opf", "Slide provenance does not match the imported slides.");
   restoreLogoFallback(imported, furnitureContexts);
+  applyRunColors(imported, slideProvenance, restoredGroups, report, options);
   if (imported.design?.theme === undefined) for (const diagnostic of themeDesign.diagnostics) if (diagnostic.code === "theme-unverified") report(diagnostic);
   languageDiagnostics(imported, observedLanguage, options.onDiagnostic && report);
 
@@ -406,6 +408,24 @@ export async function fromPptx(input, options = {}) {
   const signals = extractSignals({archive, presentationRoot, slidePaths, themeFacts: themeFactsFor(slidePaths[0], archive), limits: signalLimits,
     recorded: furnitureContexts.map(context => context.signalSources), slideProvenance, contentPaths});
   return {document: imported, signals};
+}
+
+// RR-08: run colours named by a ColorRef (variable, scheme slot, role) come back as that name where the document's own
+// colour resolution still gives the run's colour; see run-colors.js.
+function applyRunColors(imported, slideProvenance, restoredGroups, report, options) {
+  const restoredContent = new Set(restoredGroups.filter(group => group.applied && group.contentPaths).map(group => group.contentPaths.slide));
+  const info = slideProvenance.map((entry, index) => entry.structure === "untagged" ? undefined : {record: entry.record, structure: entry.structure === "match", content: restoredContent.has(index)});
+  const contexts = new Map();
+  const resolve = (slide, name) => {
+    try {
+      const key = slide.design ?? imported.design ?? null;
+      if (!contexts.has(key)) contexts.set(key, resolvePresentationContext(slide.design ? {...imported, design: {...imported.design, ...slide.design}} : imported, options));
+      return resolveColorRefValue(name, colorContext(contexts.get(key)));
+    } catch {
+      return undefined;
+    }
+  };
+  restoreRunColors(imported.slides, info, resolve, report);
 }
 
 // A consumed logo picture (OPF_LOGO_V1) never becomes content. Its own image restores the logo only when nothing else
@@ -1467,7 +1487,7 @@ function configurePresentation(pptx, presentation, context) {
     height: context.dimensions.heightInches
   });
   pptx.layout = context.layoutName;
-  pptx.author = normalizeAuthor(presentation.author) ?? "OpenPresentation";
+  pptx.author = normalizeAuthor(presentation.author) ?? DEFAULT_AUTHOR;
   pptx.company = "OpenPresentation";
   pptx.subject = presentation.description ?? "";
   pptx.title = presentation.name ?? presentation.filename ?? "OPF Presentation";
@@ -3397,7 +3417,7 @@ function numericValue(value) {
 
 function normalizeAuthor(author) {
   if (typeof author === "string") return author;
-  if (Array.isArray(author)) return author.join("; ");
+  if (Array.isArray(author)) return joinAuthors(author);
   return null;
 }
 

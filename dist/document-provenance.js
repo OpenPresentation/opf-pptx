@@ -1,6 +1,7 @@
 import {XMLParser} from 'fast-xml-parser';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 import {contentTopology, rebuildContent, validateTopology} from './content-topology.js';
+import {runColorRecord, validateRunColors} from './run-colors.js';
 // Namespace import: cores before FF-34 do not export resolveSocialProfile.
 import * as opfCore from '@openpresentation/opf';
 
@@ -73,7 +74,24 @@ function authoredSocials(stored, observed, records) {
 // native PowerPoint counterpart and round-trips from the stored value.
 export const DESIGN_REFERENCES = Object.freeze(['theme', 'colorScheme', 'fontScheme', 'dimensions', 'background']);
 export const COMPOSITION_HINTS = Object.freeze(['titleAlignment', 'contentAlignment', 'contentBox', 'contentDirection', 'chartPrimary', 'imageFill', 'listBullet']);
-export const METADATA = Object.freeze(['narrative', 'tone', 'audience', 'purpose', 'language', 'organization', 'speaker', 'takeaway', 'duration', 'tags', 'variables', 'filename', 'extensions']);
+export const METADATA = Object.freeze(['narrative', 'tone', 'audience', 'purpose', 'language', 'organization', 'speaker', 'takeaway', 'duration', 'tags', 'variables', 'filename', 'extensions', 'author']);
+
+// `author` is native (docProps/core.xml dc:creator), where several authors share one field joined by "; " (the join the
+// schema documents). Import splits a creator on exactly that separator, and only when every part is a non-empty name
+// with no outer whitespace (so the split joins back to the identical text); a single name is never cut. The authored form (an array, or a string that itself holds a "; ") returns from the stored record
+// while the creator still equals it; plain PPTX has no record and gets the split. The record is the top-level `author`
+// of OPF_DOCUMENT_V1: importers up to 0.11.8 reject an unknown key inside `supplement` (dropping the whole tag) but ignore
+// an unknown top-level key.
+export const joinAuthors = author => Array.isArray(author) ? author.join('; ') : author;
+export function splitAuthors(creator) {
+  if (typeof creator !== 'string') return creator;
+  const parts = creator.split('; ');
+  return parts.length > 1 && parts.every(part => part && part === part.trim()) ? parts : creator;
+}
+// The creator the package gets when the document names no author. An imported default is not an authored value.
+export const DEFAULT_AUTHOR = 'OpenPresentation';
+// Stored only when the native creator cannot carry the authored form by itself (or would read as the default).
+const authorNeedsRecord = author => Array.isArray(author) || (typeof author === 'string' && (author === DEFAULT_AUTHOR || Array.isArray(splitAuthors(author))));
 // Brand images have no native gate: they return from the stored value once
 // their media and asset references resolve. The P2 logo picture (`OPF_LOGO_V1`)
 // consumes the drawn logo; `design.logo` itself always returns from here.
@@ -399,6 +417,7 @@ export function documentProvenance(presentation, {mode = 'full', isCatalogId = (
   for (const key of METADATA) {
     if (!own(presentation, key)) continue;
     const value = presentation[key];
+    if (key === 'author' && (referencesOnly || !authorNeedsRecord(value))) continue;
     if (referencesOnly) {
       const kind = METADATA_CATALOGS[key];
       const ids = typeof value === 'string' ? [value] : key === 'audience' && Array.isArray(value) && value.every(item => typeof item === 'string') ? value : null;
@@ -447,7 +466,11 @@ export function recordContentTopology(provenance, slide, index, items) {
   if (!provenance || provenance.mode !== 'full' || !provenance.slides[index]) return;
   // An unstorable structure is reported with the other omissions (storable) and recorded in the tag.
   const topology = contentTopology(slide, items, index, reason => { provenance.slides[index].omittedContent = reason; });
-  if (topology) provenance.slides[index].content = topology;
+  if (!topology) return;
+  provenance.slides[index].content = topology;
+  // Variable, scheme-slot and role names of text runs (the native colour holds only what they resolve to).
+  const colors = runColorRecord(slide);
+  if (colors) provenance.slides[index].colors = colors;
 }
 
 function base64ToBytes(value) {
@@ -578,6 +601,11 @@ function storable(entries, provenance) {
     const fields = {};
     for (const [key, value] of Object.entries(source[section] ?? {})) {
       const path = section === 'design' ? `design.${key}` : key;
+      if (section === 'metadata' && key === 'author') {
+        const prepared = prepare(path, value);
+        if (prepared !== undefined) document.author = prepared;
+        continue;
+      }
       // A design reference is only restorable together with its asset.
       if (section === 'design' && unstoredAsset(value)) { omit(path, 'the asset it references could not be stored'); continue; }
       const prepared = prepare(path, value);
@@ -593,7 +621,7 @@ function storable(entries, provenance) {
   const slides = provenance.slides.map((record, index) => {
     const result = {v: 1, slide: index};
     if (record.omittedContent) omit(`slides.${index}.content`, record.omittedContent);
-    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content']) {
+    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors']) {
       if (record[key] === undefined) continue;
       const value = prepare(`slides.${index}.${key}`, record[key]);
       if (value !== undefined) result[key] = value;
@@ -630,7 +658,7 @@ function storable(entries, provenance) {
   }
   for (const [index, record] of slides.entries()) {
     while (tagChars(record) > budget) {
-      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'layoutRecord'].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
+      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'layoutRecord'].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
         ...Object.keys(record.design ?? {}).map(key => ({key, design: true, size: sizeOf(record.design[key])}))];
       if (!candidates.length) break;
       const largest = candidates.sort((a, b) => b.size - a.size)[0];
@@ -738,7 +766,13 @@ function validateDocument(stored) {
   for (const key of Object.keys(value.metadata ?? {})) if (!METADATA.includes(key)) throw Error(`Unknown metadata field ${key}.`);
   if (value.metadata?.filename !== undefined && typeof value.metadata.filename !== 'string') throw Error('Invalid filename record.');
   if (value.metadata?.extensions !== undefined && !object(value.metadata.extensions)) throw Error('Invalid extensions record.');
+  const author = stored.author;
+  if (author !== undefined && !(typeof author === 'string' || (Array.isArray(author) && author.length > 0 && author.length <= 256 && author.every(name => typeof name === 'string')))) throw Error('Invalid author record.');
   validateOmitted(value.omitted);
+  if (author !== undefined) {
+    const {author: _stored, ...rest} = value;
+    return {...rest, metadata: {...rest.metadata, author}};
+  }
   return value;
 }
 
@@ -753,6 +787,7 @@ function validateSlide(stored) {
   if (value.section !== undefined && typeof value.section !== 'string') throw Error('Invalid slide section record.');
   if (value.extensions !== undefined && !object(value.extensions)) throw Error('Invalid slide extensions record.');
   if (value.content !== undefined) validateTopology(value.content);
+  if (value.colors !== undefined) validateRunColors(value.colors);
   validateOmitted(value.omitted);
   return value;
 }
@@ -1037,10 +1072,18 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
   // content (the furniture organization name, linked socials) win over their
   // stored values; stored-only fields (logo, role ...) return.
   const metadata = document.metadata ?? {};
+  // The exporter writes the default creator when no author was authored: with the document record present, that default is not the author.
+  if (metadata.author === undefined && imported.author === DEFAULT_AUTHOR) group('author', [remove(['author'])]);
   for (const key of METADATA) {
     if (metadata[key] === undefined) continue;
     if (key === 'organization' && organizationConflict) {
       report({code: 'metadata-reference-changed', path: 'organization', message: 'Slides now show different organization names in their furniture, so the stored organization was not restored; each slide keeps its visible text.'});
+      continue;
+    }
+    if (key === 'author') {
+      // Native evidence: the stored authored form only stands for the creator it was joined into.
+      if (joinAuthors(imported.author) === joinAuthors(metadata.author)) group('author', [set(['author'], clone(metadata.author))]);
+      else report({code: 'metadata-reference-changed', path: 'author', message: 'The PowerPoint author field no longer matches the stored author, so the stored author was not restored; the current field is kept.'});
       continue;
     }
     let value = restorable(key, metadata[key], {prune: true});
