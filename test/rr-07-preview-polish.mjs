@@ -3,6 +3,7 @@ import {unzipSync} from 'fflate';
 import {renderSvg} from '@openpresentation/opf-render';
 import {PATTERN_PRESETS, colorSchemes, patternRuns, resolvePatternPreset, codeSyntaxPaletteForScheme} from '@openpresentation/opf';
 import {fromPptx, toPptx} from '../dist/index.js';
+import {presetPatterns, nativePatternPreset} from '../dist/background.js';
 
 // RR-07 parity: the SVG preview and the PPTX export draw code syntax colours, metric trend arrows and the
 // DrawingML preset patterns from the same core tables, so the colours and geometry must agree.
@@ -121,6 +122,9 @@ for (const {trend, align, deck} of decks) {
 }
 
 // ---------------------------------------------------------------- patterns
+// The exporter's own preset list is core's: no preset the preview draws is missing here, and none is extra.
+assert.deepEqual([...presetPatterns].sort(), [...PATTERN_PRESETS].sort());
+assert.equal(nativePatternPreset('diagStripe'), resolvePatternPreset('diagStripe'));
 const hex = value => value.slice(1).toUpperCase();
 for (const preset of [...PATTERN_PRESETS, 'diagStripe']) {
   const deck = {design: {fontScheme: 'roboto', background: {type: 'pattern', pattern: {preset, foregroundColor: '#112233', backgroundColor: '#FFEECC'}}}, slides: [{title: 'Pattern'}]};
