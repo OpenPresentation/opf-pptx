@@ -112,6 +112,16 @@ for (const options of [{}, {textMeasurement: fonts.textMeasurement}]) {
   ok(!imported.slides.some(slide => (slide.blocks ?? []).some(block => typeof block.text === 'string' && /^\d+ /.test(block.text))), 'listed notes are not text blocks');
 }
 
+// A cited text that wraps over several native lines is one payload again after import (the topology's soft-wrap
+// record skips the marker fragments, which have no source text).
+{
+  const source = {design: {fontScheme: 'roboto'}, references: [{id: 'a', text: 'Source A'}], slides: [{title: 'Wrapped', text: [{text: 'Enterprise adoption doubled in 2025 and kept doubling through the following year as more teams adopted the format', cite: 'a'}, ', revenue grew 18% and headcount stayed flat', {text: ' across every region we measured in the period', cite: 'a'}, '.']}]};
+  const diagnostics = [];
+  const imported = await fromPptx(await toPptx(source, {seed: 1, textMeasurement: fonts.textMeasurement}), {onDiagnostic: diagnostic => diagnostics.push(diagnostic)});
+  ok(!diagnostics.some(d => d.code === 'content-structure-changed'), 'wrapped cited text keeps its stored structure');
+  assert.deepEqual(stripEngine(imported.slides[0].text), source.slides[0].text);
+}
+
 // References-only provenance: the deck record stores no references, so the list comes from the footnote boxes (cited ones only).
 {
   const source = deck();
