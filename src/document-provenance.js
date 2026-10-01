@@ -75,7 +75,8 @@ function authoredSocials(stored, observed, records) {
 // native PowerPoint counterpart and round-trips from the stored value.
 export const DESIGN_REFERENCES = Object.freeze(['theme', 'colorScheme', 'fontScheme', 'dimensions', 'background']);
 export const COMPOSITION_HINTS = Object.freeze(['titleAlignment', 'contentAlignment', 'contentBox', 'contentDirection', 'chartPrimary', 'imageFill', 'listBullet']);
-// `references` (RR-34): the deck's cited sources; stored under `supplement` like filename and extensions.
+// `references` (RR-34): the deck's cited sources. Like `author`, stored as a top-level key of OPF_DOCUMENT_V1 (importers up to
+// 0.11.9 drop a tag with an unknown `supplement` field but ignore an unknown top-level key) and read back into metadata.
 export const METADATA = Object.freeze(['narrative', 'tone', 'audience', 'purpose', 'language', 'organization', 'speaker', 'takeaway', 'duration', 'tags', 'variables', 'filename', 'extensions', 'author', 'references']);
 
 // `author` is native (docProps/core.xml dc:creator), where several authors share one field joined by "; " (the join the
@@ -109,7 +110,7 @@ const SLIDE_DESIGN_FIELDS = [...STYLE_REFERENCES, 'background', ...COMPOSITION_H
 // whose `design` does. Keys added since are written under `supplement`, a
 // top-level container those importers ignore, and merged back on read. Add
 // every new design or metadata key here, never to the legacy sections.
-const DOCUMENT_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS, metadata: Object.freeze(['filename', 'extensions', 'references'])});
+const DOCUMENT_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS, metadata: Object.freeze(['filename', 'extensions'])});
 const SLIDE_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS});
 
 // Storage shape: move the supplement keys out of the legacy sections.
@@ -608,9 +609,9 @@ function storable(entries, provenance) {
     const fields = {};
     for (const [key, value] of Object.entries(source[section] ?? {})) {
       const path = section === 'design' ? `design.${key}` : key;
-      if (section === 'metadata' && key === 'author') {
+      if (section === 'metadata' && (key === 'author' || key === 'references')) {
         const prepared = prepare(path, value);
-        if (prepared !== undefined) document.author = prepared;
+        if (prepared !== undefined) document[key] = prepared;
         continue;
       }
       // A design reference is only restorable together with its asset.
@@ -774,13 +775,14 @@ function validateDocument(stored) {
   for (const key of Object.keys(value.metadata ?? {})) if (!METADATA.includes(key)) throw Error(`Unknown metadata field ${key}.`);
   if (value.metadata?.filename !== undefined && typeof value.metadata.filename !== 'string') throw Error('Invalid filename record.');
   if (value.metadata?.extensions !== undefined && !object(value.metadata.extensions)) throw Error('Invalid extensions record.');
-  if (value.metadata?.references !== undefined && !Array.isArray(value.metadata.references)) throw Error('Invalid references record.');
   const author = stored.author;
   if (author !== undefined && !((typeof author === 'string' && author.length <= MAX_AUTHOR_LENGTH * 256) || (Array.isArray(author) && author.length > 0 && author.length <= 256 && author.every(name => typeof name === 'string' && name.length <= MAX_AUTHOR_LENGTH)))) throw Error('Invalid author record.');
+  const references = stored.references;
+  if (references !== undefined && (!Array.isArray(references) || references.length > 4096 || !references.every(object))) throw Error('Invalid references record.');
   validateOmitted(value.omitted);
-  if (author !== undefined) {
-    const {author: _stored, ...rest} = value;
-    return {...rest, metadata: {...rest.metadata, author}};
+  if (author !== undefined || references !== undefined) {
+    const {author: _author, references: _references, ...rest} = value;
+    return {...rest, metadata: {...rest.metadata, ...(author !== undefined ? {author} : {}), ...(references !== undefined ? {references} : {})}};
   }
   return value;
 }
