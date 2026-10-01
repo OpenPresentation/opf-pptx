@@ -800,13 +800,16 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
   // `type` joins that group, since it is only valid with the authored form.
   const restoreContent = (index, {record, native: observed}) => {
     if (record.content === undefined) return false;
+    // The stored `type` belongs to the authored form: when that form is not restored, neither is the type.
+    const typeNote = record.type === undefined ? '' : ` The stored slide type ${JSON.stringify(record.type)} was not restored either.`;
     if (record.native.structure !== observed.structure) {
       report({code: 'slide-reference-changed', path: `slides.${index}.content`, message: `The slide's objects were moved, resized, added or removed since export, so the authored content structure of slides.${index} (groups, regions, block ids) was not restored; the imported slide keeps its flat blocks.`});
+      if (record.type !== undefined) report({code: 'slide-reference-changed', path: `slides.${index}.type`, message: `The slide's objects were moved, resized, added or removed since export, so slides.${index}.type ${JSON.stringify(record.type)} was not restored; the imported slide keeps its observed arrangement.`});
       return false;
     }
     const result = rebuildContent(record.content, imported.slides[index]?.blocks ?? [], slides[index]?.contentBounds ?? []);
     if (result.reason) {
-      report({code: 'content-structure-changed', path: `slides.${index}`, message: `The slide's content no longer matches its stored structure (${result.reason}), so the authored groups, regions and block ids of slides.${index} were not restored; the imported slide keeps its flat blocks.`});
+      report({code: 'content-structure-changed', path: `slides.${index}`, message: `The slide's content no longer matches its stored structure (${result.reason}), so the authored groups, regions and block ids of slides.${index} were not restored; the imported slide keeps its flat blocks.${typeNote}`});
       return false;
     }
     const dedupe = (value, path) => {
@@ -858,7 +861,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
   // applies; deck references, metadata, slide ids, stored sections and
   // extensions need the document record and are not restored.
   if (!document) {
-    const layouts = imported.slides.map((_, index) => slideRecords[index] ? intent.slide(index, slideRecords[index], restoreContent(index, slideRecords[index])).entry : {structure: 'untagged'});
+    const layouts = imported.slides.map((_, index) => slideRecords[index] ? intent.slide(index, slideRecords[index], (restoreContent(index, slideRecords[index]), slideRecords[index].record.content !== undefined)).entry : {structure: 'untagged'});
     if (nativeSections) imported.slides.forEach((_, index) => reconcileSection(index, undefined));
     return {groups, slides: layouts, finalize: doc => intent.finalize(doc)};
   }
@@ -931,7 +934,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
       if (seenIds.has(record.id)) report({code: 'duplicate-slide-id', path: `slides.${index}.id`, message: `Slide id '${record.id}' appears on more than one slide (a duplicated slide); the first keeps it.`});
       else { seenIds.add(record.id); group(`slides.${index}.id`, [set(at('id'), clone(record.id))]); }
     }
-    const {entry: layoutEntry, structureMatch} = intent.slide(index, entry, restoreContent(index, entry));
+    const {entry: layoutEntry, structureMatch} = intent.slide(index, entry, (restoreContent(index, entry), entry.record.content !== undefined));
     if (!structureMatch) allStructure = false;
     layouts.push(layoutEntry);
     if (record.beat !== undefined) group(`slides.${index}.beat`, [set(at('beat'), clone(record.beat))]);
@@ -1079,7 +1082,7 @@ function layoutIntent(documentRecords, hasDocument, slideRecords, entries, group
   }
   const chosen = new Map([...resolved].filter(([, item]) => item.add).map(([id, item]) => [id, item.record]));
   const against = {document: 'the document', bundled: 'the built-in layout', slides: 'another slide'};
-  // `typeInContent`: the slide `type` is restored with the content topology group.
+  // `typeInContent`: the slide stores a content topology, so its `type` is restored with that group (or not at all).
   const slide = (index, {record}, typeInContent = false) => {
     const {structureMatch, layout, own, problem, stated} = owns[index];
     const {native: _native, ...recordValue} = record;

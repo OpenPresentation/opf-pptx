@@ -168,6 +168,17 @@ const roundTrip = async slide => {
   assert.match(two.provenance[0].message, /2 blocks lie in one stored content box/);
 }
 
+// The stored slide `type` belongs to the authored form: when the structure hash
+// still matches but the rebuild fails, the type is not put back on the flat blocks.
+{
+  const bytes = await toPptx({name: 'Typed boxes', slides: [{title: 'Probe', type: 'text', text: 'Body'}]}, EXPORT);
+  const broken = modify(bytes, entries => text(entries, 'ppt/tags/opfSlide1.xml', xml => retag(xml, value => { value.content.box = [0, 0, 1, 1]; })));
+  const {deck, provenance} = await read(broken);
+  assert.equal(deck.slides[0].type, undefined, 'No type on the flat blocks.');
+  assert.deepEqual(provenance.map(issue => [issue.code, issue.path]), [['content-structure-changed', 'slides.0']]);
+  assert.match(provenance[0].message, /stored slide type "text" was not restored either/);
+}
+
 // A damaged record rejects the slide tag as a whole; nothing else is lost.
 {
   const bytes = await toPptx({name: 'Damaged', tone: 'formal', slides: [{title: 'Probe', id: 'one', left: {text: 'L'}, right: {text: 'R'}}]}, EXPORT);
