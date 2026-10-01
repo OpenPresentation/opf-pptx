@@ -117,7 +117,7 @@ for (const [label, options] of [['estimated', {}], ['measured', {textMeasurement
 {
   const imported = await fromPptx(await toPptx(deck, {seed: 1}), {});
   // Every list payload of a slide in authoring order, wherever the importer put it (root, blocks or a region).
-  const listsIn = value => value === null || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(listsIn) : [...(Array.isArray(value.items) ? [value] : []), ...Object.values(value).flatMap(listsIn)];
+  const listsIn = value => value === null || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(listsIn) : [...(Array.isArray(value.items) || Array.isArray(value.bullets) ? [value] : []), ...Object.values(value).flatMap(listsIn)];
   const textOf = item => typeof item === 'string' ? item : Array.isArray(item) ? item.map(run => run.text ?? run).join('') : textOf(item.text);
   const expected = deck.slides.flatMap(slide => [slide.blocks, [slide.left, slide.right, slide].filter(Boolean)].flat().filter(Boolean).filter(block => (block.items || block.bullets) && block.numbering));
   const found = imported.slides.flatMap(slide => listsIn(Object.fromEntries(Object.entries(slide).filter(([key]) => !['title', 'notes'].includes(key))))).filter(block => block.numbering !== undefined);
@@ -125,8 +125,9 @@ for (const [label, options] of [['estimated', {}], ['measured', {textMeasurement
   for (const [index, block] of expected.entries()) {
     const original = block.items ?? block.bullets;
     const back = found[index];
-    assert.deepEqual(listNumbers(back.items, back.numbering).map(n => n.text), listNumbers(original, block.numbering).map(n => n.text), `list ${index}: same numbers after the round trip`);
-    assert.deepEqual(back.items.map(textOf), original.map(textOf), `list ${index}: same text`);
+    const backItems = back.items ?? back.bullets;
+    assert.deepEqual(listNumbers(backItems, back.numbering).map(n => n.text), listNumbers(original, block.numbering).map(n => n.text), `list ${index}: same numbers after the round trip`);
+    assert.deepEqual(backItems.map(textOf), original.map(textOf), `list ${index}: same text`);
   }
   // Canonical authored forms come back unchanged.
   assert.equal(found[0].numbering, 'arabic');
@@ -136,7 +137,7 @@ for (const [label, options] of [['estimated', {}], ['measured', {textMeasurement
   assert.deepEqual(found[4].numbering, ['arabic', {style: 'alpha-lower', suffix: 'paren'}, {style: 'roman-lower', suffix: 'paren-both'}]);
   assert.deepEqual(found[5].numbering, {style: 'roman-lower', start: 8, suffix: 'paren-both'});
   // The entry start that restarts the count returns as an entry start.
-  assert.deepEqual(found[6].items.map(item => item.start), [undefined, undefined, 6, undefined]);
+  assert.deepEqual((found[6].items ?? found[6].bullets).map(item => item.start), [undefined, undefined, 6, undefined]);
   assert.equal(canonicalNumbering(found[3].numbering), canonicalNumbering(deck.slides[1].numbering));
 }
 

@@ -48,8 +48,8 @@ jobs:
           repository: OpenPresentation/opf-render
           # opf-render 0.11.8 release commit (the tag draws in the primary colour, as opf-pptx writes it).
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
-          # RR-33 pins opf-render PR #99 (draws numbered list markers: the parity test reads its SVG); repin to its merge commit once merged.
-          ref: 5f8481567ccdb47ea1853bd36e0366466891dead
+          # RR-33 pins the renderer this repo already pins (0.11.9 release commit 2fbc0ab) plus opf-render PR #99's marker commit (draws numbered list markers: the parity test reads its SVG): branch codex/rr-33-ci-pin-render. Render main now draws SVG images, which this repo's svg-image-degrade test does not expect yet, so the pin stays on the old base. Repin to render main once both sides agree.
+          ref: 275fd21f6b179c117083356222421421a7ab5d54
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
