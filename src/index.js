@@ -5,7 +5,7 @@ import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilie
 import {readChartCategoryHeading,writeChartCategoryHeading} from './chart-workbook.js';
 import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
 import {attachChartexParts,chartFromChartex,CHARTEX_GRAPHIC_DATA_URI} from './chartex.js';
-import {attachCodeTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
+import {attachCodeTags, attachTextTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
 import {attachCardTags,importCardFrames} from './card-provenance.js';
 import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord,mediaTextFingerprint} from './media-provenance.js';
@@ -21,7 +21,7 @@ import {importImageOrientation} from './image-import.js';
 import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
 import {dedupeMedia} from './media-dedupe.js';
 import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
-import {placeLogos, importLogo, logoName} from './logo-provenance.js';
+import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from './logo-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
@@ -215,6 +215,7 @@ export async function toPptx(input, options = {}) {
   context.slideImages = new Map();
   context.watermarks = new Map();
   context.logos = new Map();
+  context.logoPlaceholderTags = new Map();
   context.bulletImages = new Map();
   context.backgroundFills = new Map();
   context.notesWithCarriageReturns = new Map();
@@ -403,10 +404,11 @@ function restoreLogoFallback(imported, contexts) {
     const fallback = context.logoFallback;
     if (!fallback) return;
     const slide = imported.slides[index];
-    if (slide.design?.logo !== undefined || imported.design?.logo !== undefined || organizations.some(item => item?.logo !== undefined)) return;
     const image = fallback.image;
-    if (fallback.path.startsWith('slides.')) slide.design = {...slide.design, logo: image};
-    else imported.design = {...imported.design, logo: image};
+    // A slide's own logo restores whenever the slide states none, whatever the deck logo is; the deck logo only
+    // when neither it nor the organization has one.
+    if (fallback.path.startsWith('slides.')) { if (slide.design?.logo === undefined) slide.design = {...slide.design, logo: image}; }
+    else if (imported.design?.logo === undefined && !organizations.some(item => item?.logo !== undefined)) imported.design = {...imported.design, logo: image};
   });
 }
 
@@ -589,6 +591,7 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
     }),
     diagnostic => options.onDiagnostic?.({...diagnostic, path: logoPath}));
   nativeContext.logoPictures = logo.consumed;
+  nativeContext.logoPlaceholderShapes = importLogoPlaceholders(nativeContext.shapes, relationships, entries, slideIndex);
   nativeContext.logoFallback = logo.fallback;
 
   const items = collectSlideItems(entries, slideRoot, slidePath, relationships, dimensions, options, slideIndex, furniture, nativeContext)
@@ -669,7 +672,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   for (const item of metric.items) items.push({kind:'metric',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
   for (const item of media.items) items.push({kind:'media',sourceText:item.payload.type==='text',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload});
   for (const [index,shape] of shapes.entries()) {
-    if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index)) continue;
+    if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index) || nativeContext.logoPlaceholderShapes?.has(index)) continue;
     if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)||quotes.consumed.has(shape)) continue;
     const ordinaryBody = Object.hasOwn(shape, 'p:txBody') && !shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst']?.['p:tags'];
     const item = importShape(shape, dimensions, paragraphs[index], ordinaryBody || furniture.taggedText.has(index) || media.captionShapes.has(shape));
@@ -1809,7 +1812,8 @@ async function addLogo(slide, presentation, logo, slideIndex, slideContext, cont
   const resolved = await resolveImage(logo.source, presentation, options, logo.path, outcome);
   if (!resolved) {
     if (!outcome.reported) options.onDiagnostic?.({code: 'unresolved-asset', path: logo.path, message: 'The logo needs an embedded raster, a declared asset or a host imageResolver; the logo panel shows "Image unavailable" instead.'});
-    addImagePlaceholder(slide, presentation, logo.source, region, logo.path, slideContext, options);
+    const prefix = addImagePlaceholder(slide, presentation, logo.source, region, logo.path, slideContext, options, {logo: true});
+    if (prefix) context.logoPlaceholderTags.set(prefix, {v: 1, role: 'placeholder', slide: `slides.${slideIndex}`, path: logo.path});
     return;
   }
   context.logos.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, box: region, path: logo.path, variant: logo.variant});
@@ -2264,7 +2268,9 @@ function placeholderAsset(asset, presentation) {
 // minimum) in the readable text colour for the panel, or a cross when the label
 // cannot fit even at that minimum. The panel carries the accessible name the
 // preview gives its group, "Image unavailable: <description>".
-function addImagePlaceholder(slide, presentation, asset, region, path, context, options) {
+// {logo: true} names the panel's other shapes after its panel (OPF image placeholder N text line i / icon i) and returns the
+// panel's name, so a logo placeholder can be tagged and consumed on import.
+function addImagePlaceholder(slide, presentation, asset, region, path, context, options, {logo = false} = {}) {
   const layered = placeholderAsset(asset, presentation);
   const description = String(layered.alt ?? layered.title ?? "Image");
   const label = `Image unavailable\n${description}`;
@@ -2298,17 +2304,18 @@ function addImagePlaceholder(slide, presentation, asset, region, path, context, 
     const centered = { ...inner, y: inner.y + offset };
     addMeasuredPayloadText(slide, label, centered, context, options, {
       path, fit: fitText(label, centered, 20 * scale, minimum, measurer), textStyle: style,
-      diagnosticsHandled: true, align: "center", color: textColor
+      diagnosticsHandled: true, align: "center", color: textColor, ...(logo ? {objectName: `${objectName} text`} : {})
     });
-    return;
+    return logo ? objectName : undefined;
   }
   // A status indicator, not shortened authored content: the full description stays
   // in the panel's accessible name.
   const size = Math.max(0, Math.min(inner.width, inner.height, 24 * scale));
-  if (!size) return;
+  if (!size) return logo ? objectName : undefined;
   const icon = { x: inner.x + (inner.width - size) / 2, y: inner.y + (inner.height - size) / 2 };
   const line = { color: textColor, width: Math.min(2 * scale, size / 8) * .75 };
-  for (const flipV of [false, true]) slide.addShape("line", { x: icon.x / 96, y: icon.y / 96, w: size / 96, h: size / 96, line, flipV });
+  for (const flipV of [false, true]) slide.addShape("line", { x: icon.x / 96, y: icon.y / 96, w: size / 96, h: size / 96, line, flipV, ...(logo ? {objectName: `${objectName} icon ${flipV ? 2 : 1}`} : {}) });
+  return logo ? objectName : undefined;
 }
 
 // A placeholder names what is missing in plain words. It never dumps the source value, so no data or URL lands in slide text.
@@ -2825,6 +2832,8 @@ async function normalizePptxZip(raw, context) {
   attachQuoteTags(entries,context.quoteTags);
   attachFurnitureFields(entries,context.furnitureFields);
   attachFurnitureTags(entries,context.furnitureTags,context.furnitureManifests,context.furnitureLogoTags);
+  // The "Image unavailable" panel of an unresolved logo: identity only, so import does not read it as content.
+  attachTextTags(entries,context.logoPlaceholderTags,LOGO_TAG,'opfLogoPlaceholder','logo placeholder');
   for(const [part,bytes]of Object.entries(entries)){
     if(!/^ppt\/slides\/slide\d+\.xml$/.test(part))continue;
     const relationships=parseRelationships(entries,part);

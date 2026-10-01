@@ -113,6 +113,29 @@ function readTags(container, relationships, entries) {
 }
 
 /**
+ * The panel an unresolved logo draws is a rectangle named "OPF image placeholder N" carrying a role "placeholder" logo
+ * tag for this slide, plus its text lines and icon strokes named after it. A valid tag consumes all of them: they are
+ * a status indicator, not content. Without a valid tag they stay ordinary shapes. Returns the consumed shape indexes.
+ */
+export function importLogoPlaceholders(shapes, relationships, entries, slideIndex) {
+  const consumed = new Set(), names = shapes.map(shape => shape['p:nvSpPr']?.['p:cNvPr']?.name);
+  for (const [index, shape] of shapes.entries()) {
+    const name = names[index];
+    if (typeof name !== 'string' || !/^OPF image placeholder \d+$/.test(name)) continue;
+    const {tags} = readTags(shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst'], relationships, entries);
+    const own = tags.filter(tag => tag.name?.toUpperCase() === TAG);
+    try {
+      if (own.length !== 1) continue;
+      const manifest = decodeTextTag(own[0].val);
+      if (manifest?.v !== 1 || manifest.role !== 'placeholder' || manifest.slide !== `slides.${slideIndex}` || typeof manifest.path !== 'string' || !LOGO_PATH.test(manifest.path)) continue;
+    } catch { continue; }
+    consumed.add(index);
+    for (const [other, otherName] of names.entries()) if (typeof otherName === 'string' && otherName.startsWith(`${name} text line `) || otherName?.startsWith(`${name} icon `)) consumed.add(other);
+  }
+  return consumed;
+}
+
+/**
  * Consume an unchanged tagged logo picture: it is generated from design.logo (or
  * the organization's logo), never content. Returns the consumed picture indexes
  * and `fallback`, the picture's own `{path, image}`: the caller uses it for the

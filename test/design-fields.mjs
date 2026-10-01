@@ -404,4 +404,48 @@ const powerpointSave = bytes => {
   checked++;
 }
 
+// ---- Logo fallbacks without document provenance: a slide's own tagged logo restores whatever the deck logo is, in any slide order.
+{
+  for (const provenance of [false, 'references-only']) {
+    for (const order of [[{title: 'Deck', layout: 'title'}, {title: 'Own', layout: 'title', design: {logo: jpg}}], [{title: 'Own', layout: 'title', design: {logo: jpg}}, {title: 'Deck', layout: 'title'}]]) {
+      const deck = {design: {logo: wide, background: light}, slides: order};
+      const {bytes} = await open(deck, {provenance});
+      const imported = await fromPptx(bytes);
+      const own = order.findIndex(slide => slide.design?.logo), other = 1 - own;
+      assert.equal(imported.slides[own].design?.logo?.src, jpg, `${provenance}: the slide's own logo restores (slide ${own})`);
+      assert.equal(imported.design?.logo?.src, wide, `${provenance}: the deck logo restores`);
+      assert.equal(imported.slides[other].design?.logo, undefined, `${provenance}: the other slide inherits the deck logo`);
+      assert.ok(!imported.slides[0].blocks && !imported.slides[1].blocks, `${provenance}: logos are not content`);
+    }
+  }
+  checked++;
+}
+
+// ---- An unresolvable logo (an SVG has no raster) draws the "Image unavailable" panel; the tagged panel is not content on import.
+{
+  const svg = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>').toString('base64')}`;
+  const deck = {design: {logo: svg, background: light}, slides: [{title: 'Cover', layout: 'title'}, {title: 'Body', text: 'Copy.'}]};
+  for (const provenance of ['full', false]) {
+    const diagnostics = [];
+    const {bytes, entries} = await open(deck, {provenance, onDiagnostic: item => diagnostics.push(item)});
+    assert.match(slideXml(entries, 0), /name="OPF image placeholder 1"/, 'the panel is drawn');
+    assert.match(slideXml(entries, 0), /name="OPF image placeholder 1 text line 0"/, 'with named text lines');
+    assert.ok(/OPF_LOGO_V1/.test(Object.entries(entries).filter(([path]) => /^ppt\/tags\/opfLogoPlaceholder/.test(path)).map(([, data]) => strFromU8(data)).join('')), 'the panel carries a logo tag');
+    assert.ok(diagnostics.some(item => item.code === 'unresolved-asset' && item.path === 'design.logo'));
+    const reports = [];
+    const imported = await fromPptx(bytes, {onDiagnostic: item => reports.push(item)});
+    assert.ok(!imported.slides[0].blocks && !imported.slides[0].text && !imported.slides[0].image, `${provenance}: the panel is not content`);
+    assert.deepEqual(reports.filter(item => /structure|invalid-/.test(item.code)).map(item => item.code), [], `${provenance}: a clean round trip`);
+    if (provenance === 'full') assert.equal(imported.design.logo, svg, 'the stored logo returns');
+    // An edited panel (its tag removed) is ordinary content again.
+    const untagged = zipSync(Object.fromEntries(Object.entries(unzipSync(bytes)).filter(([path]) => !/^ppt\/tags\/opfLogoPlaceholder/.test(path)).map(([path, data]) => [path,
+      path === 'ppt/slides/slide1.xml' ? new TextEncoder().encode(decoder.decode(data).replace(/<p:custDataLst><p:tags r:id="rIdOpfLogoPlaceholder1"\/><\/p:custDataLst>/, '')) :
+      path === 'ppt/slides/_rels/slide1.xml.rels' ? new TextEncoder().encode(decoder.decode(data).replace(/<Relationship Id="rIdOpfLogoPlaceholder1"[^>]*\/>/, '')) :
+      path === '[Content_Types].xml' ? new TextEncoder().encode(decoder.decode(data).replace(/<Override PartName="\/ppt\/tags\/opfLogoPlaceholder1.xml"[^>]*\/>/, '')) : data])));
+    const loose = await fromPptx(untagged);
+    assert.ok(JSON.stringify(loose.slides[0]).includes('Image unavailable'), 'an untagged panel imports as ordinary text');
+  }
+  checked++;
+}
+
 console.log(`Design fields passed: ${checked} groups (cover and section logo, variants and organization fallback, unresolved logo, footer logo, picture bullets, accent font, provenance).`);
