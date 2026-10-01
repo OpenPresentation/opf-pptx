@@ -2,7 +2,7 @@
   "source": {
     "repository": "OpenPresentation/opf-pptx",
     "commit": "6f6122cb7fb8cb89b17c1bea7981397a27ded8ed",
-    "note": "toPptx default output (chartex fallback) for chartex chart types; regenerate only with an owner decision to change the default export The world-category entry (ja-JP) was regenerated for FF-49: the theme cs slot, which the Japanese language does not use, is now empty instead of repeating the latin face; the chart parts are unchanged."
+    "note": "toPptx default output (chartex fallback) for chartex chart types; regenerate only with an owner decision to change the default export The world-category entry (ja-JP) was regenerated for FF-49: the theme cs slot, which the Japanese language does not use, is now empty instead of repeating the latin face; the chart parts are unchanged. Every entry was regenerated for the spec-gap P1 round trip (codex/spec-gaps-roundtrip): the OPF_SLIDE_V1 tag now carries the content topology of a root chart payload, so the tag parts, their relationships, content types and the slide custDataLst lines changed; the chart parts, embedded workbooks, theme and diagnostics are byte-identical to the previous entries (verified part by part before regenerating)."
   },
   "decks": {
     "treemap-category": {
@@ -564,65 +564,65 @@
   },
   "entries": {
     "treemap-category": {
-      "sha256": "44784f36b89270b5d6198f238515e082e254c15466adfd2293f2841a37cd67b4",
-      "bytes": 22562,
+      "sha256": "562a699673af05a4e0b6240c622ac41559dcc47e9fd2008ac1a5e6acf28e321b",
+      "bytes": 23658,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "histogram-single": {
-      "sha256": "a8f3aa3fc6bcc4bf6e4d0399477cebb4aaccc399390dea327d1c209e539f7248",
-      "bytes": 22576,
+      "sha256": "9f5ad064e0f5a097207c4002f441677a2313a6db65dbef41a52344ec1bbcb495",
+      "bytes": 23671,
       "diagnostics": [
         "chart-data-adapted/histogram-binned"
       ]
     },
     "histogram-category": {
-      "sha256": "c1be89a2ac0c8ed0e5dae6eae61c80199a11e458f9e56eaaff765e166eea549d",
-      "bytes": 22564,
+      "sha256": "8ab3a7f2542bf6c65284703e1ad97bea753d424801bc1afa103a7055b341b9ec",
+      "bytes": 23659,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "pareto-multi": {
-      "sha256": "f6c5bebe94fa66ad03f5ea56a66ddeffa005d5eb1ccfb77b01b8e7dc2e7a3d9b",
-      "bytes": 22658,
+      "sha256": "e7a842e7648a164d331ad6600ddad3da9247b6f793bbb82265192e23c6166efb",
+      "bytes": 23753,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "box-multi": {
-      "sha256": "a85ab730de0509c364faf4dac7cf2ff26bccc69b64994f6a7b44e216c1369358",
-      "bytes": 22656,
+      "sha256": "745b9f4bc4c446beb0e34a58770e6ce9d92ba8a7cd9ed06e23770c785b43eb28",
+      "bytes": 23751,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "waterfall-single": {
-      "sha256": "cd568176657fd37c9d38a2ab504b5a5a5d4cc718578ae98f623846dd254c7192",
-      "bytes": 22612,
+      "sha256": "e6fa82b3c4f715c4c86c2cd35b5c0c2e51b702975be079e434c876f52b4c77c8",
+      "bytes": 23708,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback",
         "chart-data-adapted/row-numbers"
       ]
     },
     "funnel-category": {
-      "sha256": "76902054da35fdf83cffe96b47e03580c5e8a6cc88cb4f0d64aaad77c381785e",
-      "bytes": 22562,
+      "sha256": "7a65e4493894928c77f6af57c1ec41fa850b1268a61dd5654ea4dc5b2a3a89ec",
+      "bytes": 23660,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "world-category": {
-      "sha256": "f8eab91536a1e56b644d825b8a18f995c8984a2c3457a697f2258630da508ef6",
-      "bytes": 24076,
+      "sha256": "153c536eca32bb0b80378041eff8ee63b8a990f3e4513f57455b35541c304fd9",
+      "bytes": 24141,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]
     },
     "all-seven": {
-      "sha256": "d8692efbac1ebce93db4fb78b78b3810c5de7eca9be767ec561d624def0e0a22",
-      "bytes": 104355,
+      "sha256": "08f12e239f8d2cb0a956c2eda2d2a937239a5bb41e2b6a84adfd3d9ed03c2a9a",
+      "bytes": 109258,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback",
         "chart-data-adapted/chartex-fallback",
