@@ -102,7 +102,7 @@ export interface ToPptxOptions {
   date?: string;
   /** Host-supplied catalog records, as in opf-render. Currently consulted for socialPlatforms (generated socials furniture). */
   catalogs?: Record<string, { records?: unknown[] } | unknown[]>;
-  /** Records for document `catalogs.<kind>.source` URLs, as in opf-render. Currently consulted for socialPlatforms. */
+  /** Records for document `catalogs.<kind>.source` URLs (a single source or each entry of an ordered search path), as in opf-render. Currently consulted for socialPlatforms. */
   catalogSources?: Record<string, { records?: unknown[] } | unknown[]>;
 }
 

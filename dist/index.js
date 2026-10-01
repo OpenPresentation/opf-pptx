@@ -2516,10 +2516,13 @@ const DEFAULT_SOURCE_PREFIX = "https://www.pptx.gallery/";
 // catalog for pptx.gallery/pkg sources), injected options.catalogs, and the
 // bundled catalog (the engine default source also resolves to it).
 function socialPlatformRecords(presentation, options) {
-  const kind = "socialPlatforms", source = presentation.catalogs?.[kind]?.source;
-  const bySource = typeof source === "string" ? options.catalogSources?.[source] : undefined;
-  const sourceRecords = bySource ? normalizeRecords(bySource)
-    : typeof source === "string" && (source.startsWith(DEFAULT_SOURCE_PREFIX) || source.startsWith("pkg:@openpresentation/opf/")) ? defaultCatalog(kind) : [];
+  const kind = "socialPlatforms", declared = presentation.catalogs?.[kind]?.source;
+  // `source` is one source or an ordered search path (an array): records of each source in order, first match wins.
+  const sourceRecords = (Array.isArray(declared) ? declared : [declared]).filter(source => typeof source === "string").flatMap(source => {
+    const bySource = options.catalogSources?.[source];
+    return bySource ? normalizeRecords(bySource)
+      : source.startsWith(DEFAULT_SOURCE_PREFIX) || source.startsWith("pkg:@openpresentation/opf/") ? defaultCatalog(kind) : [];
+  });
   return [...sourceRecords, ...normalizeRecords(options.catalogs?.[kind]), ...defaultCatalog(kind)];
 }
 
