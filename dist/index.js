@@ -1,4 +1,5 @@
 import {nativeBodyReader, joinNativeParagraphs} from './body-text-import.js';
+import {autoNumScheme, deriveListNumbering, withDisplayedNumbers} from './numbered-list.js';
 import {isFaceStyleSuffix} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
@@ -640,7 +641,7 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
     }
   }
   const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items))
-    .map((item) => ({payload: payloadFromSlideItem(item), bounds: item.visualBounds ?? item.bounds, sources: item.sources ?? []}))
+    .map((item) => ({payload: payloadFromSlideItem(item, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`})), bounds: item.visualBounds ?? item.bounds, sources: item.sources ?? []}))
     .filter((entry) => entry.payload);
   const blocks = content.map((entry) => entry.payload);
   if (blocks.length > 0) slide.blocks = blocks;
@@ -879,7 +880,7 @@ function importPicture(entries, picture, slidePath, relationships, report) {
 }
 
 function readParagraphs(txBody) {
-  return asArray(txBody?.["a:p"])
+  return withDisplayedNumbers(asArray(txBody?.["a:p"])
     .map((paragraph) => {
       const runs = [
         ...asArray(paragraph?.["a:r"]),
@@ -897,9 +898,16 @@ function readParagraphs(txBody) {
         text: texts.join(""),
         bullet: asArray(paragraph?.["a:pPr"]).some(props => props?.["a:buChar"] !== undefined || props?.["a:buBlip"] !== undefined || props?.["a:buAutoNum"] !== undefined),
         level: Number(asArray(paragraph?.["a:pPr"])[0]?.lvl ?? 0),
-        maxFontSize: sizes.length > 0 ? Math.max(...sizes) : 0
+        maxFontSize: sizes.length > 0 ? Math.max(...sizes) : 0,
+        ...autoNumberOf(asArray(paragraph?.["a:pPr"])[0])
       };
-    });
+    }));
+}
+// RR-33: the native auto-number of a paragraph's properties, when its last bullet element is one.
+function autoNumberOf(properties) {
+  if (properties?.["a:buAutoNum"] === undefined) return {};
+  const attributes = asArray(properties["a:buAutoNum"])[0] ?? {};
+  return {autoNum: {type: attributes.type, startAt: attributes.startAt}};
 }
 
 function shapePlaceholderType(shape) {
@@ -1025,17 +1033,23 @@ function mergeAdjacentBulletShapes(items) {
   return result;
 }
 
-function payloadFromSlideItem(item) {
+function payloadFromSlideItem(item, report) {
   if (item.payload) return item.payload;
   if (item.kind === "text") {
     if (item.paragraphs.some(p=>p.bullet)) {
+      // RR-33: native auto-numbers come back as `numbering` and the entry `start` values that restore their numbers.
+      const {numbering, starts, diagnostics} = deriveListNumbering(item.paragraphs);
+      for (const diagnostic of diagnostics) report?.(diagnostic);
       return {
         type: "list",
-        items: item.paragraphs.map((paragraph) => (
-          paragraph.level > 0
-            ? { text: paragraph.richText ?? paragraph.text, level: paragraph.level, ...(paragraph.description !== undefined ? {description: paragraph.description} : {}) }
-            : paragraph.description !== undefined ? { text: paragraph.richText ?? paragraph.text, description: paragraph.description } : (paragraph.richText ?? paragraph.text)
-        ))
+        items: item.paragraphs.map((paragraph, index) => {
+          const start = starts.get(index) === undefined ? {} : {start: starts.get(index)};
+          return paragraph.level > 0
+            ? { text: paragraph.richText ?? paragraph.text, level: paragraph.level, ...(paragraph.description !== undefined ? {description: paragraph.description} : {}), ...start }
+            : paragraph.description !== undefined ? { text: paragraph.richText ?? paragraph.text, description: paragraph.description, ...start }
+            : start.start !== undefined ? { text: paragraph.richText ?? paragraph.text, ...start } : (paragraph.richText ?? paragraph.text);
+        }),
+        ...(numbering !== undefined ? {numbering} : {})
       };
     }
     return { type: "text", text: joinNativeParagraphs(item.paragraphs) };
@@ -1587,7 +1601,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         breakLine: false
       });
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
-      await addMeasuredList(slide,item.text,itemContext,item.path,item.bulletImage,presentation,slideIndex,options);
+      await addMeasuredList(slide,item.text,itemContext,item.path,item.bulletImage,presentation,slideIndex,options,item.payload?.numbering!==undefined);
     } else if (item.field === "text" && item.text?.richLines) {
       const alignment=item.text.placement?.alignment??alignmentFor(item)??'left';
       for(const [index,line] of item.text.richLines.entries()){
@@ -1729,7 +1743,10 @@ function richLineRuns(line,color,native,context) {
 // PptxGenJS embeds the media and its relationship through one picture per slide (OPF bullet image); packaging removes
 // that picture and points each marker paragraph at the relationship with a:buBlip. An icon that cannot be embedded
 // keeps the character bullets, as the preview does.
-async function addMeasuredList(slide,fit,context,path,bulletImage,presentation,slideIndex,options) {
+async function addMeasuredList(slide,fit,context,path,bulletImage,presentation,slideIndex,options,numbered=false) {
+  // RR-33: a numbered list writes native auto-numbers (a:buAutoNum) at core's marker geometry. Core older than the numbering
+  // release composes bullet markers, so nothing numbered can be written; say so instead of exporting bullets silently.
+  if(numbered&&!fit.listEntries.some(entry=>entry.marker.number))options.onDiagnostic?.({code:'numbering-unsupported-core',path,message:'The installed @openpresentation/opf does not compose numbered lists (numbering), so the list is exported with bullets. Use a core release that supports numbering.'});
   let picture=false;
   if(bulletImage){
     const part=`ppt/slides/slide${slideIndex+1}.xml`;
@@ -1752,8 +1769,9 @@ async function addMeasuredList(slide,fit,context,path,bulletImage,presentation,s
         const first=withBullet&&index===0,level=Math.min(8,entry.level),inset=first?entry.marker.indent*(level+1):0;
         const region={x:(box.x-inset)/96,y:(box.y+line.y)/96,w:(box.width+inset)/96,h:line.height/96};
         const objectName=`OPF list ${path} line ${lineNumber++}`;
-        if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:pptxColor(context.textColor),picture});
-        const paragraph=first?{bullet:{characterCode:entry.marker.text.codePointAt(0).toString(16).padStart(4,'0'),indent:entry.marker.indent*.75},indentLevel:level}:{bullet:false};
+        const number=first?entry.marker.number:undefined;
+        if(first)context.listMarkers.set(objectName,{fontFamily:entry.marker.style.fontFamily,fontSize:entry.marker.fontSize*.75,color:pptxColor(context.textColor),picture:number?false:picture});
+        const paragraph=first?{bullet:number?{type:'number',style:autoNumScheme(number.style,number.suffix),startAt:number.value,indent:entry.marker.indent*.75}:{characterCode:entry.marker.text.codePointAt(0).toString(16).padStart(4,'0'),indent:entry.marker.indent*.75},indentLevel:level}:{bullet:false};
         const runs=richLineRuns(line,color,native,context);
         if(!runs.length)runs.push({text:'',options:{}});
         // Keep paragraph intent identical across runs. ZIP normalization below
@@ -3302,6 +3320,9 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
         if(!marker)return shape;
         if(marker.picture&&bulletRelationship)return shape.replace(/<a:buChar\b[^>]*\/>/g,`<a:buBlip><a:blip r:embed="${bulletRelationship}"/></a:buBlip>`);
         const family=marker.fontFamily.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
+        // RR-33: an auto-number takes the measured size, colour and family like a character bullet, and startAt only when it is not 1.
+        const autoNumber=/<a:buSzPct val="100000"\/><a:buFont typeface="\+mj-lt"\/><a:buAutoNum type="([A-Za-z]+)" startAt="(\d+)"\/>/;
+        if(autoNumber.test(shape))return shape.replace(autoNumber,(_,type,startAt)=>`<a:buClr>${solidColorXml(marker.color)}</a:buClr><a:buSzPts val="${Math.round(marker.fontSize*100)}"/><a:buFont typeface="${family}"/><a:buAutoNum type="${type}"${startAt==='1'?'':` startAt="${startAt}"`}/>`);
         return shape.replace(/<a:buSzPct val="100000"\/>/g,`<a:buClr>${solidColorXml(marker.color)}</a:buClr><a:buSzPts val="${Math.round(marker.fontSize*100)}"/><a:buFont typeface="${family}"/>`);
       });
       // PptxGenJS gives shapes no alternative text. An unavailable image's panel
