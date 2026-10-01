@@ -49,7 +49,7 @@ jobs:
           # opf-render 0.11.8 release commit (the tag draws in the primary colour, as opf-pptx writes it).
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
           # RR-07 pins the opf-render RR-07 branch (draws the syntax colours, trend arrows and patterns the parity test compares with); repin to its merge commit once merged.
-          ref: afffb9ccf5dd8a55c300b28b108deabeb1481c6d
+          ref: 770719e217f421c426acadb9c180706c859afce5
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
