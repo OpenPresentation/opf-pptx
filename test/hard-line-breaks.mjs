@@ -196,4 +196,87 @@ for (const save of [false, true]) {
   assert.deepEqual(plain.deck.slides[0].blocks.map(block => normalize(block.text).map(run => run.text).join('')), ['First paragraph', 'Second paragraph']);
 }
 
-console.log('Hard line break checks passed: newline inside and between runs, blank lines, CRLF, trimmed spaces, soft wraps with hard breaks, root, group, region and blocks, a PowerPoint-style re-save, edited and damaged records, unprovable runs and plain PPTX.');
+// --- Hard breaks inside list items (root, group, region, nested levels, descriptions) -----------------------------
+{
+  const textOf = value => value === undefined ? undefined : typeof value === 'string' ? value : value.map(run => typeof run === 'string' ? run : run.text).join('');
+  // Words, newlines, levels and descriptions of a list, whatever the run structure.
+  const flat = items => items.map(item => Array.isArray(item) || typeof item === 'string' ? {text: textOf(item)}
+    : {text: textOf(item.text), ...(item.description === undefined ? {} : {description: textOf(item.description)}), ...(item.level ? {level: item.level} : {})});
+  const items = [
+    [{text: 'Bold\nbroken', bold: true}, ' tail'],
+    {text: 'Head\nsecond line of the head', description: 'Detail one\nDetail two'},
+    {text: 'Nested', level: 1, description: 'Blank\n\nline in a description'},
+    'Plain\n\nblank line in an item',
+    {text: [{text: 'Run ', bold: true}, {text: 'ends\n'}, {text: 'styled', italic: true}], level: 2},
+    {text: 'Soft wrap: ' + long, description: 'A description that wraps the same way: ' + long + '\nthen breaks'},
+    {text: 'Last'}
+  ];
+  const bulletItems = items.filter(item => typeof item === 'string' || Array.isArray(item) || !item.description);
+  const forms = {
+    root: [{items}, items, slide => slide.items],
+    bullets: [{bullets: bulletItems}, bulletItems, slide => slide.bullets],
+    group: [{blocks: [{type: 'group', id: 'g', blocks: [{items}, {type: 'text', text: 'beside'}]}]}, items, slide => slide.blocks[0].blocks[0].items],
+    region: [{left: {items}, right: {text: 'R'}}, items, slide => slide.left.items],
+    blocks: [{blocks: [{items}, {items: ['p\nq', 'r']}]}, items, slide => slide.blocks[0].items]
+  };
+  for (const save of [false, true]) for (const [name, [slide, authored, pick]] of Object.entries(forms)) {
+    const result = await roundTrip(slide, {save});
+    assert.deepEqual(result.provenance, [], `${name} save ${save}`);
+    assert.deepEqual(flat(pick(result.deck.slides[0])), flat(authored), `${name} save ${save}`);
+    assert.ok(Array.isArray(slideRecord(result.bytes).lists), `${name}: the breaks are recorded`);
+    // Whitespace only, keyed by list path and line number: no word reaches the record.
+    assert.equal(/Detail|Head|Plain|Nested|Soft|Last|Bold/.test(JSON.stringify(slideRecord(result.bytes).lists)), false, name);
+  }
+
+  // The record is a list of [path, [[line, gap]...]] with whitespace gaps and increasing line numbers.
+  const exported = await roundTrip({items: ['A\nB', {text: 'C', description: 'D\n\nE'}]});
+  assert.deepEqual(slideRecord(exported.bytes).lists, [['slides.0.items', [[1, '\n'], [5, '\n\n']]]]);
+  assert.deepEqual(flat(exported.deck.slides[0].items), [{text: 'A\nB'}, {text: 'C', description: 'D\n\nE'}]);
+  // A blank line is never a description; no description is invented.
+  assert.equal(JSON.stringify(exported.deck.slides[0].items).includes('"description":""'), false);
+  // A list with no hard break stores nothing.
+  assert.equal(slideRecord(await toPptx({name: 'None', slides: [{title: 'T', items: ['a', 'b', {text: 'c', description: 'd'}]}]}, EXPORT)).lists, undefined);
+
+  // Edited text keeps the recorded separator; a deleted line changes the arrangement, so nothing is applied.
+  const retyped = await read(modify(exported.bytes, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace('>B<', '>Bee<'))));
+  assert.deepEqual(flat(retyped.deck.slides[0].items)[0], {text: 'A\nBee'});
+  const removed = await read(modify(exported.bytes, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace(/<p:sp>(?:(?!<\/p:sp>)[\s\S])*?name="OPF list slides\.0\.items line 4"[\s\S]*?<\/p:sp>/, ''))));
+  assert.ok(removed.issues.some(issue => issue.code === 'slide-reference-changed'));
+  // A recorded break whose line is no longer a continuation reports instead of guessing.
+  const moved = await read(modify(exported.bytes, entries => text(entries, 'ppt/tags/opfSlide1.xml', xml => retag(xml, value => { value.lists[0][1] = [[0, '\n']]; }))));
+  assert.ok(moved.issues.some(issue => issue.code === 'list-line-break-changed' && issue.path === 'slides.0'));
+  assert.deepEqual(flat(moved.deck.slides[0].items), [{text: 'AB'}, {text: 'C', description: 'DE'}]);
+  // Damaged records reject the slide tag as a whole.
+  for (const [name, mutate] of Object.entries({
+    'not a list': value => { value.lists = {}; },
+    'empty': value => { value.lists = []; },
+    'a prototype key as a path': value => { value.lists[0][0] = '__proto__'; },
+    'a path outside the slides': value => { value.lists[0][0] = 'items'; },
+    'a repeated path': value => { value.lists.push(structuredClone(value.lists[0])); },
+    'a word as a gap': value => { value.lists[0][1][0][1] = 'word'; },
+    'an empty gap': value => { value.lists[0][1][0][1] = ''; },
+    'a long gap': value => { value.lists[0][1][0][1] = ' '.repeat(300); },
+    'a split gap out of range': value => { value.lists[0][1][0][1] = ['\n', 5]; },
+    'a negative line': value => { value.lists[0][1][0][0] = -1; },
+    'a fractional line': value => { value.lists[0][1][0][0] = 1.5; },
+    'unordered lines': value => { value.lists[0][1] = [[4, '\n'], [1, '\n']]; },
+    'no lines': value => { value.lists[0][1] = []; },
+    'too many lines': value => { value.lists[0][1] = Array.from({length: 20001}, (_, index) => [index, '\n']); },
+    'too many lists': value => { value.lists = Array.from({length: 257}, (_, index) => [`slides.0.items.${index}`, [[1, '\n']]]); }
+  })) {
+    const damaged = await read(modify(exported.bytes, entries => text(entries, 'ppt/tags/opfSlide1.xml', xml => retag(xml, mutate))));
+    assert.deepEqual(damaged.provenance.map(issue => [issue.code, issue.path]), [['invalid-document-provenance', 'slides.0']], name);
+    assert.deepEqual(flat(damaged.deck.slides[0].blocks.flatMap(block => block.items ?? [])), [{text: 'AB'}, {text: 'C', description: 'DE'}], name);
+  }
+  // The unrecorded shape of a list: plain PPTX joins continuation lines (it cannot tell a wrap from a break) but never
+  // invents a description from a blank line.
+  const plain = await roundTrip({items: ['Plain\n\nz', {text: 'x', description: 'q\n\nr'}]}, {strip: true});
+  assert.deepEqual(flat(plain.deck.slides[0].blocks[0].items), [{text: 'Plainz'}, {text: 'x', description: 'qr'}]);
+  // A break that cannot be recorded exactly is reported at export, and the import says so.
+  const issues = [];
+  const unprovable = await toPptx({name: 'Unprovable', slides: [{title: 'T', items: ['a\nb\n', 'ok']}]}, {...EXPORT, onDiagnostic: issue => issues.push(issue)});
+  assert.deepEqual(issues.filter(issue => issue.code === 'document-provenance-omitted').map(issue => issue.path), ['slides.0.items']);
+  assert.ok((await read(unprovable)).issues.some(issue => issue.code === 'document-provenance-omitted' && issue.path === 'slides.0.items'));
+}
+
+console.log('Hard line break checks passed: newline inside and between runs, blank lines, CRLF, trimmed spaces, soft wraps with hard breaks, root, group, region and blocks, a PowerPoint-style re-save, edited and damaged records, unprovable runs, plain PPTX, and hard breaks inside list items (root, bullets, group, region, nested levels, descriptions).');

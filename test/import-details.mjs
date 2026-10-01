@@ -186,6 +186,23 @@ const colors = (deck, slide) => {
   checked++;
 }
 
+// --- Hostile input: package names and tag values never reach inherited properties or unbounded sizes ----------------
+{
+  const bytes = stripTags(await exportDeck(colorDeck));
+  for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'dk1x', 'phClr']) {
+    const hostile = await read(modify(bytes, entries => text(entries, 'ppt/slides/slide1.xml', xml => xml.replace(/<a:schemeClr val="accent2"\/>/, `<a:schemeClr val="${name}"/>`))));
+    assert.equal(JSON.stringify(hostile.deck).includes('_opfScheme'), false, name);
+    assert.ok(colors(hostile.deck, 0).every(([, color]) => typeof color === 'string'), name);
+  }
+  // A slot map that names a prototype key is no slot either.
+  const mapped = await read(modify(bytes, entries => text(entries, 'ppt/slideMasters/slideMaster1.xml', xml => xml.replace(/<p:clrMap [^>]*\/>/, match => match.replace(/tx1="[^"]*"/, 'tx1="__proto__"')))));
+  assert.equal(JSON.stringify(mapped.deck).includes('_opfScheme'), false);
+  // The stored author is bounded in size and shape.
+  const big = await read(modify(await exportDeck({author: ['Ann Lee', 'Bo Chan'], slides: [{title: 'T', text: 'x'}]}), entries => text(entries, 'ppt/tags/opfDocument.xml', xml => retag(xml, record => { record.author = ['x'.repeat(5000), 'y']; }))));
+  assert.ok(big.codes.includes('invalid-document-provenance'));
+  checked++;
+}
+
 // --- 3. List item descriptions come back as the item's description -------------------------------------------------
 {
   const items = [{text: 'Alpha', description: 'About alpha'}, 'Beta', {text: [{text: 'Gam', bold: true}, 'ma'], description: [{text: 'rich ', italic: true}, 'detail'], level: 1}];

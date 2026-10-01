@@ -84,7 +84,7 @@ export function validateRunColors(value) {
 function* markedRuns(value) {
   if (Array.isArray(value)) { for (const item of value) yield* markedRuns(item); return; }
   if (!object(value)) return;
-  if (typeof value._opfScheme === 'string') yield value;
+  if (Object.hasOwn(value, '_opfScheme')) yield value;
   for (const item of Object.values(value)) if (item !== null && typeof item === 'object') yield* markedRuns(item);
 }
 
@@ -111,7 +111,7 @@ export function restoreRunColors(slides, info, resolve, report) {
         else for (const [slot, name] of at) if (slots[slot]) restoreName(slots[slot], name);
       }
     } else if (!tag?.record) {
-      for (const run of marked) restoreName(run, run._opfScheme);
+      for (const run of marked) if (typeof run._opfScheme === 'string') restoreName(run, run._opfScheme);
     }
     for (const run of marked) delete run._opfScheme;
   });

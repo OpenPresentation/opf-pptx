@@ -1,6 +1,6 @@
 import {XMLParser} from 'fast-xml-parser';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
-import {contentTopology, rebuildContent, validateTopology} from './content-topology.js';
+import {contentTopology, rebuildContent, validateTopology, listLineBreaks, validateListBreaks} from './content-topology.js';
 import {runColorRecord, validateRunColors} from './run-colors.js';
 // Namespace import: cores before FF-34 do not export resolveSocialProfile.
 import * as opfCore from '@openpresentation/opf';
@@ -46,6 +46,7 @@ const REL_TAGS = 'http://schemas.openxmlformats.org/officeDocument/2006/relation
 const NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const TAGS_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml';
 const MAX_OMITTED = 256;
+const MAX_AUTHOR_LENGTH = 4096;
 const MAX_FIELD_BYTES = 256 * 1024, MAX_CATALOG_BYTES = 1024 * 1024, MAX_TAG_CHARS = 16 * 1024 * 1024;
 
 const enc = new TextEncoder(), dec = new TextDecoder('utf-8', {fatal: true});
@@ -471,6 +472,11 @@ export function recordContentTopology(provenance, slide, index, items) {
   // Variable, scheme-slot and role names of text runs (the native colour holds only what they resolve to).
   const colors = runColorRecord(slide);
   if (colors) provenance.slides[index].colors = colors;
+  // Whitespace of the hard line breaks inside list items (their native lines carry no tag).
+  const omittedLists = [];
+  const lists = listLineBreaks(items, (path, reason) => omittedLists.push([path, reason]));
+  if (lists) provenance.slides[index].lists = lists;
+  if (omittedLists.length) provenance.slides[index].omittedLists = omittedLists;
 }
 
 function base64ToBytes(value) {
@@ -621,7 +627,8 @@ function storable(entries, provenance) {
   const slides = provenance.slides.map((record, index) => {
     const result = {v: 1, slide: index};
     if (record.omittedContent) omit(`slides.${index}.content`, record.omittedContent);
-    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors']) {
+    for (const [path, reason] of record.omittedLists ?? []) omit(path, reason);
+    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'lists']) {
       if (record[key] === undefined) continue;
       const value = prepare(`slides.${index}.${key}`, record[key]);
       if (value !== undefined) result[key] = value;
@@ -658,7 +665,7 @@ function storable(entries, provenance) {
   }
   for (const [index, record] of slides.entries()) {
     while (tagChars(record) > budget) {
-      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'layoutRecord'].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
+      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'lists', 'layoutRecord'].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
         ...Object.keys(record.design ?? {}).map(key => ({key, design: true, size: sizeOf(record.design[key])}))];
       if (!candidates.length) break;
       const largest = candidates.sort((a, b) => b.size - a.size)[0];
@@ -767,7 +774,7 @@ function validateDocument(stored) {
   if (value.metadata?.filename !== undefined && typeof value.metadata.filename !== 'string') throw Error('Invalid filename record.');
   if (value.metadata?.extensions !== undefined && !object(value.metadata.extensions)) throw Error('Invalid extensions record.');
   const author = stored.author;
-  if (author !== undefined && !(typeof author === 'string' || (Array.isArray(author) && author.length > 0 && author.length <= 256 && author.every(name => typeof name === 'string')))) throw Error('Invalid author record.');
+  if (author !== undefined && !((typeof author === 'string' && author.length <= MAX_AUTHOR_LENGTH * 256) || (Array.isArray(author) && author.length > 0 && author.length <= 256 && author.every(name => typeof name === 'string' && name.length <= MAX_AUTHOR_LENGTH)))) throw Error('Invalid author record.');
   validateOmitted(value.omitted);
   if (author !== undefined) {
     const {author: _stored, ...rest} = value;
@@ -788,6 +795,7 @@ function validateSlide(stored) {
   if (value.extensions !== undefined && !object(value.extensions)) throw Error('Invalid slide extensions record.');
   if (value.content !== undefined) validateTopology(value.content);
   if (value.colors !== undefined) validateRunColors(value.colors);
+  if (value.lists !== undefined) validateListBreaks(value.lists);
   validateOmitted(value.omitted);
   return value;
 }
@@ -825,6 +833,23 @@ function pruneDangling(value, dangling, path, removed) {
   if (Array.isArray(value)) return value.flatMap((item, index) => isDangling(item) ? (removed.push(`${path}.${index}`), []) : [pruneDangling(item, dangling, `${path}.${index}`, removed)]);
   if (!object(value)) return value;
   return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => isDangling(item) ? (removed.push(`${path}.${key}`), []) : [[key, pruneDangling(item, dangling, `${path}.${key}`, removed)]]));
+}
+
+/**
+ * The hard line breaks stored for the lists of one slide: Map(list path -> Map(line number -> gap)), or null when the slide
+ * carries none, its record is unreadable, or its arrangement changed since export (the lines are then no longer the exported
+ * ones). Read before the slide's shapes are merged into list blocks; any damage is reported later by restoreDocumentProvenance.
+ */
+export function slideListBreaks(entries, path, root, rels) {
+  try {
+    const found = readTag(entries, root?.['p:cSld']?.['p:custDataLst'], rels, SLIDE_TAG);
+    if (found.missing) return null;
+    const record = validateSlide(found.value);
+    if (record.lists === undefined || record.native.structure !== nativeSlide(entries, path).structure) return null;
+    return new Map(record.lists.map(([list, lines]) => [list, new Map(lines)]));
+  } catch {
+    return null;
+  }
 }
 
 /**

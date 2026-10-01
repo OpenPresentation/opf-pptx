@@ -117,22 +117,16 @@ export function joinWrappedText(parts, gaps = []) {
 }
 
 /**
- * How a rich-text `text` item exported as native line shapes, when the authored
- * runs can be rebuilt from those lines exactly: `{lines, gaps?}`. `lines` is
- * the number of native line shapes (blank lines have none). Each line break
- * either deleted no characters (a soft wrap: gap '') or deleted whitespace
- * only (a hard break: a newline, a blank line, trimmed spaces); `gaps` lists
- * the N - 1 separators when any is not '' (see joinWrappedText) and is absent
- * for pure soft wraps. Only whitespace is ever stored, never a word. Undefined
- * for a single line or when the runs cannot be proven to rebuild (leading or
- * trailing whitespace outside the lines, dropped or changed characters, a gap
- * that spans a differently styled run): nothing then marks the leaf and import
- * keeps the separate blocks.
+ * Walk the native line fragments of `value` (a string or authored runs): the character range each non-empty line covers
+ * and the whitespace each break deleted. Undefined when the lines do not account for the source exactly (leading or
+ * trailing whitespace outside the lines, dropped or changed characters, fragments of one line not contiguous, a break
+ * that is not whitespace or is too long). `gaps` is the separator list that rebuilds the authored runs from the lines
+ * (plain strings, or split [text, keep] entries when a break straddles two styles) and is undefined when no form of it
+ * can be shown to; `breaks` are the plain whitespace strings. `indexes` are the positions in `lines` of the non-empty ones.
  */
-export function wrappedLines(item) {
-  const lines = item?.text?.richLines;
-  if (item?.field !== 'text' || !Array.isArray(lines) || lines.length < 2 || lines.length > MAX_WRAPPED_LINES) return undefined;
-  const authored = Array.isArray(item.value) ? item.value : typeof item.value === 'string' ? [item.value] : null;
+function analyzeLines(value, lines) {
+  if (!Array.isArray(lines) || lines.length > MAX_WRAPPED_LINES) return undefined;
+  const authored = Array.isArray(value) ? value : typeof value === 'string' ? [value] : null;
   if (!authored) return undefined;
   const runs = [];
   for (const run of authored) {
@@ -142,8 +136,8 @@ export function wrappedLines(item) {
   }
   const source = runs.map(run => run.text).join('');
   let position = 0;
-  const spans = [], breaks = [];
-  for (const line of lines) {
+  const spans = [], breaks = [], indexes = [];
+  for (const [lineIndex, line] of lines.entries()) {
     if (!Array.isArray(line?.fragments)) return undefined;
     if (!line.fragments.length) continue;
     const span = {start: position, end: position};
@@ -164,8 +158,9 @@ export function wrappedLines(item) {
     }
     span.end = position;
     spans.push(span);
+    indexes.push(lineIndex);
   }
-  if (spans.length < 2 || spans[0].start !== 0 || position !== source.length) return undefined;
+  if (!spans.length || spans[0].start !== 0 || position !== source.length) return undefined;
   // The offset at which each authored run starts.
   const starts = [];
   let offset = 0;
@@ -189,8 +184,27 @@ export function wrappedLines(item) {
   const authoredSignature = signature(runs);
   // Plain strings (a break belongs to the next line's first run) when that already rebuilds the runs; the split form otherwise.
   const gaps = [breaks, kept].find(candidate => signature(joinWrappedText(pieces, candidate)) === authoredSignature);
-  if (!gaps) return undefined;
-  return {lines: spans.length, ...(breaks.some(Boolean) ? {gaps} : {})};
+  return {spans, breaks, gaps, indexes};
+}
+
+/**
+ * How a rich-text `text` item exported as native line shapes, when the authored
+ * runs can be rebuilt from those lines exactly: `{lines, gaps?}`. `lines` is
+ * the number of native line shapes (blank lines have none). Each line break
+ * either deleted no characters (a soft wrap: gap '') or deleted whitespace
+ * only (a hard break: a newline, a blank line, trimmed spaces); `gaps` lists
+ * the N - 1 separators when any is not '' (see joinWrappedText) and is absent
+ * for pure soft wraps. Only whitespace is ever stored, never a word. Undefined
+ * for a single line or when the runs cannot be proven to rebuild (leading or
+ * trailing whitespace outside the lines, dropped or changed characters, a gap
+ * that spans a differently styled run): nothing then marks the leaf and import
+ * keeps the separate blocks.
+ */
+export function wrappedLines(item) {
+  if (item?.field !== 'text' || !Array.isArray(item.text?.richLines) || item.text.richLines.length < 2) return undefined;
+  const analysis = analyzeLines(item.value, item.text.richLines);
+  if (!analysis?.gaps || analysis.spans.length < 2) return undefined;
+  return {lines: analysis.spans.length, ...(analysis.breaks.some(Boolean) ? {gaps: analysis.gaps} : {})};
 }
 
 /** The number of native line shapes when the lines are consecutive soft wraps only (no hard break between them). */
@@ -287,6 +301,75 @@ export function contentTopology(slide, items, slideIndex, report = () => {}) {
 }
 
 class TopologyError extends Error {}
+
+// ---------------------------------------------------------------------------
+// Hard line breaks inside list items
+//
+// A list exports one native shape per line of every entry: `OPF list <path> line N`, the entry's text lines (the first
+// bulleted), then its description lines, numbered in that order. Import joins an entry's continuation lines without a
+// separator (a soft wrap deletes no character) and tells description lines from text lines by size, so a newline inside an
+// item was dropped and a blank line became an empty description. The slide record's `lists` stores, per list path, the
+// whitespace each hard break deleted, keyed by the number of the line that follows the break:
+//
+//   lists = [[path, [[line, gap], ...]], ...]    // gap as in `wrap`: whitespace, or [whitespace, keep]
+
+export const MAX_LIST_PATHS = 256;
+export const MAX_LIST_BREAKS = 20000;
+const LIST_PATH = /^slides\.\d+(?:\.[A-Za-z0-9_:+-]{1,64}){1,32}$/;
+
+/**
+ * The `lists` record of a slide from its composed geometry `items`, or undefined when no list item holds a hard break.
+ * `omit(path, reason)` names a list whose breaks could not be accounted for exactly (the characters of an item do not
+ * equal its native lines plus whitespace, leading or trailing whitespace outside the lines): import then joins that
+ * list's lines as before, and the export reports the omission.
+ */
+export function listLineBreaks(items, omit = () => {}) {
+  const lists = [];
+  for (const item of items ?? []) {
+    const entries = item?.text?.listEntries;
+    if ((item?.field !== 'items' && item?.field !== 'bullets') || !Array.isArray(entries) || typeof item.path !== 'string') continue;
+    const recorded = [];
+    let line = 0, failed = false;
+    for (const entry of entries) {
+      for (const [value, rich] of [[entry?.value, entry?.text?.richLines], [entry?.descriptionValue, entry?.description?.richLines]]) {
+        if (!Array.isArray(rich)) continue;
+        const first = line;
+        line += rich.length;
+        if (rich.filter(part => part?.fragments?.length).length < 2) continue;
+        const analysis = analyzeLines(value, rich);
+        if (!analysis) {
+          const source = (Array.isArray(value) ? value.map(run => typeof run === 'string' ? run : run?.text ?? '') : [typeof value === 'string' ? value : '']).join('');
+          if (/[\r\n]/.test(source)) failed = true;
+          continue;
+        }
+        const gaps = analysis.gaps ?? analysis.breaks;
+        gaps.forEach((gap, index) => { if (Array.isArray(gap) || gap) recorded.push([first + analysis.indexes[index + 1], gap]); });
+      }
+    }
+    if (failed) omit(item.path, 'a line break inside a list item could not be recorded exactly');
+    if (recorded.length) lists.push([item.path, recorded]);
+  }
+  const total = lists.reduce((sum, [, entries]) => sum + entries.length, 0);
+  return lists.length && lists.length <= MAX_LIST_PATHS && total <= MAX_LIST_BREAKS ? lists : undefined;
+}
+
+/** Throws when `value` is not a well-formed `lists` record (untrusted input). Returns it otherwise. */
+export function validateListBreaks(value) {
+  if (!Array.isArray(value) || !value.length || value.length > MAX_LIST_PATHS) throw Error('Invalid list breaks record.');
+  let total = 0;
+  const paths = new Set();
+  for (const entry of value) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || !LIST_PATH.test(entry[0]) || paths.has(entry[0]) || !Array.isArray(entry[1]) || !entry[1].length) throw Error('Invalid list breaks entry.');
+    paths.add(entry[0]);
+    let previous = -1;
+    for (const item of entry[1]) {
+      if (!Array.isArray(item) || item.length !== 2 || !Number.isSafeInteger(item[0]) || item[0] <= previous || item[0] > MAX_LIST_BREAKS || !validGap(item[1]) || (item[1] === '')) throw Error('Invalid list break.');
+      previous = item[0];
+      if (++total > MAX_LIST_BREAKS) throw Error('Too many list breaks.');
+    }
+  }
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Import: validation

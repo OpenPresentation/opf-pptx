@@ -12,7 +12,9 @@ const OPF_SLOTS = {dk1: 'dark1', lt1: 'light1', dk2: 'dark2', lt2: 'light2', hli
 function nativeSchemeSlot(fill, context) {
   const node = fill?.['a:schemeClr'];
   if (!node || Array.isArray(node) || Object.keys(fill).length !== 1 || Object.keys(node).some(key => key !== 'val') || typeof node.val !== 'string') return undefined;
-  return OPF_SLOTS[context?.mapping?.[node.val] ?? node.val];
+  // Own keys only: a slot name from the package (`__proto__`, `constructor`) must never reach an inherited property.
+  const mapping = context?.mapping, slot = mapping && Object.hasOwn(mapping, node.val) ? mapping[node.val] : node.val;
+  return typeof slot === 'string' && Object.hasOwn(OPF_SLOTS, slot) ? OPF_SLOTS[slot] : undefined;
 }
 
 export function nativeRunStyle(properties, context, relationships, report, kind = 'table') {

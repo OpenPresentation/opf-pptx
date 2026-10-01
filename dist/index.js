@@ -15,7 +15,8 @@ import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeli
 import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
 import {attachFurnitureTags, furnitureManifest, importFurniture, manifestPartIndex, staticDateFallback} from './furniture-provenance.js';
 import {restoreRunColors} from './run-colors.js';
-import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance, joinAuthors, splitAuthors, DEFAULT_AUTHOR} from './document-provenance.js';
+import {joinWrappedText} from './content-topology.js';
+import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance, joinAuthors, splitAuthors, slideListBreaks, DEFAULT_AUTHOR} from './document-provenance.js';
 import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './sections.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, writeNativeMasters} from './native-furniture.js';
@@ -657,7 +658,8 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
       item.text = current.map(paragraph => paragraph.text).join('\n');
     }
   }
-  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items))
+  const listBreaks = slideListBreaks(entries, slidePath, slideRoot, relationships);
+  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items, listBreaks, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`})))
     .map((item) => ({payload: payloadFromSlideItem(item), bounds: item.visualBounds ?? item.bounds, sources: item.sources ?? []}))
     .filter((entry) => entry.payload);
   const blocks = content.map((entry) => entry.payload);
@@ -972,7 +974,10 @@ function joinRich(a, b) {
   }
   return joined;
 }
-function mergeOpfListShapes(items) {
+// `breaks` (slideListBreaks) holds the whitespace of the hard breaks the export recorded, by list path and line number: the
+// continuation line after a break joins with it, so a newline inside an item (or a description) returns. A blank line is a
+// native shape with no text: it is never a description. Without a record the lines join without a separator, as before.
+function mergeOpfListShapes(items, breaks = null, report = () => {}) {
   const lists = new Map();
   for (const item of items) {
     const match = /^OPF list (.+) line (\d+)$/.exec(item.name ?? '');
@@ -986,17 +991,23 @@ function mergeOpfListShapes(items) {
     entries.sort((a, b) => a.line - b.line);
     if (!entries[0].item.paragraphs[0].bullet) continue;
     const paragraphs = [];
+    const recorded = breaks?.get(path), applied = new Set();
     let bounds, size = 0;
-    for (const {item} of entries) {
+    for (const {item, line} of entries) {
       const [paragraph] = item.paragraphs, current = paragraphs.at(-1);
+      const gap = recorded?.get(line);
+      const join = (a, b) => gap === undefined ? joinRich(a, b) : joinWrappedText([a, b], [gap]);
       if (paragraph.bullet) { paragraphs.push({...paragraph}); size = paragraph.maxFontSize; }
+      else if (paragraph.text === '') { /* a blank line of the entry: no text, no description */ }
       else if (paragraph.maxFontSize < size - 0.01) {
         const text = paragraph.richText ?? paragraph.text;
-        current.description = current.description === undefined ? text : joinRich(current.description, text);
+        if (current.description === undefined) current.description = text;
+        else { current.description = join(current.description, text); applied.add(line); }
       } else {
         const before = current.text;
-        current.text += paragraph.text;
-        if (current.richText !== undefined || paragraph.richText !== undefined) current.richText = joinRich(current.richText ?? before, paragraph.richText ?? paragraph.text);
+        current.text += (gap === undefined ? '' : Array.isArray(gap) ? gap[0] : gap) + paragraph.text;
+        if (current.richText !== undefined || paragraph.richText !== undefined) current.richText = join(current.richText ?? before, paragraph.richText ?? paragraph.text);
+        applied.add(line);
       }
       const b = item.visualBounds ?? item.bounds;
       if (b) {
@@ -1005,6 +1016,7 @@ function mergeOpfListShapes(items) {
       }
       consumed.add(item);
     }
+    if (recorded && [...recorded.keys()].some(line => !applied.has(line))) report({code: 'list-line-break-changed', message: `A hard line break recorded at export inside the list ${path} no longer has the continuation line it belonged to (a line was edited away, or became an entry), so that break was not restored; the list keeps the lines it has.`});
     const first = entries[0].item;
     merged.set(first, {...first, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join('\n'), bounds, visualBounds: undefined, sources: entries.flatMap(({item}) => item.sources ?? [])});
   }
