@@ -73,7 +73,8 @@ function authoredSocials(stored, observed, records) {
 // native PowerPoint counterpart and round-trips from the stored value.
 export const DESIGN_REFERENCES = Object.freeze(['theme', 'colorScheme', 'fontScheme', 'dimensions', 'background']);
 export const COMPOSITION_HINTS = Object.freeze(['titleAlignment', 'contentAlignment', 'contentBox', 'contentDirection', 'chartPrimary', 'imageFill', 'listBullet']);
-export const METADATA = Object.freeze(['narrative', 'tone', 'audience', 'purpose', 'language', 'organization', 'speaker', 'takeaway', 'duration', 'tags', 'variables', 'filename', 'extensions']);
+// `references` (RR-34): the deck's cited sources; stored under `supplement` like filename and extensions.
+export const METADATA = Object.freeze(['narrative', 'tone', 'audience', 'purpose', 'language', 'organization', 'speaker', 'takeaway', 'duration', 'tags', 'variables', 'filename', 'extensions', 'references']);
 // Brand images have no native gate: they return from the stored value once
 // their media and asset references resolve. The P2 logo picture (`OPF_LOGO_V1`)
 // consumes the drawn logo; `design.logo` itself always returns from here.
@@ -89,7 +90,7 @@ const SLIDE_DESIGN_FIELDS = [...STYLE_REFERENCES, 'background', ...COMPOSITION_H
 // whose `design` does. Keys added since are written under `supplement`, a
 // top-level container those importers ignore, and merged back on read. Add
 // every new design or metadata key here, never to the legacy sections.
-const DOCUMENT_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS, metadata: Object.freeze(['filename', 'extensions'])});
+const DOCUMENT_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS, metadata: Object.freeze(['filename', 'extensions', 'references'])});
 const SLIDE_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS});
 
 // Storage shape: move the supplement keys out of the legacy sections.
@@ -738,6 +739,7 @@ function validateDocument(stored) {
   for (const key of Object.keys(value.metadata ?? {})) if (!METADATA.includes(key)) throw Error(`Unknown metadata field ${key}.`);
   if (value.metadata?.filename !== undefined && typeof value.metadata.filename !== 'string') throw Error('Invalid filename record.');
   if (value.metadata?.extensions !== undefined && !object(value.metadata.extensions)) throw Error('Invalid extensions record.');
+  if (value.metadata?.references !== undefined && !Array.isArray(value.metadata.references)) throw Error('Invalid references record.');
   validateOmitted(value.omitted);
   return value;
 }
