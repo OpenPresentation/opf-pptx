@@ -12,6 +12,9 @@ import * as opfCore from '@openpresentation/opf';
 
 const INACTIVE = Object.freeze({active: false, axisTitles: {}, diagnostics: []});
 
+/** True when the installed core knows the chart option fields (older cores ignore them on export and import). */
+export const coreKnowsChartOptions = () => typeof opfCore.resolveChartOptions === 'function' && typeof opfCore.chartOptionSupport === 'function';
+
 /** The resolved options of a chart (an older core without `resolveChartOptions` ignores the fields). */
 export function resolveChartOptionsFor(chart) {
   if (typeof opfCore.resolveChartOptions !== 'function' || !chart || typeof chart !== 'object') return INACTIVE;
@@ -131,6 +134,8 @@ function titleString(title) {
  * `{legend: 'right' | undefined}` (a legend at the right of multi-series, pie and doughnut charts) and the chart kind.
  */
 export function chartOptionsFromClassic(chartSpace, {chartNode, target, seriesCount, circular, scatter}) {
+  // An older core's schema has no such fields (additionalProperties is false), so nothing is added to the imported chart.
+  if (!coreKnowsChartOptions()) return {options: {}, notes: []};
   const chart = chartSpace?.['c:chart'];
   const plotArea = chart?.['c:plotArea'];
   const out = {};
@@ -221,6 +226,7 @@ function axisTitleText(axis) {
  * on a funnel), so only what differs from them is returned.
  */
 export function chartOptionsFromChartex(space, {type, seriesCount}) {
+  if (!coreKnowsChartOptions()) return {options: {}, notes: []};
   const chart = space?.['cx:chart'];
   const out = {};
   const notes = [];
