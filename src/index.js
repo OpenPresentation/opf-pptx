@@ -37,6 +37,8 @@ import {
   catalogs as bundledCatalogs,
   validatePresentation
 } from "@openpresentation/opf";
+// Optional core exports (RR-07 syntax colours, trend marks) are read from the namespace so an older published core still loads.
+import * as opfCore from "@openpresentation/opf";
 
 export {checkPptxTypefaces, inventoryPptxTypefaces, packageFontsUsed, THEME_SCRIPT_SUPPLEMENTS} from './typeface-inventory.js';
 
@@ -232,6 +234,7 @@ export async function toPptx(input, options = {}) {
   context.furnitureManifests = new Map();
   context.codeTags = new Map();
   context.metricTags = new Map();
+  context.metricDescriptions = new Map();
   context.chartHeadings = new Map();
   context.chartFonts = new Map();
   context.chartex = new Map();
@@ -1622,10 +1625,10 @@ async function addPayload(slide, presentation, payload, region, path, context, o
       addTablePayload(slide, payload.table, region, context, options, path);
       break;
     case "code":
-      addCodePayload(slide, payload.code, codeLayout, region, context, path);
+      addCodePayload(slide, payload.code, codeLayout, region, context, path, options);
       break;
     case "metric":
-      addMetricPayload(slide, payload.metric,metricLayout,context,path);
+      addMetricPayload(slide, payload.metric,metricLayout,context,path,options);
       break;
     case "quote":
       addQuotePayload(slide, payload.quote, quoteLayout, context, options, path);
@@ -2133,7 +2136,7 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
 
 const bulletImageName = () => 'OPF bullet image';
 
-function addCodePayload(slide, value, layout, region, context, path) {
+function addCodePayload(slide, value, layout, region, context, path, options) {
   if (!layout) throw new OPFPptxError('missing-code-layout', 'Code export requires a coordinated core build with shared code geometry.', {path});
   for (const part of layout.parts) {
     // XML 1.0 Char excludes controls and unpaired UTF-16 surrogates. The u flag
@@ -2144,6 +2147,7 @@ function addCodePayload(slide, value, layout, region, context, path) {
   const group = String(context.codeTags.size + 1), panelName = `OPF code ${group} panel`;
   for (const part of layout.parts) if (!part.fit) throw new OPFPptxError('layout-overflow', 'Code content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
   context.codeTags.set(panelName,codeManifest(value,layout,group));
+  const syntax = codeSyntax(value, layout, context, path, options);
   slide.addShape('rect', {...region, fill: {color: '111827'}, line: {color: '334155', width: .75}, objectName:panelName});
   for (const [partIndex,part] of layout.parts.entries()) {
     if (!part.fit) throw new OPFPptxError('layout-overflow', 'Code content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
@@ -2151,19 +2155,41 @@ function addCodePayload(slide, value, layout, region, context, path) {
       const tabStops=line.segments.filter(segment=>segment.kind==='tab').map(segment=>({position:(segment.x+segment.width)/96,alignment:'l'}));
       const objectName = `OPF code ${group} ${part.role} line ${index+1}`;
       context.codeTags.set(objectName,{v:1,group,role:'line',part:partIndex,line:index});
-      slide.addText(part.text.slice(line.start,line.end),{
+      // RR-07: the same token ranges and palette the preview paints; the text of the runs is the line text, unchanged.
+      const runs = syntax && part.role==='body' ? opfCore.codeLineRuns(syntax.tokens,line.start,line.end,part.text) : undefined;
+      const lineText = part.text.slice(line.start,line.end);
+      const lineOptions = {
         ...textBoxOptions({x:part.box.x/96,y:(part.box.y+index*part.fit.lineHeight)/96,w:part.box.width/96,h:part.fit.lineHeight/96},context,part.fit.fontSize*.75),
         ...nativeFontOptions(part.style),
         color:part.role==='body'?'E5E7EB':'93C5FD',align:'left',fit:'none',wrap:false,lineSpacingMultiple:1,
         tabStops:tabStops.length?tabStops:undefined,objectName,
-      });
+      };
+      // A run's own options replace the line's, so every run repeats the font, size, alignment and tab stops and differs only in colour.
+      slide.addText(runs?.some(run=>run.kind) ? runs.map(run=>({text:part.text.slice(run.start,run.end),options:{...lineOptions,color:syntax.palette[run.kind??'plain'].slice(1)}})) : lineText,lineOptions);
     }
   }
 }
 
-function addMetricPayload(slide,value,layout,context,path) {
+// Token ranges and palette for the code body, from core (the preview calls the same functions); undefined for plain code.
+function codeSyntax(value, layout, context, path, options) {
+  const body = layout.parts.find(part => part.role === 'body');
+  const language = typeof value?.language === 'string' ? value.language : layout.parts.find(part => part.role === 'language')?.text;
+  if (!body || !language) return undefined;
+  if (typeof opfCore.tokenizeCode !== 'function') {
+    options?.onDiagnostic?.({code:'code-highlight-unavailable',path:`${path}.language`,message:'The installed @openpresentation/opf has no tokenizeCode (RR-07), so the code is exported without syntax colours. Use a core release with code highlighting.'});
+    return undefined;
+  }
+  const tokens = opfCore.tokenizeCode(body.text, language);
+  return tokens.length ? {tokens, palette: opfCore.codeSyntaxPaletteForScheme(context.colorScheme)} : undefined;
+}
+
+function addMetricPayload(slide,value,layout,context,path,options) {
   if (!layout) throw new OPFPptxError('missing-metric-layout','Metric export requires coordinated core metric geometry.',{path});
   const group=String(context.metricTags.size+1),manifest=metricManifest(value,layout,group);
+  // RR-07: a trend colours the trend and delta text and adds one native arrow shape, from core's accepted geometry.
+  const trendMark=typeof opfCore.metricTrendMark==='function'?opfCore.metricTrendMark(layout,{background:`#${normalizeHex(context.colors.background)}`}):undefined;
+  if(typeof opfCore.metricTrendMark!=='function'&&layout.parts.some(part=>part.role==='trend'&&part.visible))options?.onDiagnostic?.({code:'metric-trend-unavailable',path:`${path}.trend`,message:'The installed @openpresentation/opf has no metricTrendMark (RR-07), so the trend word is exported without an arrow or colour. Use a core release with metric trend marks.'});
+  const partColor=part=>trendMark&&(part.role==='trend'||part.role==='delta')?trendMark.color.slice(1):part.role==='value'?context.colors.accent:context.textColor;
   for (const [partIndex,part] of layout.parts.entries()) {
     const invalid=/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/u.exec(part.text);
     if (invalid) throw new OPFPptxError('invalid-metric-text',`Metric text contains U+${invalid[0].codePointAt(0).toString(16).toUpperCase().padStart(4,'0')} at UTF-16 offset ${invalid.index}, which XML cannot represent; edit that character before exporting.`,{path:part.path});
@@ -2181,10 +2207,16 @@ function addMetricPayload(slide,value,layout,context,path) {
       slide.addText(part.text.slice(line.start,line.end),{
         ...textBoxOptions({x:(anchor-part.box.width*factor)/96,y:(origin.baseline-part.fit.fontSize)/96,w:part.box.width/96,h:part.fit.lineHeight/96},context,part.fit.fontSize*.75),
         ...nativeFontOptions(part.style),
-        color:part.role==='value'?context.colors.accent:context.textColor,align:layout.alignment,fit:'none',wrap:false,lineSpacingMultiple:1,
+        color:partColor(part),align:layout.alignment,fit:'none',wrap:false,lineSpacingMultiple:1,
         tabStops:tabStops.length?tabStops:undefined,objectName,
       });
     }
+  }
+  if(trendMark) {
+    const objectName=`OPF metric ${group} trend mark`;
+    context.metricTags.set(objectName,{v:1,group,role:'mark'});
+    context.metricDescriptions.set(objectName,trendMark.ariaLabel);
+    slide.addShape(trendMark.shape,{objectName,x:trendMark.box.x/96,y:trendMark.box.y/96,w:trendMark.box.width/96,h:trendMark.box.height/96,fill:{color:trendMark.color.slice(1)},line:{transparency:100},altText:trendMark.ariaLabel});
   }
 }
 
@@ -2823,7 +2855,7 @@ async function normalizePptxZip(raw, context) {
   }
 
   attachCodeTags(entries, context.codeTags);
-  attachMetricTags(entries,context.metricTags);
+  attachMetricTags(entries,context.metricTags,context.metricDescriptions);
   attachCardTags(entries,context.cardTags);
   attachMediaTags(entries,context.mediaTags);
   attachHeadingTags(entries,context.headingTags);
