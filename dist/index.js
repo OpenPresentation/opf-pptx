@@ -1320,7 +1320,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const backgroundPath = `${opfSlide.design?.background !== undefined ? `slides.${slideIndex}.` : ''}design.background`;
   const backgroundFill = schemeBackgroundFill(backgroundDefinition, slideContext) ?? nativeBackgroundFill(backgroundDefinition, {
     width: slideContext.dimensions.widthInches, height: slideContext.dimensions.heightInches
-  }, slideContext.colors.background, slideContext.colors.text, (reference, hex) => schemeColorValue(reference, hex, slideContext), reference => resolveColorRefValue(reference, colorContext(slideContext)));
+  }, slideContext.colors.background, slideContext.colors.text, (reference, hex) => schemeColorValue(reference, hex, slideContext), reference => resolveBackgroundColorRef(reference, slideContext.colorScheme, slideContext.variables));
   if (backgroundFill) context.backgroundFills.set(`ppt/slides/slide${slideIndex + 1}.xml`, backgroundFill);
   if (backgroundDefinition?.type === 'pattern' && !nativePatternPreset(backgroundDefinition.pattern?.preset)) {
     options.onDiagnostic?.({code: 'unsupported-pattern', path: `${backgroundPath}.pattern.preset`, message: `Pattern ${backgroundDefinition.pattern?.preset} has no DrawingML preset; only its background color was exported.`});
@@ -2552,9 +2552,13 @@ function resolveDimensions(value) {
 
 // A solid color or pattern background color is a ColorRef (hex, `var:` variable, colour-scheme slot or role), resolved
 // as for table fills and run colours. Roles resolve through the colour scheme alone: the background cannot depend on itself.
+function resolveBackgroundColorRef(entry, colorScheme, variables = {}) {
+  return resolveColorRefValue(entry, {colorScheme, colors: {}, variables});
+}
+
 function resolveBackground(value, colorScheme, variables = {}) {
   const fallback = "FFFFFF";
-  const reference = entry => normalizeHex(resolveColorRefValue(entry, {colorScheme, colors: {}, variables}) ?? entry, fallback);
+  const reference = entry => normalizeHex(resolveBackgroundColorRef(entry, colorScheme, variables) ?? entry, fallback);
   if (typeof value === "string") {
     if (value.startsWith("#")) return normalizeHex(value, fallback);
     return normalizeHex(colorScheme[value] ?? colorScheme.background ?? colorScheme.light1 ?? "#FFFFFF", fallback);

@@ -53,6 +53,11 @@ await solid('var:missing', '<a:solidFill><a:srgbClr val="FFFFFF"></a:srgbClr></a
   checked++;
 }
 
+// A role resolves through the colour scheme alone, never through the exporter's contrast-derived chrome colours (the slide's
+// default `text` is light on a dark background): a dark `text` background stays the scheme's dark text colour.
+await solid('text', '<a:solidFill><a:schemeClr val="tx1"></a:schemeClr></a:solidFill>');
+await solid('surface', '<a:solidFill><a:schemeClr val="bg2"></a:schemeClr></a:solidFill>');
+
 // Text contrast follows the resolved background: a dark variable or slot gets the same text as the same literal.
 for (const [reference, literal] of [['var:night', '#101010'], ['dark1', '#111111']]) {
   const byReference = withoutBackground((await slideXml(base({type: 'solid', color: reference}))).xml);
