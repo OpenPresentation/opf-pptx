@@ -293,6 +293,18 @@ export function withoutSvgBlip(blip) {
 }
 
 /**
+ * A parsed `p:blipFill` (or a stored identity of one) with its crop in canonical form: PowerPoint drops the zero sides of an
+ * `a:srcRect` when it saves (`l="25000" t="0" r="25000" b="0"` becomes `l="25000" r="25000"`), and an all-zero crop is no crop.
+ */
+export function normalizeCrop(blipFill) {
+  const crop = blipFill?.['a:srcRect'];
+  if (!blipFill || typeof crop !== 'object' || crop === null) return blipFill;
+  const kept = Object.fromEntries(Object.entries(crop).filter(([, value]) => !(Number(value) === 0)));
+  const {['a:srcRect']: _crop, ...rest} = blipFill;
+  return Object.keys(kept).length ? {...rest, 'a:srcRect': kept} : rest;
+}
+
+/**
  * Add the SVG pictures to a generated package. `pictures` maps a picture's shape name (or `slidePart|name` for names
  * a slide repeats) to `{bytes, width, height}`. For each matching `p:pic` this writes the SVG as a media part, a
  * relationship from the slide, and `a:extLst/a:ext/asvg:svgBlip` inside the picture's `a:blip` (after any effect

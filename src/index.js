@@ -807,13 +807,14 @@ function importPicture(entries, picture, slidePath, relationships, report) {
   const svgRelationship = relationships.get(svgBlipRelationship(picture["p:blipFill"]?.["a:blip"]));
   if (svgRelationship && svgRelationship.targetMode !== "External" && entries[svgRelationship.path]) {
     const prepared = prepareSvg(entries[svgRelationship.path]);
-    if (prepared.error) report({code: "invalid-svg-image", message: `A picture's SVG was not imported (${prepared.error.message}); its PNG fallback was imported instead.`});
+    if (prepared.error) report({code: "invalid-svg-image", message: `A picture's SVG was not imported (${prepared.error.message}); its PNG fallback was imported instead (none: the picture has no image).`});
     else {
       svg = prepared.bytes;
       if (prepared.removed.length) report({code: "svg-sanitized", message: `The SVG had ${prepared.removed.join(", ")} removed on import.`});
     }
   }
-  if (!bytes) {
+  // PowerPoint can save an SVG picture with no PNG fallback at all (an a:blip with no r:embed): the SVG alone is the image.
+  if (!bytes && !svg) {
     return {
       kind: "unknown",
       bounds,
@@ -836,7 +837,7 @@ function importPicture(entries, picture, slidePath, relationships, report) {
     payload: {
       type: "image",
       image: {
-        src: `data:${svg ? "image/svg+xml" : rasterMetadata(bytes)?.mediaType ?? mediaTypeForPath(relationship.path)};base64,${bytesToBase64(bytes)}`,
+        src: `data:${svg ? "image/svg+xml" : rasterMetadata(bytes)?.mediaType ?? mediaTypeForPath(relationship?.path)};base64,${bytesToBase64(bytes)}`,
         ...(alt ? { alt } : {}),
         ...(title && alt ? { title } : {})
       }
@@ -1816,11 +1817,8 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   }
   const opacity = watermarkOpacity(watermark);
   context.watermarks.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, box, opacity, path});
-  // Opacity is an a:alphaModFix on the blip: an SVG watermark that is translucent stays its PNG raster, so the effect applies as in the preview.
-  if (outcome.svg) {
-    if (opacity < 1) options.onDiagnostic?.({code: 'svg-image-rasterized', path, message: 'A translucent SVG watermark exports as its PNG raster (opacity is a picture effect); an opaque one is a native SVG picture.'});
-    else context.svgPictures.set(`ppt/slides/slide${slideIndex + 1}.xml|${watermarkName()}`, outcome.svg);
-  }
+  // Opacity is an a:alphaModFix on the blip, which PowerPoint applies to an SVG picture (native check 2026-10-01).
+  if (outcome.svg) context.svgPictures.set(`ppt/slides/slide${slideIndex + 1}.xml|${watermarkName()}`, outcome.svg);
   slide.addImage({...resolved, objectName: watermarkName(), ...box, altText: assetAlt(asset, presentation) ?? 'Watermark'});
 }
 
@@ -1873,11 +1871,12 @@ async function addSlideImage(slide, presentation, image, slideIndex, context, op
   // FF-53: a root `image` with the slide image's source is the slide image (core `replacesContent`); the
   // manifest records that so an unchanged picture imports back as both design.slideImage and slide.image.
   context.slideImages.set(objectName, { slide: `slides.${slideIndex}`, box, fill: image.fill, path: image.sourcePath, treatment: { ...treatment, position: image.position }, effects, content: image.replacesContent === true });
-  // Recolor, opacity, a border or a non-rectangular shape are picture effects written on the PNG blip: with any of them the
-  // SVG stays its raster, so they apply as in the preview.
+  // PowerPoint applies opacity (a:alphaModFix), grayscale (a:grayscl) and the border (a:ln) to an SVG picture (native check
+  // 2026-10-01). A duotone recolor and a non-rectangular mask are not confirmed on an SVG picture: with either the SVG stays its
+  // PNG raster, so the effect applies as in the preview.
   if (outcome.svg) {
-    const treated = [effects.recolor && 'recolor', typeof effects.opacity === 'number' && 'opacity', effects.border && 'border', effects.shape && effects.shape.preset !== 'rect' && 'shape'].filter(Boolean);
-    if (treated.length) options.onDiagnostic?.({ code: 'svg-image-rasterized', path: image.sourcePath, message: `An SVG slide image with ${treated.join(', ')} exports as its PNG raster, so the effect applies as in the preview; a plain one is a native SVG picture.` });
+    const treated = [effects.recolor?.type === 'duotone' && 'duotone recolor', effects.shape && effects.shape.preset !== 'rect' && 'shape'].filter(Boolean);
+    if (treated.length) options.onDiagnostic?.({ code: 'svg-image-rasterized', path: image.sourcePath, message: `An SVG slide image with ${treated.join(', ')} exports as its PNG raster, so the effect applies as in the preview; PowerPoint has not been confirmed to apply it to an SVG picture.` });
     else context.svgPictures.set(objectName, outcome.svg);
   }
   const slideImageAlt = image.alt ?? assetAlt(image.value, presentation);

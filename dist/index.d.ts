@@ -51,7 +51,7 @@ export interface ContentPlaceholderDiagnostic { code: "content-placeholder"; pat
 export interface UnresolvedAssetDiagnostic { code: "unresolved-asset"; path: string; message: string; reason?: "unsupported-format" | "svg-malformed" | "svg-no-size" | "svg-too-large" | "svg-unsafe" | "svg-rasterizer-unavailable" | "svg-render-failed" | "svg-unreadable" }
 /** An SVG picture had scripts, `foreignObject`, event handlers, references outside the file, `@import` rules or a DOCTYPE; they were removed from the embedded SVG (on import too). Nothing in an SVG is run or fetched. */
 export interface SvgSanitizedDiagnostic { code: "svg-sanitized"; path: string; message: string }
-/** An SVG picture with picture effects (a translucent watermark; a slide image with recolor, opacity, a border or a non-rectangular shape) exports as its PNG raster, not as a native SVG picture, so the effect applies as in the preview. */
+/** An SVG slide image with a duotone recolor or a non-rectangular shape exports as its PNG raster, not as a native SVG picture, so the effect applies as in the preview (PowerPoint applies opacity, grayscale and a border to an SVG picture, and those stay native). */
 export interface SvgImageRasterizedDiagnostic { code: "svg-image-rasterized"; path: string; message: string }
 export interface WatermarkNotExportedDiagnostic { code: "watermark-not-exported"; path: string; message: string }
 /**

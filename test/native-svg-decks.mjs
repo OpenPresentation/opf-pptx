@@ -73,6 +73,8 @@ const slides = [
     check: 'An SVG with only a viewBox (no width or height) is a 2:1 SVG picture, not stretched.'},
   {id: 'sanitized', title: 'Sanitized SVG', layout: 'image-1x', image: {src: uri(hostile), alt: 'Pink square with a red circle'},
     check: 'The SVG had a script, an onload handler and an external image: all removed at export. PowerPoint opens it silently (no security warning, no network request, no alert) and shows the pink panel with the red circle and the caption only.'},
+  {id: 'effects-native', title: 'Opacity, grayscale and border', text: 'Native SVG pictures with effects.', design: {watermark: {src: uri(iconSquare), opacity: .3}, slideImage: {src: uri(logoWide), position: 'right', recolor: 'grayscale', opacity: .8, border: {color: '#c0392b', width: 6}}},
+    check: 'Confirmed natively on 2026-10-01 and exported as SVG pictures since: the centered watermark is at 30% (a:alphaModFix before the SVG extension), the right-hand slide image is grayscale at 80% with a red 6 pt border. Both stay Graphics Format pictures.'},
 ];
 
 function deckFor(options = {}) {
@@ -127,27 +129,26 @@ async function generate(output) {
     slides: slides.map((slide, index) => ({n: index + 1, id: slide.id, pictures: pictureRows(unzipSync(png), index + 1)})),
   });
 
-  // 3. The effects probe: the exporter keeps pictures with picture effects as PNG; these add the SVG extension to them anyway.
+  // 3. The effects probe: effects not confirmed on SVG pictures (opacity, grayscale and border are: they are native above). The
+  // exporter writes these as PNG only; here the SVG extension is added so PowerPoint shows whether it honours the effect.
   const effectDeck = {name: 'RR-10 SVG effect probe', design: {theme: 'classic', background: light}, slides: [
-    {title: 'Watermark at 30% opacity', text: 'a:alphaModFix on an SVG blip.', design: {watermark: {src: uri(iconSquare), opacity: .3}}},
-    {title: 'Slide image, grayscale', text: 'a:grayscl on an SVG blip.', design: {slideImage: {src: uri(logoWide), position: 'right', recolor: 'grayscale'}}},
-    {title: 'Slide image, circle mask', text: 'prstGeom ellipse on an SVG picture.', design: {slideImage: {src: uri(iconSquare), position: 'right', shape: 'circle'}}},
-    {title: 'Slide image, border', text: 'a:ln on an SVG picture.', design: {slideImage: {src: uri(tallBadge), position: 'right', border: {color: '#c0392b', width: 6}}}},
+    {title: 'Slide image, duotone', text: 'a:duotone on an SVG blip.', design: {slideImage: {src: uri(logoWide), position: 'right', recolor: {dark: '#102030', light: '#f0e0d0'}}}},
+    {title: 'Slide image, circle mask', text: 'prstGeom ellipse on a wide SVG picture.', design: {slideImage: {src: uri(logoWide), position: 'right', shape: 'circle'}}},
+    {title: 'Slide image, rounded mask', text: 'roundRect on a wide SVG picture.', design: {slideImage: {src: uri(diagram), position: 'right', shape: 'rounded', cornerRadius: 0.12}}},
   ]};
   const probeDiagnostics = [];
   const probeBytes = await toPptx(effectDeck, {...FIXED, onDiagnostic: item => probeDiagnostics.push(item)});
   const probeEntries = unzipSync(probeBytes);
-  const svgFor = {1: iconSquare, 2: logoWide, 3: iconSquare, 4: tallBadge};
+  const svgFor = {1: logoWide, 2: logoWide, 3: diagram};
   for (const [slide, text] of Object.entries(svgFor)) {
     const prepared = prepareSvg(new TextEncoder().encode(text));
-    const names = [...strFromU8(probeEntries[`ppt/slides/slide${slide}.xml`]).matchAll(/<p:cNvPr\b[^>]*\bname="([^"]*)"/g)].map(match => match[1]).filter(name => /^OPF (watermark|slide image slides)/.test(name));
-    const map = new Map(names.map(name => [name.startsWith('OPF watermark') ? `ppt/slides/slide${slide}.xml|${name}` : name, {bytes: prepared.bytes, width: prepared.width, height: prepared.height}]));
-    attachSvgPictures(probeEntries, map);
+    const names = [...strFromU8(probeEntries[`ppt/slides/slide${slide}.xml`]).matchAll(/<p:cNvPr\b[^>]*\bname="([^"]*)"/g)].map(match => match[1]).filter(name => /^OPF slide image slides/.test(name));
+    attachSvgPictures(probeEntries, new Map(names.map(name => [name, {bytes: prepared.bytes, width: prepared.width, height: prepared.height}])));
   }
   const probe = zipSync(Object.fromEntries(Object.entries(probeEntries).filter(([name]) => !name.endsWith('/')).sort(([a], [b]) => a < b ? -1 : 1)), {level: 6, mtime: new Date('2026-10-01T00:00:00Z')});
-  await write('rr10-svg-effects-probe.pptx', probe, 'PROBE (not shipped behaviour): SVG pictures that also carry picture effects. The exporter writes these as PNG only; here the SVG extension is added so PowerPoint shows whether it honours the effect on an SVG picture.', {
+  await write('rr10-svg-effects-probe.pptx', probe, 'PROBE (not shipped behaviour): SVG pictures with a duotone recolor or a non-rectangular mask. The exporter writes these as PNG only; here the SVG extension is added so PowerPoint shows whether it honours the effect.', {
     exporterDiagnostics: probeDiagnostics.map(({code, path: at}) => ({code, path: at})),
-    slides: [1, 2, 3, 4].map(n => ({n, pictures: pictureRows(unzipSync(probe), n), verify: `${['A 30% opacity watermark (a:alphaModFix 30000 on the blip).', 'The logo in grayscale (a:grayscl on the blip), at the right.', 'The icon cut to a circle (prstGeom ellipse on the picture), at the right.', 'The tall badge with a red 6 pt border (a:ln on the picture), at the right.'][n - 1]} Open without a repair prompt? Is the effect applied to the SVG picture? If it is ignored (full opacity, colour, square corners, no border) the exporter is right to keep effect pictures as PNG.` })),
+    slides: [1, 2, 3].map(n => ({n, pictures: pictureRows(unzipSync(probe), n), verify: `${['The wide logo recolored dark navy to cream (a:duotone on the blip).', 'The wide logo cut to a circle (prstGeom ellipse): the sides must be clipped.', 'The wide diagram with rounded corners (roundRect).'][n - 1]} Open without a repair prompt? Is the effect applied to the SVG picture? If it is ignored the exporter is right to keep these as PNG.` })),
   });
 
   // Previews (this renderer) and the PNG fallbacks that were embedded.
@@ -169,7 +170,7 @@ async function generate(output) {
       'rr10-svg-pictures.pptx: every SVG picture shows the Graphics Format tab when selected, right-click offers Convert to Shape, and stays crisp at 400% zoom; the PNG-only deck (rr10-svg-raster-control.pptx) is soft at that zoom and shows Picture Format.',
       'Frames: each picture sits where the preview/ PNG draws it (contain = padded inside its box, crop = trimmed to its box); the alt text is on the picture (Alt Text pane).',
       'Save As a new file (same file names in a folder) and run: node test/native-svg-decks.mjs verify THAT_FOLDER - the SVG pictures must still be svgBlip pictures and fromPptx must return the SVG for them.',
-      'rr10-svg-effects-probe.pptx: report which of opacity, grayscale, circle mask and border PowerPoint applies to an SVG picture. If all apply, the exporter can keep SVG for watermarks and treated slide images; today it keeps the PNG for those.',
+      'rr10-svg-effects-probe.pptx: report whether PowerPoint applies a duotone recolor and a circle / rounded mask to an SVG picture (opacity, grayscale and border were confirmed on 2026-10-01 and are native in rr10-svg-pictures.pptx slide 9). If they apply, the exporter can keep SVG for those too; today it keeps the PNG.',
       'slide 4 of rr10-svg-pictures.pptx (negative a:srcRect on an SVG picture) must draw the whole badge, padded, not cut or stretched.',
     ],
     decks,

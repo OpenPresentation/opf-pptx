@@ -65,7 +65,7 @@ let checked = 0;
 // One SVG picture, fully: the package parts, the extension, the fallback raster and the source bytes.
 async function assertNative(entries, index, picture, svgText, label, ours = true) {
   assert.ok(picture.svgEmbed, `${label}: carries asvg:svgBlip`);
-  assert.match(picture.xml, new RegExp(`<a:blip r:embed="${picture.embed}"><a:extLst><a:ext uri="${SVG_URI.replace(/[{}]/g, '\\$&')}"><asvg:svgBlip xmlns:asvg="http://schemas\\.microsoft\\.com/office/drawing/2016/SVG/main" r:embed="${picture.svgEmbed}"/></a:ext></a:extLst></a:blip>`), `${label}: the extension closes the blip`);
+  assert.match(picture.xml, new RegExp(`<a:blip r:embed="${picture.embed}">(?:<a:[A-Za-z]+[^>]*/>)*<a:extLst><a:ext uri="${SVG_URI.replace(/[{}]/g, '\\$&')}"><asvg:svgBlip xmlns:asvg="http://schemas\\.microsoft\\.com/office/drawing/2016/SVG/main" r:embed="${picture.svgEmbed}"/></a:ext></a:extLst></a:blip>`), `${label}: the extension closes the blip`);
   const svgPart = target(entries, index, picture.svgEmbed), pngPart = target(entries, index, picture.embed);
   assert.equal(svgPart.type, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image', `${label}: SVG relationship type`);
   assert.match(svgPart.part, /^ppt\/media\/[^/]+\.svg$/);
@@ -154,18 +154,32 @@ for (const [name, svg, raster, aspect] of [['wide', wide, widePng, 2], ['tall', 
   checked++;
 }
 
-// ---- 4. Pictures with picture effects stay their raster (and say so); a picture bullet is a raster (a:buBlip).
+// ---- 4. Picture effects. PowerPoint applies opacity (a:alphaModFix), grayscale (a:grayscl) and a border (a:ln) to an SVG picture
+// (native check 2026-10-01), so those stay native, the effect before the SVG extension; a duotone recolor and a non-rectangular mask
+// are unconfirmed on an SVG picture and keep the PNG (svg-image-rasterized). A picture bullet is a raster (a:buBlip).
 {
-  const deck = {design: {watermark: {src: wide, opacity: .1}, background: light}, slides: [{title: 'T', design: {slideImage: {src: square, position: 'left', opacity: .5}}}]};
-  const {entries, diagnostics} = await open(deck);
-  assert.ok(!/svgBlip/.test(slideXml(entries)), 'effects keep the raster');
-  assert.deepEqual(diagnostics.filter(item => item.code === 'svg-image-rasterized').map(item => item.path).sort(), ['design.watermark', 'slides.0.design.slideImage']);
-  assert.match(slideXml(entries), /<a:alphaModFix amt="50000"\/>/);
-  assert.equal(Object.keys(entries).filter(part => part.endsWith('.svg')).length, 0, 'no SVG part');
-  for (const treatment of [{recolor: 'grayscale'}, {border: {color: '#000000', width: 2}}, {shape: 'circle'}]) {
+  const deck = {design: {watermark: {src: wide, opacity: .3}, background: light}, slides: [{title: 'T', design: {slideImage: {src: square, position: 'left', opacity: .5, recolor: 'grayscale', border: {color: '#c0392b', width: 6}}}}]};
+  const {entries, diagnostics, bytes} = await open(deck);
+  const xml = slideXml(entries);
+  assert.deepEqual(diagnostics.filter(item => item.code === 'svg-image-rasterized'), []);
+  const [image, watermark] = pictures(xml);
+  assert.ok(watermark.svgEmbed && image.svgEmbed, 'both stay native SVG pictures');
+  assert.match(watermark.xml, /<a:blip r:embed="rId\d+"><a:alphaModFix amt="30000"\/><a:extLst>/);
+  assert.match(image.xml, /<a:blip r:embed="rId\d+"><a:grayscl\/><a:alphaModFix amt="50000"\/><a:extLst>/);
+  assert.match(image.xml, /<a:ln w="\d+"[^>]*>/, 'the border');
+  await assertNative(entries, 0, watermark, wideText, 'translucent watermark');
+  await assertNative(entries, 0, image, squareText, 'treated slide image');
+  // The effects are still identity: an unchanged export imports as the design fields with their treatments.
+  const imported = await fromPptx(bytes);
+  assert.equal(imported.design.watermark.src, wide);
+  assert.equal(imported.design.watermark.opacity, .3);
+  assert.equal(imported.slides[0].design.slideImage.src, square);
+  assert.equal(imported.slides[0].design.slideImage.opacity, .5);
+  assert.equal(imported.slides[0].design.slideImage.recolor, 'grayscale');
+  for (const treatment of [{recolor: {dark: '#102030', light: '#f0e0d0'}}, {shape: 'circle'}]) {
     const result = await open({design: {background: light}, slides: [{title: 'T', design: {slideImage: {src: square, position: 'left', ...treatment}}}]});
     assert.ok(!/svgBlip/.test(slideXml(result.entries)), `${Object.keys(treatment)}: raster`);
-    assert.equal(result.diagnostics.filter(item => item.code === 'svg-image-rasterized').length, 1);
+    assert.deepEqual(result.diagnostics.filter(item => item.code === 'svg-image-rasterized').map(item => item.path), ['slides.0.design.slideImage']);
   }
   checked++;
 }
@@ -262,6 +276,104 @@ for (const [name, svg, raster, aspect] of [['wide', wide, widePng, 2], ['tall', 
   const cleanText = decoder.decode(svgDataUriBytes(cleanSrc));
   assert.ok(!/script|onload/.test(cleanText), 'imported SVG carries no script');
   assert.ok(hostileReports.some(item => item.code === 'svg-sanitized'));
+  checked++;
+}
+
+// ---- 7b. A PowerPoint save of SVG pictures. PowerPoint (checked natively, 2026-10-01) renames media parts, renumbers
+// relationships, renames tag parts, drops whitespace between elements and the zero sides of an a:srcRect, and may write the
+// picture with NO PNG fallback (an a:blip with no r:embed, only the svgBlip). Every SVG picture still imports, as design
+// fields where it is tagged and unchanged and as an ordinary SVG image where it is not.
+{
+  const enc = new TextEncoder();
+  const relsOf = path => path.replace(/([^/]+)$/, '_rels/$1.rels');
+  const slideParts = entries => Object.keys(entries).filter(path => /^ppt\/slides\/slide\d+\.xml$/.test(path));
+  function powerpointSvgSave(bytes, {dropFallback}) {
+    const entries = unzipSync(bytes);
+    if (dropFallback) {
+      for (const part of slideParts(entries)) {
+        let rels = decoder.decode(entries[relsOf(part)]);
+        entries[part] = enc.encode(decoder.decode(entries[part]).replace(/<a:blip r:embed="([^"]+)">(<a:extLst><a:ext uri="\{96DAC541[\s\S]*?<\/a:blip>)/g, (match, id, rest) => {
+          rels = rels.replace(new RegExp(`<Relationship Id="${id}"[^>]*/>`), '');
+          return `<a:blip>${rest}`;
+        }));
+        entries[relsOf(part)] = enc.encode(rels);
+      }
+      const referenced = new Set();
+      for (const path of Object.keys(entries).filter(name => name.endsWith('.rels'))) for (const [, target] of decoder.decode(entries[path]).matchAll(/Target="\.\.\/media\/([^"]+)"/g)) referenced.add(`ppt/media/${target}`);
+      for (const path of Object.keys(entries).filter(name => /^ppt\/media\/[^/]+$/.test(name) && !referenced.has(name))) {
+        delete entries[path];
+        entries['[Content_Types].xml'] = enc.encode(decoder.decode(entries['[Content_Types].xml']).replace(new RegExp(`<Override PartName="/${path}"[^>]*/>`), ''));
+      }
+    }
+    const names = Object.keys(entries);
+    const media = names.filter(path => /^ppt\/media\/[^/]+$/.test(path)).sort(), tags = names.filter(path => /^ppt\/tags\/[^/]+$/.test(path)).sort();
+    const moved = new Map([...media.map((path, index) => [path, `ppt/media/image${index + 1}.${path.split('.').pop()}`]), ...tags.map((path, index) => [path, `ppt/tags/tag${tags.length - index}.xml`])]);
+    const ids = new Map();
+    for (const part of slideParts(entries)) {
+      const all = [...decoder.decode(entries[relsOf(part)]).matchAll(/Id="([^"]+)"/g)].map(match => match[1]);
+      ids.set(part, new Map(all.map((id, index) => [id, `rId${all.length - index}`])));
+    }
+    const result = {};
+    for (const [path, data] of Object.entries(entries)) {
+      let out = data;
+      if (path.endsWith('.rels')) {
+        const owner = path.replace('_rels/', '').replace(/\.rels$/, ''), directory = owner.replace(/[^/]*$/, '');
+        let xml = decoder.decode(data).replace(/Target="([^"]+)"/g, (match, value) => {
+          if (/^[a-z]+:/i.test(value)) return match;
+          const to = moved.get(new URL(value, `http://x/${directory}`).pathname.slice(1));
+          return to ? `Target="${value.replace(/[^/]+$/, to.split('/').pop())}"` : match;
+        });
+        const map = ids.get(owner);
+        if (map) xml = xml.replace(/Id="([^"]+)"/g, (match, id) => `Id="${map.get(id) ?? id}"`);
+        out = enc.encode(xml);
+      } else if (path === '[Content_Types].xml') {
+        out = enc.encode(decoder.decode(data).replace(/PartName="\/([^"]+)"/g, (match, part) => `PartName="/${moved.get(part) ?? part}"`));
+      } else if (ids.has(path)) {
+        let xml = decoder.decode(data).replace(/>\s+</g, '><').replace(/<a:srcRect\b[^>]*\/>/g, tag => tag.replace(/ [ltrb]="0"/g, ''));
+        xml = xml.replace(/(r:(?:embed|id)=)"([^"]+)"/g, (match, attribute, id) => `${attribute}"${ids.get(path).get(id) ?? id}"`);
+        out = enc.encode(xml);
+      }
+      result[moved.get(path) ?? path] = out;
+    }
+    return zipSync(Object.fromEntries(Object.entries(result).filter(([name]) => !name.endsWith('/'))));
+  }
+  const deck = {design: {logo: wide, watermark: {src: square, opacity: 1}, header: {right: {image: {src: tall, alt: 'Icon'}}}, footer: {left: {logo: true}}, background: light},
+    slides: [
+      {title: 'Cover', layout: 'title'},
+      {title: 'Body', text: 'Copy', image: {src: wide, alt: 'Wide'}, design: {slideImage: {src: tall, position: 'right', fill: 'fit'}}},
+      {title: 'Slide image crop', text: 'Copy', design: {slideImage: {src: wide, position: 'left', fill: 'crop'}}},
+      {title: 'Blocks', blocks: [{image: {src: square, alt: 'Square'}}, {text: 'Beside'}]},
+    ]};
+  const {bytes} = await open(deck);
+  for (const dropFallback of [false, true]) {
+    const saved = powerpointSvgSave(bytes, {dropFallback});
+    const savedEntries = unzipSync(saved);
+    assert.equal(Object.keys(savedEntries).filter(path => path.endsWith('.png')).length > 0, !dropFallback, 'the PNG fallbacks are gone only in the drop variant');
+    assert.ok(slideParts(savedEntries).every(part => !decoder.decode(savedEntries[part]).includes('rIdOpfSvg')), 'ids were renumbered');
+    const reports = [];
+    const imported = await fromPptx(saved, {onDiagnostic: item => reports.push(item)});
+    const label = dropFallback ? 'SVG only' : 'with fallback';
+    assert.deepEqual(reports.filter(item => /^invalid-|^unsupported-image-(?!crop)/.test(item.code)), [], `${label}: no provenance complaint`);
+    assert.equal(imported.design.logo, wide, `${label}: design.logo`);
+    assert.equal(imported.design.watermark?.src, square, `${label}: design.watermark`);
+    assert.equal(imported.slides[1].design?.slideImage?.src, tall, `${label}: slide image (fit)`);
+    assert.equal(imported.slides[2].design?.slideImage?.src, wide, `${label}: slide image (crop)`);
+    const text = JSON.stringify(imported);
+    assert.ok(!text.includes('PowerPoint image:'), `${label}: no picture was dropped to a text note`);
+    assert.equal(imported.slides[1].image?.src ?? imported.slides[1].blocks?.find(block => block.image)?.image.src, wide, `${label}: content image`);
+    assert.equal(imported.slides[3].blocks?.find(block => block.image)?.image.src ?? imported.slides[3].image?.src, square, `${label}: block image`);
+    assert.ok(text.includes(tall) && JSON.stringify(imported.design).includes('"header"') || JSON.stringify(imported.slides).includes(tall), `${label}: the header image returns`);
+    // Edited after the save (the watermark moved): it is no longer the design field but is not lost: it imports as an ordinary SVG image.
+    const moved = new Map(Object.entries(savedEntries));
+    const slide = decoder.decode(savedEntries['ppt/slides/slide1.xml']).replace(/(name="OPF watermark"[\s\S]*?<a:off x=")\d+/, '$11');
+    moved.set('ppt/slides/slide1.xml', enc.encode(slide));
+    const damagedReports = [];
+    const damaged = await fromPptx(zipSync(Object.fromEntries(moved)), {onDiagnostic: item => damagedReports.push(item)});
+    assert.ok(damagedReports.some(item => item.code === 'invalid-watermark-provenance'), `${label}: the edit is reported`);
+    assert.equal(damaged.design?.watermark, undefined);
+    const ordinary = JSON.stringify(damaged.slides[0]);
+    assert.ok(ordinary.includes(square), `${label}: the edited watermark is still an image (${ordinary.slice(0, 120)})`);
+  }
   checked++;
 }
 

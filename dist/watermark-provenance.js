@@ -1,5 +1,5 @@
 import {XMLParser} from 'fast-xml-parser';
-import {withoutSvgBlip} from './svg-image.js';
+import {normalizeCrop, withoutSvgBlip} from './svg-image.js';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 import {pictureTransform} from './image-geometry.js';
 
@@ -31,7 +31,7 @@ export function watermarkOpacity(value) {
 }
 
 function blipFillIdentity(blipFill) {
-  const {['a:blip']: blip, ...rest} = blipFill ?? {};
+  const {['a:blip']: blip, ...rest} = normalizeCrop(blipFill) ?? {};
   const {['r:embed']: _embed, ...blipRest} = withoutSvgBlip(blip) ?? {};
   return {...rest, 'a:blip': blipRest};
 }
@@ -135,7 +135,7 @@ export function importWatermark(pictures, relationships, entries, slideIndex, re
     const manifest = decodeTextTag(own[0].val);
     if (manifest?.v !== 1 || manifest.slide !== `slides.${slideIndex}` || typeof manifest.opacity !== 'number' || !(manifest.opacity >= 0 && manifest.opacity <= 1)) throw Error('Invalid watermark manifest.');
     if (picture['p:nvPicPr']?.['p:cNvPr']?.name !== watermarkName()) throw Error('Watermark identity changed.');
-    if (canonical(picture['p:spPr']) !== canonical(manifest.properties) || canonical(blipFillIdentity(picture['p:blipFill'])) !== canonical(manifest.blipFill)) throw Error('Watermark geometry or opacity changed.');
+    if (canonical(picture['p:spPr']) !== canonical(manifest.properties) || canonical(blipFillIdentity(picture['p:blipFill'])) !== canonical(normalizeCrop(manifest.blipFill))) throw Error('Watermark geometry or opacity changed.');
     const item = readPicture(picture);
     const src = item?.payload?.image?.src;
     if (typeof src !== 'string') throw Error('Watermark bytes are unavailable.');
