@@ -96,9 +96,10 @@ function normalizeRuns(runs) {
     const last = merged[merged.length - 1];
     if (typeof run === 'string') { if (!run) continue; if (typeof last === 'string') merged[merged.length - 1] = last + run; else merged.push(run); }
     else if (object(run) && typeof run.text === 'string') {
-      const {text, ...style} = run;
-      if (!Object.keys(style).length) { if (typeof last === 'string') merged[merged.length - 1] = last + text; else merged.push(text); }
-      else merged.push(run);
+      // A reader may leave keys with undefined values (no native value); they are not authored style.
+      const style = Object.fromEntries(Object.entries(run).filter(([key, value]) => key !== 'text' && value !== undefined));
+      if (!Object.keys(style).length) { if (typeof last === 'string') merged[merged.length - 1] = last + run.text; else merged.push(run.text); }
+      else merged.push({text: run.text, ...style});
     }
   }
   return merged.every(run => typeof run === 'string') ? merged.join('') : merged;
