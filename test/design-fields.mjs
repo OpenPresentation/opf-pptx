@@ -228,7 +228,10 @@ if (!hasCore) {
   const markers = imageTags(svg).filter(element => attr(element, 'aria-hidden') === 'true');
   assert.equal(markers.length, entries.length);
   const textSize = Number(xml.match(/name="OPF list [^"]*"[\s\S]*?<a:rPr lang="en-US" sz="(\d+)"/)?.[1]) / 100 / .75;
-  for (const marker of markers) near(Number(attr(marker, 'width')), textSize, 'preview marker size', .01);
+  // The picture bullet is PowerPoint's size: a square of 0.65 of the text size once core composes bulletBox, else the text size.
+  const bulletSize = list.text.listEntries[0].bulletBox?.width ?? textSize;
+  assert.ok(bulletSize === textSize || Math.abs(bulletSize - textSize * .65) < .01, 'core bullet box is 0.65 of the text size');
+  for (const marker of markers) near(Number(attr(marker, 'width')), bulletSize, 'preview marker size', .01);
   // Second slide reuses its own relationship.
   assert.equal([...slideXml(picture.entries, 1).matchAll(/<a:buBlip>/g)].length, 1);
   // Re-import: still lists; design.listBullet returns; the media is not a content picture.
