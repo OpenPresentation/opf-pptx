@@ -85,6 +85,58 @@ const roundTrip = async slide => {
   assert.equal(slide.blocks, undefined);
 }
 
+// Root shorthand with several payloads composes one item per field: each returns as its own root field (F3).
+{
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const chart = {type: 'column', data: {columns: ['a', 'b'], rows: [['x', 1], ['y', 2]]}};
+  for (const [name, source] of Object.entries({'text and chart': {text: 'Body', chart}, 'text and image': {text: 'Body', image: {src: png, alt: 'Dot'}}, 'three payloads': {text: 'Body', chart, items: ['one', 'two']}})) {
+    const {slide, provenance, record} = await roundTrip(source);
+    assert.deepEqual(provenance, [], name);
+    assert.equal(record.content.form, 'root', name);
+    assert.deepEqual(record.content.fields.map(item => item.field).sort(), Object.keys(source).sort(), name);
+    assert.ok(record.content.fields.every(item => Array.isArray(item.box)), name);
+    assert.equal(slide.blocks, undefined, name);
+    assert.equal(slide.text, 'Body', name);
+    if (source.chart) assert.deepEqual(words(slide.chart).data, chart.data, name);
+    if (source.image) assert.deepEqual(slide.image, source.image, name);
+    if (source.items) assert.deepEqual(slide.items.map(item => item[0].text), ['one', 'two'], name);
+  }
+}
+
+// A root `bullets` payload takes its key back (the importer names every list `items`), typed or not (F5).
+{
+  const typed = await roundTrip({type: 'text', bullets: ['one', 'two']});
+  assert.deepEqual(typed.provenance, []);
+  assert.equal(typed.slide.type, 'text');
+  assert.deepEqual(typed.slide.bullets.map(item => item[0].text), ['one', 'two']);
+  assert.equal(typed.slide.items, undefined);
+  const untyped = await roundTrip({bullets: ['one', 'two']});
+  assert.deepEqual(untyped.provenance, []);
+  assert.deepEqual(untyped.slide.bullets.map(item => item[0].text), ['one', 'two']);
+  assert.equal(untyped.slide.items, undefined);
+  assert.equal(untyped.slide.type, undefined);
+}
+
+// Ids: any schema string up to 256 characters round-trips (the empty string included);
+// a longer one leaves the topology unstored at export and is rejected at import (F2).
+{
+  const short = await roundTrip({blocks: [{id: '', type: 'text', text: 'A'}, {id: 'x'.repeat(256), type: 'text', text: 'B'}]});
+  assert.deepEqual(short.provenance, []);
+  assert.deepEqual(short.slide.blocks.map(block => block.id), ['', 'x'.repeat(256)]);
+  const issues = [];
+  const long = await toPptx({name: 'Long id', tone: 'formal', slides: [{title: 'Probe', blocks: [{id: 'y'.repeat(300), type: 'text', text: 'A'}, {type: 'text', text: 'B'}]}]}, {...EXPORT, onDiagnostic: issue => issues.push(issue)});
+  const omitted = issues.filter(issue => issue.code === 'document-provenance-omitted');
+  assert.deepEqual(omitted.map(issue => issue.path), ['slides.0.content']);
+  assert.match(omitted[0].message, /blocks\.0\.id is longer than 256 characters/);
+  assert.equal(slideRecord(long).content, undefined);
+  const {deck, provenance} = await read(long);
+  assert.deepEqual(provenance.map(issue => [issue.code, issue.path]), [['document-provenance-omitted', 'slides.0.content']]);
+  assert.equal(deck.tone, 'formal');
+  assert.equal(deck.slides[0].blocks.length, 2);
+  const tampered = modify(short.bytes, entries => text(entries, 'ppt/tags/opfSlide1.xml', xml => retag(xml, value => { value.content.blocks[0].id = 'z'.repeat(257); })));
+  assert.deepEqual((await read(tampered)).provenance.map(issue => [issue.code, issue.path]), [['invalid-document-provenance', 'slides.0']]);
+}
+
 // Edited geometry: a moved object changes the slide's structure, so the stored
 // topology is not applied and the slide keeps its flat blocks (with the
 // existing slide-reference-changed for `type`).

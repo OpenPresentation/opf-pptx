@@ -18,7 +18,7 @@ const read = async (bytes, {filter = /section|provenance|reference/} = {}) => {
 const modify = (bytes, mutate) => { const entries = unzipSync(bytes); mutate(entries); return zipSync(entries); };
 const text = (entries, path, mutate) => { entries[path] = enc.encode(mutate(dec.decode(entries[path]))); };
 const presentation = bytes => dec.decode(unzipSync(bytes)['ppt/presentation.xml']);
-const sections = xml => [parser.parse(xml)['p:presentation']['p:extLst']['p:ext']].flat().find(ext => ext['p14:sectionLst'])['p14:sectionLst']['p14:section']
+const sections = xml => [[parser.parse(xml)['p:presentation']['p:extLst']['p:ext']].flat().find(ext => ext['p14:sectionLst'])['p14:sectionLst']['p14:section']].flat()
   .map(section => ({name: section.name, id: section.id, slides: [section['p14:sldIdLst']['p14:sldId']].flat().map(slide => slide.id)}));
 // Every tag stripped: the closest local stand-in for a deck not made by OPF.
 const stripTags = bytes => modify(bytes, entries => {
@@ -95,6 +95,22 @@ const exported = await toPptx(structuredClone(deck), EXPORT);
   assert.match(renamed.provenance[0].message, /'Intro'.*'Opening'/);
   const stripped = await read(stripTags(bytes));
   assert.deepEqual(stripped.deck.slides.map(slide => slide.section), ['Intro', 'Intro', 'Close']);
+}
+
+// Section names are XML attribute values: the characters text runs reject are
+// rejected with the same diagnostic; tab, LF and CR are written as spaces (an
+// XML reader normalizes them anyway) and compare as spaces, so a re-saved list
+// never disagrees with the authored label (F1).
+{
+  await assert.rejects(toPptx({name: 'Control', slides: [{title: 'One'}, {title: 'Two', section: 'Ctrl\u0001Char'}]}, EXPORT), error => error.code === 'invalid-text' && error.path === 'slides.1.section' && /U\+0001/.test(error.message));
+  await assert.rejects(toPptx({name: 'Surrogate', slides: [{title: 'One', section: 'Lone\uD800'}]}, EXPORT), {code: 'invalid-text'});
+  const bytes = await toPptx({name: 'Whitespace', design: {footer: {left: {section: true}}}, slides: [{title: 'One', section: 'Tab\tand\nline'}, {title: 'Two', section: 'Tab\tand\nline'}]}, EXPORT);
+  const xml = presentation(bytes);
+  assert.equal(XMLValidator.validate(xml), true);
+  assert.deepEqual(sections(xml).map(section => section.name), ['Tab and line']);
+  const {deck, provenance} = await read(bytes);
+  assert.deepEqual(provenance, [], 'a normalized list agrees with the authored label');
+  assert.deepEqual(deck.slides.map(slide => slide.section), ['Tab\tand\nline', 'Tab\tand\nline'], 'the authored label returns');
 }
 
 // Malformed lists count as none; the stored value then returns.

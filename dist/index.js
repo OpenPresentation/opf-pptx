@@ -15,7 +15,7 @@ import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeli
 import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
 import {attachFurnitureTags, furnitureManifest, importFurniture, staticDateFallback} from './furniture-provenance.js';
 import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance} from './document-provenance.js';
-import {nativeSections, writeSectionList} from './sections.js';
+import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './sections.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {importImageOrientation} from './image-import.js';
 import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
@@ -248,7 +248,13 @@ export async function toPptx(input, options = {}) {
   });
   context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic);
   // Slide section labels become PowerPoint's native section list (src/sections.js).
-  context.sections = presentation.slides.map(slide => typeof slide.section === 'string' ? slide.section : undefined);
+  // A label is an XML attribute: the characters text runs reject are rejected here too.
+  context.sections = presentation.slides.map((slide, index) => {
+    if (typeof slide.section !== 'string') return undefined;
+    const invalid = INVALID_XML_CHARACTER.exec(slide.section);
+    if (invalid) throw new OPFPptxError('invalid-text', `Text contains U+${invalid[0].codePointAt(0).toString(16).toUpperCase().padStart(4, '0')} at UTF-16 offset ${invalid.index}, which DrawingML XML cannot represent.`, {path: `slides.${index}.section`});
+    return slide.section;
+  });
   context.masterBackground = masterBackground(context);
   context.linkSentinels = linkSentinels(presentation);
   const pptx = new PptxGenJS();

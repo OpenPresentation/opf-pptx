@@ -23,6 +23,13 @@ const P14 = 'http://schemas.microsoft.com/office/powerpoint/2010/main';
 const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const escape = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// Characters XML 1.0 cannot carry; the same guard the text runs use (invalid-text).
+export const INVALID_XML_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF￾￿]/u;
+// An attribute value is normalized by every XML reader (tab, LF and CR become
+// spaces), so a re-saved list would differ from the authored label. Write the
+// normalized form, and compare labels the same way (`sameSectionName`).
+export const normalizeSectionName = value => String(value).replace(/[\t\n\r]/g, ' ');
+export const sameSectionName = (a, b) => normalizeSectionName(a) === normalizeSectionName(b);
 
 // A blank label names no section.
 const named = value => typeof value === 'string' && value.trim() !== '';
@@ -58,7 +65,11 @@ export function writeSectionList(presentationXml, sections) {
   const ids = [...presentationXml.matchAll(/<p:sldId\b[^>]*\bid="(\d+)"/g)].map(match => match[1]);
   if (ids.length !== sections.length) throw Error('Generated slide id count differs from the document.');
   if (/<p14:sectionLst\b/.test(presentationXml)) throw Error('Generated presentation already has a section list.');
-  const list = sectionRuns(sections).map((run, index) =>
+  for (const [index, name] of sections.entries()) {
+    const invalid = named(name) ? INVALID_XML_CHARACTER.exec(name) : null;
+    if (invalid) throw Error(`slides.${index}.section contains U+${invalid[0].codePointAt(0).toString(16).toUpperCase().padStart(4, '0')} at UTF-16 offset ${invalid.index}, which PresentationML XML cannot represent.`);
+  }
+  const list = sectionRuns(sections.map(name => named(name) ? normalizeSectionName(name) : name)).map((run, index) =>
     `<p14:section name="${escape(run.name)}" id="${sectionId(index, run.name)}"><p14:sldIdLst>${run.slides.map(slide => `<p14:sldId id="${ids[slide]}"/>`).join('')}</p14:sldIdLst></p14:section>`).join('');
   const ext = `<p:ext uri="${SECTION_EXT_URI}"><p14:sectionLst xmlns:p14="${P14}">${list}</p14:sectionLst></p:ext>`;
   // CT_Presentation: extLst is the last child. Join an existing list, else add one.

@@ -614,8 +614,8 @@
       ]
     },
     "world-category": {
-      "sha256": "266ecaf8d231774a440c0d3f861f121b24555585a2c390cb6b8a4999134e544b",
-      "bytes": 24138,
+      "sha256": "b75f929dc9fca7f3db910de53e07d30a1afb5665fb75eac7023c1f361c843398",
+      "bytes": 24168,
       "diagnostics": [
         "chart-data-adapted/chartex-fallback"
       ]

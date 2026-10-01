@@ -84,6 +84,45 @@ const SLIDE_STRUCTURE = ['layout', 'type', 'composition'];
 const SLIDE_METADATA = ['section', 'extensions'];
 const DESIGN_FIELDS = [...DESIGN_REFERENCES, ...COMPOSITION_HINTS, ...BRAND_ASSETS];
 const SLIDE_DESIGN_FIELDS = [...STYLE_REFERENCES, 'background', ...COMPOSITION_HINTS, ...BRAND_ASSETS];
+// Importers up to 0.11.6 reject a document tag whose `design` or `metadata`
+// holds a key they do not know (the whole tag is then dropped), and a slide tag
+// whose `design` does. Keys added since are written under `supplement`, a
+// top-level container those importers ignore, and merged back on read. Add
+// every new design or metadata key here, never to the legacy sections.
+const DOCUMENT_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS, metadata: Object.freeze(['filename', 'extensions'])});
+const SLIDE_SUPPLEMENT = Object.freeze({design: BRAND_ASSETS});
+
+// Storage shape: move the supplement keys out of the legacy sections.
+function toStoredShape(record, spec) {
+  const result = {...record};
+  const supplement = {};
+  for (const [section, keys] of Object.entries(spec)) {
+    if (!object(result[section])) continue;
+    const kept = {}, moved = {};
+    for (const [key, value] of Object.entries(result[section])) (keys.includes(key) ? moved : kept)[key] = value;
+    if (Object.keys(moved).length) supplement[section] = moved;
+    if (Object.keys(kept).length) result[section] = kept; else delete result[section];
+  }
+  if (Object.keys(supplement).length) result.supplement = supplement;
+  return result;
+}
+
+// Read shape: validate the container and merge it back; a legacy section
+// must not carry a supplement key (an old importer would reject the tag).
+function fromStoredShape(value, spec) {
+  if (value.supplement === undefined) return value;
+  if (!object(value.supplement)) throw Error('Invalid supplement record.');
+  const result = {...value};
+  delete result.supplement;
+  for (const [section, fields] of Object.entries(value.supplement)) {
+    const keys = spec[section];
+    if (!keys || !object(fields)) throw Error(`Invalid supplement section ${section}.`);
+    for (const key of Object.keys(fields)) if (!keys.includes(key)) throw Error(`Unknown supplement field ${section}.${key}.`);
+    if (result[section] !== undefined && !object(result[section])) throw Error(`Invalid ${section} record.`);
+    result[section] = {...(result[section] ?? {}), ...fields};
+  }
+  return result;
+}
 
 // 53-bit non-cryptographic hash (cyrb53). Change detection only; tags are
 // writable by anyone who can edit the file, so no authenticity is claimed.
@@ -406,8 +445,8 @@ export function documentProvenance(presentation, {mode = 'full', isCatalogId = (
  */
 export function recordContentTopology(provenance, slide, index, items) {
   if (!provenance || provenance.mode !== 'full' || !provenance.slides[index]) return;
-  const topology = contentTopology(slide, items, index, reason => provenance.report({code: 'document-provenance-omitted', path: `slides.${index}.content`,
-    message: `slides.${index}.content is not stored in the PPTX because ${reason}; reimport keeps the flat blocks observed in the PPTX instead.`}));
+  // An unstorable structure is reported with the other omissions (storable) and recorded in the tag.
+  const topology = contentTopology(slide, items, index, reason => { provenance.slides[index].omittedContent = reason; });
   if (topology) provenance.slides[index].content = topology;
 }
 
@@ -510,6 +549,7 @@ function storable(entries, provenance) {
   }
   const slides = provenance.slides.map((record, index) => {
     const result = {v: 1, slide: index};
+    if (record.omittedContent) omit(`slides.${index}.content`, record.omittedContent);
     for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content']) {
       if (record[key] === undefined) continue;
       const value = prepare(`slides.${index}.${key}`, record[key]);
@@ -579,7 +619,7 @@ export function attachDocumentProvenance(entries, provenance) {
   if (paths.length !== provenance.slides.length) throw Error('Generated slide count differs from the document.');
   const prepared = storable(entries, provenance);
   const types = [];
-  const document = {...prepared.document, native: nativeDocument(entries, presentationRoot, rels)};
+  const document = toStoredShape({...prepared.document, native: nativeDocument(entries, presentationRoot, rels)}, DOCUMENT_SUPPLEMENT);
 
   // CT_Presentation: custDataLst follows photoAlbum and precedes kinsoku/defaultTextStyle/modifyVerifier/extLst.
   const documentPart = 'ppt/tags/opfDocument.xml';
@@ -594,7 +634,7 @@ export function attachDocumentProvenance(entries, provenance) {
   types.push(documentPart);
 
   for (const [index, path] of paths.entries()) {
-    const record = {...prepared.slides[index], native: nativeSlide(entries, path)};
+    const record = toStoredShape({...prepared.slides[index], native: nativeSlide(entries, path)}, SLIDE_SUPPLEMENT);
     const tag = `<p:tag name="${SLIDE_TAG}" val="${encodeTextTag(record)}"/>`;
     let xml = dec.decode(entries[path]);
     const slideRels = relsPath(path);
@@ -643,9 +683,11 @@ function validateOmitted(value) {
   if (value !== undefined && (!Array.isArray(value) || value.length > MAX_OMITTED || !value.every(path => typeof path === 'string' && /^[A-Za-z0-9_.:+-]{1,256}$/.test(path)))) throw Error('Invalid omitted field list.');
 }
 
-function validateDocument(value) {
-  if (!object(value) || value.v !== 1 || !Number.isSafeInteger(value.slides) || value.slides < 1) throw Error('Unsupported document provenance version.');
+function validateDocument(stored) {
+  if (!object(stored) || stored.v !== 1 || !Number.isSafeInteger(stored.slides) || stored.slides < 1) throw Error('Unsupported document provenance version.');
+  const value = fromStoredShape(stored, DOCUMENT_SUPPLEMENT);
   for (const key of ['design', 'metadata', 'catalogs', 'assets']) if (value[key] !== undefined && !object(value[key])) throw Error(`Invalid ${key} record.`);
+  for (const [section, keys] of Object.entries(DOCUMENT_SUPPLEMENT)) for (const key of keys) if (object(stored[section]) && stored[section][key] !== undefined) throw Error(`Supplement field ${section}.${key} stored in the legacy section.`);
   if (!object(value.native)) throw Error('Missing native evidence.');
   for (const key of Object.keys(value.design ?? {})) if (!DESIGN_FIELDS.includes(key)) throw Error(`Unknown design field ${key}.`);
   for (const key of Object.keys(value.metadata ?? {})) if (!METADATA.includes(key)) throw Error(`Unknown metadata field ${key}.`);
@@ -655,10 +697,12 @@ function validateDocument(value) {
   return value;
 }
 
-function validateSlide(value) {
-  if (!object(value) || value.v !== 1 || !Number.isSafeInteger(value.slide) || value.slide < 0) throw Error('Unsupported slide provenance version.');
-  if (!object(value.native) || typeof value.native.structure !== 'string' || typeof value.native.background !== 'string' || typeof value.native.style !== 'string') throw Error('Missing slide native evidence.');
-  if (value.design !== undefined && !object(value.design)) throw Error('Invalid slide design record.');
+function validateSlide(stored) {
+  if (!object(stored) || stored.v !== 1 || !Number.isSafeInteger(stored.slide) || stored.slide < 0) throw Error('Unsupported slide provenance version.');
+  if (!object(stored.native) || typeof stored.native.structure !== 'string' || typeof stored.native.background !== 'string' || typeof stored.native.style !== 'string') throw Error('Missing slide native evidence.');
+  if (stored.design !== undefined && !object(stored.design)) throw Error('Invalid slide design record.');
+  for (const key of SLIDE_SUPPLEMENT.design) if (object(stored.design) && stored.design[key] !== undefined) throw Error(`Supplement field design.${key} stored in the legacy section.`);
+  const value = fromStoredShape(stored, SLIDE_SUPPLEMENT);
   for (const key of Object.keys(value.design ?? {})) if (!SLIDE_DESIGN_FIELDS.includes(key)) throw Error(`Unknown slide design field ${key}.`);
   if (value.layoutRecord !== undefined && (!object(value.layoutRecord) || typeof value.layoutRecord.id !== 'string')) throw Error('Invalid slide layout record.');
   if (value.section !== undefined && typeof value.section !== 'string') throw Error('Invalid slide section record.');
@@ -791,8 +835,11 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
   // the list still equals the stored value and the footer text differs: then
   // the footer was edited and its text is kept, as before. Without a list the
   // stored value is the fallback for a slide whose footer shows none.
+  // Labels compare the way the native list stores them: tab, LF and CR are
+  // spaces in an XML attribute, and a blank label is no section.
   const blank = value => typeof value !== 'string' || value.trim() === '';
-  const sameSection = (a, b) => (blank(a) ? '' : a) === (blank(b) ? '' : b);
+  const normalized = value => blank(value) ? '' : value.replace(/[\t\n\r]/g, ' ');
+  const sameSection = (a, b) => normalized(a) === normalized(b);
   const reconcileSection = (index, stored) => {
     const shown = imported.slides[index]?.section;
     if (!nativeSections) {

@@ -14,7 +14,8 @@
 //
 // Record (stored as `content` in OPF_SLIDE_V1, `full` mode only):
 //
-//   Topology = {form: 'root', field, box?}                 // root payload on the slide
+//   Topology = {form: 'root', field, box?}                 // one root payload on the slide
+//            | {form: 'root', fields: [{field, box?}]}     // root shorthand with several payloads
 //            | {form: 'blocks', blocks: Node[]}
 //            | {form: 'regions', regions: {[key]: Node}}   // key = promoted region key
 //   Node     = {t: 'group', id?, ext?, comp?, typed?, blocks: Node[]}
@@ -38,7 +39,9 @@ const REGION_KEY_SET = new Set(REGION_KEYS);
 // are valid OPF but are not stored; the slide then imports as flat blocks.
 export const MAX_GROUP_DEPTH = 3;
 export const MAX_NODES = 256;
-const MAX_ID_LENGTH = 256;
+// Ids are any schema string up to this length (the empty string included); a
+// longer id leaves the slide's topology unstored, and import rejects it the same way.
+export const MAX_ID_LENGTH = 256;
 // Native bounds may sit this far outside a stored leaf box (reference px).
 export const BOX_TOLERANCE = 3;
 
@@ -76,8 +79,11 @@ export function contentTopology(slide, items, slideIndex, report = () => {}) {
     }
     return undefined;
   };
-  const identity = (block, node) => {
-    if (typeof block.id === 'string') node.id = block.id;
+  const identity = (block, node, path) => {
+    if (typeof block.id === 'string') {
+      if (block.id.length > MAX_ID_LENGTH) fail(`${path}.id is longer than ${MAX_ID_LENGTH} characters`);
+      node.id = block.id;
+    }
     if (object(block.extensions)) node.ext = clone(block.extensions);
     if (typeof block.type === 'string') node.typed = true;
     return node;
@@ -87,14 +93,14 @@ export function contentTopology(slide, items, slideIndex, report = () => {}) {
     if (++nodes > MAX_NODES) fail(`the slide has more than ${MAX_NODES} content nodes`);
     if (isGroup(block)) {
       if (depth >= MAX_GROUP_DEPTH) fail(`groups nest deeper than ${MAX_GROUP_DEPTH} levels`);
-      const group = identity(block, {t: 'group'});
+      const group = identity(block, {t: 'group'}, path);
       if (object(block.composition)) group.comp = clone(block.composition);
       group.blocks = (Array.isArray(block.blocks) ? block.blocks : []).map((child, index) => node(child, `${path}.blocks.${index}`, depth + 1));
       return group;
     }
     const kind = blockKind(block);
     if (!kind) fail(`${path} has no known content payload`);
-    const leaf = identity(block, {t: 'leaf', k: kind});
+    const leaf = identity(block, {t: 'leaf', k: kind}, path);
     const box = leafBox(path);
     if (box) leaf.box = box;
     return leaf;
@@ -107,12 +113,15 @@ export function contentTopology(slide, items, slideIndex, report = () => {}) {
       if (!slide.blocks.length) return undefined;
       return {form: 'blocks', blocks: slide.blocks.map((block, index) => node(block, `${base}.blocks.${index}`, 0))};
     }
-    const field = ROOT_PAYLOAD_FIELDS.find(name => slide[name] !== undefined);
-    if (!field) return undefined;
-    const root = {form: 'root', field};
-    const box = leafBox(base);
-    if (box) root.box = box;
-    return root;
+    // Root shorthand: one payload is the common case; several payload fields
+    // on one slide compose as one item each (`slides.N.<field>`).
+    const fields = ROOT_PAYLOAD_FIELDS.filter(name => slide[name] !== undefined).map(field => {
+      const box = boxes.get(`${base}.${field}`);
+      return box ? {field, box: [box.x, box.y, box.width, box.height].map(round1)} : {field};
+    });
+    if (!fields.length) return undefined;
+    if (fields.length === 1) return {form: 'root', ...fields[0]};
+    return {form: 'root', fields};
   } catch (error) {
     if (!(error instanceof TopologyError)) throw error;
     report(error.message);
@@ -126,7 +135,10 @@ class TopologyError extends Error {}
 // Import: validation
 
 const validBox = value => value === undefined || (Array.isArray(value) && value.length === 4 && value.every(number => typeof number === 'number' && Number.isFinite(number) && Math.abs(number) < 1e7));
-const validId = value => value === undefined || (typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH);
+const validId = value => value === undefined || (typeof value === 'string' && value.length <= MAX_ID_LENGTH);
+const validField = value => object(value) && ROOT_PAYLOAD_FIELDS.includes(value.field) && validBox(value.box);
+/** The root payload leaves of a root-form record: [{field, box?}]. */
+export const rootFields = topology => topology.fields ?? [{field: topology.field, box: topology.box}];
 
 /** Throws when `value` is not a well-formed topology record. Returns it otherwise. */
 export function validateTopology(value) {
@@ -151,10 +163,17 @@ export function validateTopology(value) {
     if (!validBox(item.box)) throw Error('Invalid content box.');
   };
   switch (value.form) {
-    case 'root':
+    case 'root': {
+      if (value.fields !== undefined) {
+        if (value.field !== undefined || value.box !== undefined) throw Error('Invalid root payload record.');
+        if (!Array.isArray(value.fields) || !value.fields.length || value.fields.length > ROOT_PAYLOAD_FIELDS.length || !value.fields.every(validField)) throw Error('Invalid root payload fields.');
+        if (new Set(value.fields.map(item => item.field)).size !== value.fields.length) throw Error('Repeated root payload field.');
+        return value;
+      }
       if (!ROOT_PAYLOAD_FIELDS.includes(value.field)) throw Error('Unknown root payload field.');
       if (!validBox(value.box)) throw Error('Invalid content box.');
       return value;
+    }
     case 'blocks':
       if (!Array.isArray(value.blocks) || !value.blocks.length) throw Error('Invalid content blocks.');
       for (const child of value.blocks) node(child, 0);
@@ -198,7 +217,7 @@ export function rebuildContent(topology, blocks, bounds) {
     if (item.t === 'group') { for (const child of item.blocks) collect(child); return; }
     leaves.push({node: item, kind: item.k, box: item.box, matches: []});
   };
-  if (topology.form === 'root') leaves.push({node: topology, kind: kindOfField(topology.field), box: topology.box, matches: []});
+  if (topology.form === 'root') for (const item of rootFields(topology)) leaves.push({node: item, field: item.field, kind: kindOfField(item.field), box: item.box, matches: []});
   else if (topology.form === 'blocks') topology.blocks.forEach(collect);
   else Object.values(topology.regions).forEach(collect);
   const kindOf = block => blockKind(block) ?? 'text';
@@ -252,12 +271,15 @@ export function rebuildContent(topology, blocks, bounds) {
   };
   const fields = {blocks: null};
   if (topology.form === 'root') {
-    const payload = payloadOf(leaves[0]);
-    if (payload === undefined) return {fields, ids};
-    // The imported block names its payload by the imported field (`items` for
-    // any list, so an authored `bullets` list returns as `items`).
-    const {type: _type, ...rest} = payload;
-    Object.assign(fields, rest);
+    for (const leaf of leaves) {
+      const payload = payloadOf(leaf);
+      if (payload === undefined) continue;
+      // The slide `type` is restored separately; the imported block names any
+      // list by `items`, so an authored `bullets` payload takes its key back.
+      const {type: _type, ...rest} = payload;
+      if (leaf.field === 'bullets' && rest.items !== undefined && rest.bullets === undefined) { rest.bullets = rest.items; delete rest.items; }
+      Object.assign(fields, rest);
+    }
     return {fields, ids};
   }
   if (topology.form === 'blocks') {
