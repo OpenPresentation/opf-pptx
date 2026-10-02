@@ -48,8 +48,8 @@ jobs:
           repository: OpenPresentation/opf-render
           # opf-render 0.11.8 release commit (the tag draws in the primary colour, as opf-pptx writes it).
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
-          # RR-33: opf-render 0.11.9 plus the numbered-list marker commit of opf-render#99 (a pre-#88 renderer: render main draws SVG pictures, which test/svg-image-degrade.mjs here does not expect yet; a separate change fixes that). Repin to the render merge commit once #99 merges.
-          ref: b654ffde859a3f1fc85f008718a73473c7d4e64e # opf-render codex/rr-05-pptx-ecosystem (the RR-33 pre-RR-10 renderer plus RR-05 right-to-left drawing)
+          # RR-10: opf-render main be9cc47 (opf-render#107 e47aba4, which makes the preview show the placeholder for every malformed or unsafe SVG that test/svg-image-degrade.mjs uses, plus the numbered-list markers of opf-render#99 that RR-33 here needs).
+          ref: 82733043177060ef5ed6536dc27a6328ffe44ed1 # opf-render codex/rr-05-rtl-layout (render main be9cc47 plus RR-05 right-to-left drawing)
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
