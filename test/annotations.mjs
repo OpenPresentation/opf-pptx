@@ -55,6 +55,13 @@ for (const options of [{}, {textMeasurement: fonts.textMeasurement}]) {
   assert.deepEqual(markerRuns(xml(0)), ['1', '1,2', '3']);
   assert.deepEqual(markerRuns(xml(2)), ['2']);
   ok(!/baseline="30000"/.test(xml(1)) && !/baseline="30000"/.test(xml(3)), 'slides without markers have no superscript runs');
+  // Native check 2026-10-01 (PowerPoint 365 probe): a superscript run draws at 2/3 of its sz, so the marker is written at the size of the
+  // run it marks (a user ticking Superscript) with baseline 30000 and no extra size reduction.
+  {
+    const runs = [...xml(0).matchAll(/<a:r><a:rPr\b([^>]*)>[\s\S]*?<a:t>([^<]*)<\/a:t><\/a:r>/g)].map(match => ({sz: match[1].match(/\bsz="(\d+)"/)?.[1], sup: /baseline="30000"/.test(match[1])}));
+    const pairs = runs.map((run, index) => run.sup ? [runs[index - 1], run] : undefined).filter(Boolean);
+    ok(pairs.length === 3 && pairs.every(([before, marker]) => before && before.sz === marker.sz), 'marker runs carry the size of the run they mark');
+  }
 
   // Footnote area: rule plus one tagged text box per entry at core's boxes, above the footer placeholders.
   const core0 = geometry(0), native0 = shapes(xml(0));

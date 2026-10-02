@@ -2,7 +2,7 @@
 // (`item.caption`, `geometry.footnotes`); this module writes one editable native text box per
 // fitted line at those boxes, like every other measured text shape, and records the shape tags
 // (OPF_CAPTION_V1, OPF_FOOTNOTES_V1) that annotation-provenance.js attaches at packaging and reads
-// back at import. Citation markers need nothing here: they are `kind: "marker"` fragments of the
+// back at import. Citation markers need nothing here (a marker fragment carries `nominalSize`, the marked run size, which is what is written with baseline 30000; PowerPoint draws it at 2/3, measured 2026-10-01): they are `kind: "marker"` fragments of the
 // rich-text fits and export through the ordinary rich-run path as superscript runs.
 
 export const CAPTION_TAG = 'OPF_CAPTION_V1';
@@ -34,9 +34,9 @@ export function addFitLines(slide, value, fit, box, context, helpers, {objectNam
     fit.richLines.forEach((line, index) => {
       const runs = line.fragments.map(fragment => {
         const runColor = helpers.exportColor(fragment.run.color, context, lineColor), native = helpers.nativeColor(fragment.run.color, runColor, context, lineColor);
-        return {text: fragment.text, options: {...helpers.nativeFontOptions(fragment.style), fontSize: fragment.fontSize * .75, color: native,
+        return {text: fragment.text, options: {...helpers.nativeFontOptions(fragment.style), fontSize: (fragment.nominalSize ?? fragment.fontSize) * .75, color: native,
           underline: fragment.run.underline ? {style: 'sng', color: native} : undefined, strike: fragment.run.strikethrough ? 'sngStrike' : undefined,
-          baseline: fragment.baselineShift ? -fragment.baselineShift / fragment.fontSize * 2000 : undefined,
+          baseline: fragment.baselineShift ? -fragment.baselineShift / (fragment.nominalSize ?? fragment.fontSize) * 2000 : undefined,
           hyperlink: fragment.kind !== 'marker' && fragment.run.link && /^(https?:|mailto:)/i.test(fragment.run.link) ? {url: fragment.run.link} : undefined}};
       });
       if (!runs.length) runs.push({text: '', options: {}});
