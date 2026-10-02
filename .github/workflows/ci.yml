@@ -40,7 +40,7 @@ jobs:
           # Core main 07cd9d4 (published 0.11.4 plus the renderer 0.11.9 lazy font count opf#234 and the ecosystem repin opf#235; core 0.11.3 plus opf#229 design fields, opf#230 cover alignment, opf#231 and opf#232 picture-bullet size and furniture alignment; the combined core that ships as 0.11.4). Lockstep: the PPTX floor moves to 0.11.4.
           # RR-16 (opf#247) and RR-29 (opf#270) merged: core main 395e4c1 carries both (composed font sizes on the 0.01 pt grid, promoted regions in reading order, chartPaletteForFill).
           # RR-34: core PR opf#269 head (core main plus footnotes, citations and captions); repin to its merge commit once merged.
-          ref: 4db3f00371aae5ed69cc6db04a6bd0c07f49330d
+          ref: d6f4a9d2fca837bf7354d58a15dbe2807e9316dd
           path: opf
           fetch-depth: 0
           persist-credentials: false
@@ -51,7 +51,7 @@ jobs:
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
           # RR-10: opf-render main be9cc47 (opf-render#107 e47aba4, which makes the preview show the placeholder for every malformed or unsafe SVG that test/svg-image-degrade.mjs uses, plus the numbered-list markers of opf-render#99 that RR-33 here needs).
           # RR-34: opf-render PR #104 head (render main plus the footnote, caption and marker drawing); repin to the render merge commit once #104 merges.
-          ref: 73b704a54b649acf5e7a14ca80ad6c48c5d8d55e
+          ref: 27fb81489d90bd422ecbcab70b0e2c75ae748494
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
