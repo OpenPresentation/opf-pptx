@@ -38,8 +38,9 @@ jobs:
           repository: OpenPresentation/opf
           # Core main 1228351 (core 0.11.3 plus the recorded renderer 0.11.8 lazy font count and the FF-56 evidence, opf#222) plus opf#231 (lane scripts accept the root payload form that content topology restores, opf-pptx#122); the published core this release requires is ^0.11.3.
           # Core main 07cd9d4 (published 0.11.4 plus the renderer 0.11.9 lazy font count opf#234 and the ecosystem repin opf#235; core 0.11.3 plus opf#229 design fields, opf#230 cover alignment, opf#231 and opf#232 picture-bullet size and furniture alignment; the combined core that ships as 0.11.4). Lockstep: the PPTX floor moves to 0.11.4.
-          # RR-34 pins core PR opf#269 head (core main plus footnotes, citations and captions); repin to its merge commit once merged.
-          ref: b2d6838c2607503b2f08b105a635c00cc7ee23ac
+          # RR-16 (opf#247) and RR-29 (opf#270) merged: core main 395e4c1 carries both (composed font sizes on the 0.01 pt grid, promoted regions in reading order, chartPaletteForFill).
+          # RR-34: core PR opf#269 head (core main plus footnotes, citations and captions); repin to its merge commit once merged.
+          ref: 4db3f00371aae5ed69cc6db04a6bd0c07f49330d
           path: opf
           fetch-depth: 0
           persist-credentials: false
@@ -48,8 +49,9 @@ jobs:
           repository: OpenPresentation/opf-render
           # opf-render 0.11.8 release commit (the tag draws in the primary colour, as opf-pptx writes it).
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
-          # RR-34 pins opf-render PR #104 head (renderer main plus the marker, footnote area and caption drawing). Render main draws SVG pictures, which test/svg-image-degrade.mjs here does not expect yet (a separate change fixes that); repin once #104 merges.
-          ref: 86939bd931102a0824199351cab904b0484a0a46
+          # RR-33: opf-render 0.11.9 plus the numbered-list marker commit of opf-render#99 (a pre-#88 renderer: render main draws SVG pictures, which test/svg-image-degrade.mjs here does not expect yet; a separate change fixes that). Repin to the render merge commit once #99 merges.
+          # RR-34: opf-render PR #104 head (render main, with the SVG placeholder fix, plus the footnote, caption and marker drawing); repin to the render merge commit once #104 merges.
+          ref: 4534cbe92768265ba0938ed1775cd66cdd7330c9
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
