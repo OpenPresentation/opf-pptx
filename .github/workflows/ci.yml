@@ -50,7 +50,7 @@ jobs:
           # opf-render 0.11.8 release commit (the tag draws in the primary colour, as opf-pptx writes it).
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
           # RR-10: opf-render PR #107 head (render main c079822.. plus RR-16, RR-23, RR-28, RR-29 and the SVG image checks that make the preview show the placeholder for every malformed or unsafe SVG test/svg-image-degrade.mjs uses). Repin to render main once opf-render#107 merges (never leave it on an unmerged head).
-          ref: 1e35dd636ede2e80daa00652c0d960691f520f66
+          ref: 79332c62435914e65de11bb24f5e6715774d9e22
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
