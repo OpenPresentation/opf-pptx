@@ -51,7 +51,7 @@ jobs:
           # opf-render 0.11.9 release commit 2fbc0ab (opf-render#83 and #85: draws the same logos, picture bullets and accent font on the combined core).
           # RR-10: opf-render main be9cc47 (opf-render#107 e47aba4, which makes the preview show the placeholder for every malformed or unsafe SVG that test/svg-image-degrade.mjs uses, plus the numbered-list markers of opf-render#99 that RR-33 here needs).
           # RR-34: opf-render PR #104 head (render main plus the footnote, caption and marker drawing); repin to the render merge commit once #104 merges.
-          ref: 27fb81489d90bd422ecbcab70b0e2c75ae748494
+          ref: 7b7ed48471d807c9cbbfb773dd8adf9b53484c09
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
