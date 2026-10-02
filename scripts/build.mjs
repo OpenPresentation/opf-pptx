@@ -16,6 +16,8 @@ await copyFile(new URL('src/text-provenance.js', root), new URL('text-provenance
 await copyFile(new URL('src/timeline-provenance.js', root), new URL('timeline-provenance.js', dist));
 await copyFile(new URL('src/quote-provenance.js', root), new URL('quote-provenance.js', dist));
 await copyFile(new URL('src/furniture-provenance.js', root), new URL('furniture-provenance.js', dist));
+await copyFile(new URL('src/annotation-export.js', root), new URL('annotation-export.js', dist));
+await copyFile(new URL('src/annotation-provenance.js', root), new URL('annotation-provenance.js', dist));
 await copyFile(new URL('src/document-provenance.js', root), new URL('document-provenance.js', dist));
 await copyFile(new URL('src/content-topology.js', root), new URL('content-topology.js', dist));
 await copyFile(new URL('src/run-colors.js', root), new URL('run-colors.js', dist));
@@ -25,6 +27,7 @@ await copyFile(new URL('src/native-furniture.js', root), new URL('native-furnitu
 await copyFile(new URL('src/chart-workbook.js', root), new URL('chart-workbook.js', dist));
 await copyFile(new URL('src/chart-types.js', root), new URL('chart-types.js', dist));
 await copyFile(new URL('src/chartex.js', root), new URL('chartex.js', dist));
+await copyFile(new URL('src/chart-options.js', root), new URL('chart-options.js', dist));
 await copyFile(new URL("src/index.d.ts", root), new URL("index.d.ts", dist));
 await copyFile(new URL("src/image-geometry.js", root), new URL("image-geometry.js", dist));
 await copyFile(new URL('src/slide-image-provenance.js', root), new URL('slide-image-provenance.js', dist));
