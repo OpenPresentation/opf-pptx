@@ -2095,6 +2095,11 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     }
   }
   const percent = chartData.spec.grouping === 'percentStacked';
+  // RR-36: a series has one colour, as the preview draws it (opf-render paints series j with palette colour j; only pie,
+  // doughnut and treemap slices take a colour per category). PptxGenJS writes a c:dPt per point, cycling the palette, for a
+  // bar chart with one series whenever chartColors is a custom array of more than one colour, so PowerPoint drew each
+  // column of a single-series column or bar chart in a different colour. One colour for that series writes no c:dPt.
+  const chartColors = chartData.type === 'bar' && chartData.series.length === 1 ? palette.slice(0, 1) : palette;
   slide.addChart(chartData.type, chartData.series, {
     objectName,
     x: region.x,
@@ -2104,7 +2109,7 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     showLegend: circular || chartData.series.length > (chartData.type === 'scatter' ? 2 : 1),
     ...classicChartOptions(chartOptions, {labelColor, font: context.fonts.body, textSize}),
     showTitle: false,
-    chartColors: palette,
+    chartColors,
     chartArea: {fill:{...fill},roundedCorners:false},
     // Paint alpha once in the chart area, rather than stacking two alpha fills.
     plotArea: {fill:{color:null}},
