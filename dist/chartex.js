@@ -153,16 +153,25 @@ export function chartexPointColors(layoutId, values, palette) {
 }
 
 // RR-35: an axis title is the plain text of the axis (CT_AxisTitle: tx, spPr, txPr), after the axis scaling.
-const axisTitle = (value, text) => value ? `<cx:title><cx:tx><cx:txData><cx:v>${escapeXml(value)}</cx:v></cx:txData></cx:tx>${text}</cx:title>` : '';
+// Native check 2026-10-01: PowerPoint empties a title written as cx:txData/cx:v (that form holds a cell formula's cached text, and no
+// cx:f is written), so the title is rich text, the way PowerPoint writes a typed chartex title; the importer reads both forms.
+const axisTitle = (value, text, run) => {
+  if (!value) return '';
+  const face = escapeXml(run.font), size = run.textSize;
+  const props = `sz="${size}" b="0"`;
+  const fill = `<a:solidFill><a:srgbClr val="${run.labelColor}"/></a:solidFill><a:latin typeface="${face}"/><a:ea typeface="${face}"/><a:cs typeface="${face}"/>`;
+  return `<cx:title><cx:tx><cx:rich><a:bodyPr spcFirstLastPara="1" vertOverflow="ellipsis" horzOverflow="overflow" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="ctr" anchorCtr="1"/><a:lstStyle/>` +
+    `<a:p><a:pPr algn="ctr"><a:defRPr ${props}>${fill}</a:defRPr></a:pPr><a:r><a:rPr lang="en-US" ${props}>${fill}</a:rPr><a:t>${escapeXml(value)}</a:t></a:r></a:p></cx:rich></cx:tx></cx:title>`;
+};
 
-function axes(spec, gridColor, text, titles = {}) {
+function axes(spec, gridColor, text, titles = {}, run = {}) {
   if (!spec.axes) return '';
   const gridlines = `<cx:majorGridlines><cx:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="${gridColor}"><a:alpha val="70000"/></a:srgbClr></a:solidFill></a:ln></cx:spPr></cx:majorGridlines>`;
   const gapWidth = {clusteredColumn: '0.06', paretoLine: '0.06', boxWhisker: '1', waterfall: '0.5', funnel: '0.06'}[spec.layoutId] ?? '1';
   // CT_Axis order: scaling, units, majorGridlines, tickLabels, spPr, txPr.
-  const category = `<cx:axis id="0"><cx:catScaling gapWidth="${gapWidth}"/>${axisTitle(titles.category, text)}<cx:tickLabels/>${text}</cx:axis>`;
+  const category = `<cx:axis id="0"><cx:catScaling gapWidth="${gapWidth}"/>${axisTitle(titles.category, text, run)}<cx:tickLabels/>${text}</cx:axis>`;
   if (spec.layoutId === 'funnel') return `${category}<cx:axis id="1" hidden="1"><cx:valScaling/><cx:tickLabels/>${text}</cx:axis>`;
-  const value = `<cx:axis id="1"><cx:valScaling/>${axisTitle(titles.value, text)}${gridlines}<cx:tickLabels/>${text}</cx:axis>`;
+  const value = `<cx:axis id="1"><cx:valScaling/>${axisTitle(titles.value, text, run)}${gridlines}<cx:tickLabels/>${text}</cx:axis>`;
   const percentage = spec.layoutId === 'paretoLine' ? `<cx:axis id="2"><cx:valScaling max="1" min="0"/><cx:units unit="percentage"/><cx:tickLabels/>${text}</cx:axis>` : '';
   return `${category}${value}${percentage}`;
 }
@@ -210,7 +219,7 @@ export function chartexPartXml({spec, series, hasCategories, number, workbookRel
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     `<cx:chartSpace xmlns:a="${NS.a}" xmlns:r="${NS.r}" xmlns:cx="${NS.cx}">` +
     `<cx:chartData><cx:externalData r:id="${workbookRelId}" cx:autoUpdate="0"/>${data}</cx:chartData>` +
-    `<cx:chart><cx:plotArea><cx:plotAreaRegion>${plotted.join('')}</cx:plotAreaRegion>${axes(spec, gridColor, text, options?.axisTitles)}</cx:plotArea>${legend}</cx:chart>` +
+    `<cx:chart><cx:plotArea><cx:plotAreaRegion>${plotted.join('')}</cx:plotAreaRegion>${axes(spec, gridColor, text, options?.axisTitles, {labelColor, font, textSize})}</cx:plotArea>${legend}</cx:chart>` +
     `<cx:spPr>${solidFill(fill.color, alpha)}<a:ln><a:noFill/></a:ln></cx:spPr>${text}` +
     '</cx:chartSpace>';
 }

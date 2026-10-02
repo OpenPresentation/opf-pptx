@@ -216,6 +216,12 @@ const cxFlag = value => value === '1' || value === 'true' || value === true || v
 
 function axisTitleText(axis) {
   const value = axis?.['cx:title'];
+  // Rich text (what PowerPoint writes for a typed title, and what this exporter writes) or cached formula text (cx:txData/cx:v).
+  const rich = value?.['cx:tx']?.['cx:rich'];
+  if (rich) {
+    const typed = asArray(rich['a:p']).map(paragraph => asArray(paragraph['a:r']).map(run => text(run['a:t'])).join('')).join(' ').trim();
+    if (typed) return typed;
+  }
   const v = value?.['cx:tx']?.['cx:txData']?.['cx:v'];
   return v === undefined ? undefined : (text(v).trim() || undefined);
 }

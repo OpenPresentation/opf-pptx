@@ -5,7 +5,7 @@
 // chart without options is unchanged, and (parity) that the preview (opf-render) and the exported chart agree on the legend
 // side, the axis titles and the data label content for the same deck.
 import assert from 'node:assert/strict';
-import {unzipSync} from 'fflate';
+import {unzipSync, zipSync} from 'fflate';
 import {XMLParser} from 'fast-xml-parser';
 import {chartOptionSupport, chartOptionTarget} from '@openpresentation/opf';
 import {renderSvg} from '@openpresentation/opf-render';
@@ -192,8 +192,20 @@ for (const position of ['top', 'bottom', 'left', 'right']) {
   await assertWellFormed(waterfall.parts, 'waterfall');
   assert.ok(waterfall.chartex, 'a chartex part is written');
   const axes = [...waterfall.chartex.matchAll(/<cx:axis id="(\d)">([\s\S]*?)<\/cx:axis>/g)];
-  assert.match(axes.find(axis => axis[1] === '0')[2], /^<cx:catScaling[^>]*\/><cx:title><cx:tx><cx:txData><cx:v>Step<\/cx:v><\/cx:txData><\/cx:tx>[\s\S]*<\/cx:title><cx:tickLabels\/>/);
-  assert.match(axes.find(axis => axis[1] === '1')[2], /^<cx:valScaling\/><cx:title><cx:tx><cx:txData><cx:v>Delta<\/cx:v>/);
+  // Native check 2026-10-01: PowerPoint empties cx:txData/cx:v text without a cx:f formula, so titles are rich text.
+  assert.match(axes.find(axis => axis[1] === '0')[2], /^<cx:catScaling[^>]*\/><cx:title><cx:tx><cx:rich>[\s\S]*<a:t>Step<\/a:t>[\s\S]*<\/cx:rich><\/cx:tx><\/cx:title><cx:tickLabels\/>/);
+  assert.match(axes.find(axis => axis[1] === '1')[2], /^<cx:valScaling\/><cx:title><cx:tx><cx:rich>[\s\S]*<a:t>Delta<\/a:t>/);
+  assert.doesNotMatch(waterfall.chartex, /<cx:txData><cx:v>(Step|Delta)/, 'no title is written as cached formula text');
+  // The importer reads both forms: this exporter's rich text, and txData/cx:v as an earlier build (or Excel) wrote it.
+  {
+    const oldForm = unzipSync(waterfall.bytes);
+    const part = Object.keys(oldForm).find(name => /chartEx1\.xml$/.test(name));
+    const swapped = decoder.decode(oldForm[part]).replace(/<cx:tx><cx:rich>[\s\S]*?<a:t>([^<]*)<\/a:t>[\s\S]*?<\/cx:rich><\/cx:tx>/g, '<cx:tx><cx:txData><cx:v>$1</cx:v></cx:txData></cx:tx>');
+    assert.match(swapped, /<cx:txData><cx:v>Step<\/cx:v>/);
+    oldForm[part] = new TextEncoder().encode(swapped);
+    const back = (await fromPptx(zipSync(oldForm))).slides[0];
+    assert.deepEqual((back.chart ?? back.blocks?.find(block => block.chart)?.chart).axisTitles, {category: 'Step', value: 'Delta'}, 'txData titles import too');
+  }
   assert.match(waterfall.chartex, /<cx:dataLabels pos="inEnd">[\s\S]*<cx:visibility seriesName="0" categoryName="0" value="1"\/><cx:separator>, <\/cx:separator><\/cx:dataLabels>/);
   assert.equal(waterfall.chartex.indexOf('<cx:dataLabels') < waterfall.chartex.indexOf('<cx:dataId'), true, 'dataLabels precede dataId in the series');
   assert.deepEqual(waterfall.imported.axisTitles, {category: 'Step', value: 'Delta'});
