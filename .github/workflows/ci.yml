@@ -41,7 +41,7 @@ jobs:
           # RR-16 (opf#247) and RR-29 (opf#270) merged: core main 395e4c1 carries both (composed font sizes on the 0.01 pt grid, promoted regions in reading order, chartPaletteForFill).
           # RR-35: core main at the opf#266 merge commit (chart options).
           # RR-34: core main (opf#269 merged).
-          ref: 293b5d39db9a5f30dca3e74c9a8e6c9fc0d21e9f # core main (opf#259, RR-05 right-to-left composition, merged)
+          ref: 701ab995ee3f76f73625dc527fdd134c530c65ac # core PR opf#276 head (core main 293b5d3, opf#259 RR-05, plus the Windows timeline ink-check fix); repin to the core merge commit once #276 merges
           path: opf
           fetch-depth: 0
           persist-credentials: false
@@ -53,7 +53,7 @@ jobs:
           # RR-10: opf-render main be9cc47 (opf-render#107 e47aba4, which makes the preview show the placeholder for every malformed or unsafe SVG that test/svg-image-degrade.mjs uses, plus the numbered-list markers of opf-render#99 that RR-33 here needs).
           # RR-35: opf-render PR #100 head (render main plus the chart options preview); repin to the render merge commit once #100 merges.
           # RR-34: opf-render PR #104 head (render main plus the footnote, caption and marker drawing); repin to the render merge commit once #104 merges.
-          ref: da0cc5c4c338afdaeb79aa9262997216e48088de # opf-render codex/rr-05-rtl-layout (render main plus RR-05; repin to the render merge commit)
+          ref: 464ec14e67f1c2ae9f577c3ef6ced1d01149001a # opf-render codex/rr-05-rtl-layout (render main with RR-07 plus RR-05; repin to the render merge commit)
           path: opf-render
           fetch-depth: 0
           persist-credentials: false
