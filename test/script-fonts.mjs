@@ -294,6 +294,41 @@ for (const expected of cases) {
   assert.ok(rtl.includes('rtl-language-mismatch'));
 }
 
+// RR-17 (RR-42 native run): the deck language's own Office script entry names the deck's font. Vietnamese is a Latin-script
+// language with its own `Viet` entry (Office default: Times New Roman / Arial), which PowerPoint applies to vi-VN runs and
+// lists in Presentation.Fonts; it now takes the theme latin family, major in majorFont and minor in minorFont, and every
+// other vendored entry is unchanged. Uyghur (`Uigh`) follows the same rule, taking the complex-script family when the deck
+// selects one. Other languages keep the vendored Viet and Uigh entries.
+{
+  const {languageScriptSupplement} = await import('../src/script-fonts.js');
+  const vietnamese = deck('vietnamese-quoc-ngu', {}, 'Tiếng Việt: Quốc Ngữ');
+  const resolved = resolveScriptFonts(vietnamese);
+  assert.equal(resolved.lang, 'vi-VN');
+  assert.equal(resolved.supplement, undefined, 'core names no supplement for a Latin-script language');
+  const {xml} = await read(vietnamese);
+  const vendored = (await read(deck(undefined))).xml;
+  for (const tag of ['majorFont', 'minorFont']) {
+    const ours = themeFonts(xml, tag), theirs = themeFonts(vendored, tag);
+    assert.equal(ours.script('Viet'), ours.latin, `vietnamese ${tag} Viet names the theme latin family`);
+    assert.equal(ours.script('Viet'), tag === 'majorFont' ? resolved.heading.latin : resolved.body.latin);
+    assert.notEqual(theirs.script('Viet'), ours.latin, `a deck without the language keeps the vendored ${tag} Viet entry`);
+    const strip = block => block.replace(/<a:font script="Viet" typeface="[^"]*"\/>/, '').replace(/<a:(?:latin|ea|cs) typeface="[^"]*"\/>/g, '');
+    assert.equal(strip(ours.block), strip(theirs.block), `vietnamese ${tag}: the other per-script entries are unchanged`);
+  }
+  // Every theme part (the slide master's and the notes master's own theme) carries the rule.
+  for (const [name, part] of Object.entries(xml).filter(([name]) => /^ppt\/theme\/theme\d+\.xml$/.test(name))) {
+    assert.ok(!/<a:font script="Viet" typeface="(?:Arial|Times New Roman)"\/>/.test(part), `${name} keeps no Office Viet default`);
+  }
+  // A Latin deck in another language is unchanged.
+  assert.equal(themeFonts((await read(deck('french'))).xml, 'minorFont').script('Viet'), themeFonts(vendored, 'minorFont').script('Viet'));
+  // The rule itself, including Uyghur (no bundled Uyghur language record, so the resolver output is given directly).
+  const plain = {heading: {latin: 'Aptos Display', complexScript: 'Aptos Display'}, body: {latin: 'Aptos', complexScript: 'Aptos'}, sources: {eastAsian: 'latin', complexScript: 'latin'}};
+  assert.deepEqual(languageScriptSupplement({...plain, lang: 'vi-VN'}), {script: 'Viet', heading: 'Aptos Display', body: 'Aptos'});
+  assert.deepEqual(languageScriptSupplement({...plain, lang: 'ug-CN'}), {script: 'Uigh', heading: 'Aptos Display', body: 'Aptos'});
+  assert.deepEqual(languageScriptSupplement({lang: 'ug-CN', heading: {latin: 'Aptos Display', complexScript: 'Microsoft Uighur'}, body: {latin: 'Aptos', complexScript: 'Microsoft Uighur'}, sources: {eastAsian: 'latin', complexScript: 'language'}}), {script: 'Uigh', heading: 'Microsoft Uighur', body: 'Microsoft Uighur'});
+  for (const lang of ['en-US', 'fr-FR', 'ar-SA', 'vie', 'uga', undefined]) assert.equal(languageScriptSupplement({...plain, lang}), undefined, `${lang}: no language entry`);
+}
+
 // Deterministic: the same document exports the same bytes.
 assert.deepEqual((await read(deck('japanese'))).bytes, (await read(deck('japanese'))).bytes);
 
