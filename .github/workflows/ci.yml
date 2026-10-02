@@ -39,8 +39,8 @@ jobs:
           # Core main 1228351 (core 0.11.3 plus the recorded renderer 0.11.8 lazy font count and the FF-56 evidence, opf#222) plus opf#231 (lane scripts accept the root payload form that content topology restores, opf-pptx#122); the published core this release requires is ^0.11.3.
           # Core main 07cd9d4 (published 0.11.4 plus the renderer 0.11.9 lazy font count opf#234 and the ecosystem repin opf#235; core 0.11.3 plus opf#229 design fields, opf#230 cover alignment, opf#231 and opf#232 picture-bullet size and furniture alignment; the combined core that ships as 0.11.4). Lockstep: the PPTX floor moves to 0.11.4.
           # RR-16 (opf#247) and RR-29 (opf#270) merged: core main 395e4c1 carries both (composed font sizes on the 0.01 pt grid, promoted regions in reading order, chartPaletteForFill).
-          # RR-07 pins core main d382351 (opf#246 merged, then RR-34 and RR-17 wrap: the shared code syntax, metric trend and measured pattern tables).
-          ref: d3823512500d199eb45340bbc450eda6ac028750
+          # RR-07 pins core main c45baae (opf#246 merged plus RR-34), before the RR-17 wrap change opf#260 (d382351): with it core scripts/test-timeline-workflow.mjs fails on Windows at the pinned pptx (a timeline description wraps differently), which the RR-17 pptx work owns; repin to core main once that lands.
+          ref: c45baaec2d6aa9a2f655c4f987a0e8492d34ec56
           path: opf
           fetch-depth: 0
           persist-credentials: false
