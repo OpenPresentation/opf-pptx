@@ -300,7 +300,6 @@ for (const expected of cases) {
 // other vendored entry is unchanged. Uyghur (`Uigh`) follows the same rule, taking the complex-script family when the deck
 // selects one. Other languages keep the vendored Viet and Uigh entries.
 {
-  const {languageScriptSupplement} = await import('../src/script-fonts.js');
   const vietnamese = deck('vietnamese-quoc-ngu', {}, 'Tiếng Việt: Quốc Ngữ');
   const resolved = resolveScriptFonts(vietnamese);
   assert.equal(resolved.lang, 'vi-VN');
@@ -321,12 +320,24 @@ for (const expected of cases) {
   }
   // A Latin deck in another language is unchanged.
   assert.equal(themeFonts((await read(deck('french'))).xml, 'minorFont').script('Viet'), themeFonts(vendored, 'minorFont').script('Viet'));
-  // The rule itself, including Uyghur (no bundled Uyghur language record, so the resolver output is given directly).
-  const plain = {heading: {latin: 'Aptos Display', complexScript: 'Aptos Display'}, body: {latin: 'Aptos', complexScript: 'Aptos'}, sources: {eastAsian: 'latin', complexScript: 'latin'}};
-  assert.deepEqual(languageScriptSupplement({...plain, lang: 'vi-VN'}), {script: 'Viet', heading: 'Aptos Display', body: 'Aptos'});
-  assert.deepEqual(languageScriptSupplement({...plain, lang: 'ug-CN'}), {script: 'Uigh', heading: 'Aptos Display', body: 'Aptos'});
-  assert.deepEqual(languageScriptSupplement({lang: 'ug-CN', heading: {latin: 'Aptos Display', complexScript: 'Microsoft Uighur'}, body: {latin: 'Aptos', complexScript: 'Microsoft Uighur'}, sources: {eastAsian: 'latin', complexScript: 'language'}}), {script: 'Uigh', heading: 'Microsoft Uighur', body: 'Microsoft Uighur'});
-  for (const lang of ['en-US', 'fr-FR', 'ar-SA', 'vie', 'uga', undefined]) assert.equal(languageScriptSupplement({...plain, lang}), undefined, `${lang}: no language entry`);
+  // Uyghur (no bundled record; an inline language record): Arabic script, so core names the Arab supplement when the deck
+  // selects a complex-script font, and the Uigh entry PowerPoint applies to ug-CN runs takes that same family; with no
+  // complex-script font selected, Uigh takes the latin family. Arab follows core's rule as before.
+  const uyghur = fontScheme => ({language: 'uyghur', catalogs: {languages: {records: [{id: 'uyghur', name: 'Uyghur', code: 'UIG', bcp47: 'ug-Arab', ooxmlLang: 'ug-CN', script: 'Arab', direction: 'rtl', ...(fontScheme ? {fontScheme} : {})}]}}, name: 'Uyghur', slides: [{title: 'ئۇيغۇرچە', text: 'Uyghur'}]});
+  for (const [fontScheme, expect] of [['arabic-typesetting', {major: 'Arabic Typesetting', minor: 'Arabic Typesetting', arab: true}], [undefined, {major: 'Aptos Display', minor: 'Aptos', arab: false}]]) {
+    const presentation = uyghur(fontScheme), resolved = resolveScriptFonts(presentation);
+    assert.equal(resolved.lang, 'ug-CN');
+    const {xml: ug} = await read(presentation);
+    const [major, minor] = [themeFonts(ug, 'majorFont'), themeFonts(ug, 'minorFont')];
+    assert.deepEqual([major.script('Uigh'), minor.script('Uigh')], [expect.major, expect.minor], `uyghur (${fontScheme ?? 'no script font'}) Uigh`);
+    if (expect.arab) assert.deepEqual([major.script('Arab'), minor.script('Arab')], [expect.major, expect.minor], 'uyghur keeps core\'s Arab supplement');
+    else assert.deepEqual([major.script('Arab'), minor.script('Arab')], [themeFonts(vendored, 'majorFont').script('Arab'), themeFonts(vendored, 'minorFont').script('Arab')], 'uyghur without a script font keeps the vendored Arab entry');
+  }
+  // Every other language keeps the vendored Viet and Uigh entries (Arabic changes only its own Arab entry).
+  for (const id of ['english-us', 'french', 'arabic', 'japanese']) {
+    const {xml: other} = await read(deck(id));
+    for (const tag of ['majorFont', 'minorFont']) for (const script of ['Viet', 'Uigh']) assert.equal(themeFonts(other, tag).script(script), themeFonts(vendored, tag).script(script), `${id} ${tag} ${script} stays vendored`);
+  }
 }
 
 // Deterministic: the same document exports the same bytes.

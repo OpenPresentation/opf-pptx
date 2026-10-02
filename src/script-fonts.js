@@ -98,7 +98,7 @@ function contentEastAsianFonts(presentation, deck, report) {
 // majorFont, minor latin in minorFont); for Uyghur, the complex-script family when the deck selects one. Entries for
 // other languages stay as vendored.
 const LANGUAGE_SCRIPT_SUPPLEMENTS = [[/^vi(?:-|$)/i, "Viet"], [/^ug(?:-|$)/i, "Uigh"]];
-export function languageScriptSupplement(deck) {
+function languageScriptSupplement(deck) {
   const match = LANGUAGE_SCRIPT_SUPPLEMENTS.find(([tag]) => tag.test(String(deck.lang ?? "")));
   if (!match) return undefined;
   const script = match[1];
@@ -125,8 +125,9 @@ const escapeAttribute = value => String(value).replace(/[&<>"']/g, char => ({"&"
  */
 export function themeScriptFonts(xml, plan) {
   const {heading, body} = plan.deck;
-  const supplement = plan.deck.supplement ?? languageScriptSupplement(plan.deck);
-  for (const [tag, slots, family] of [["majorFont", heading, supplement?.heading], ["minorFont", body, supplement?.body]]) {
+  // Core's supplement (the language's script entry, such as Arab for Uyghur) and the language's own entry (Viet, Uigh).
+  const supplements = [plan.deck.supplement, languageScriptSupplement(plan.deck)].filter((entry, index, all) => entry && all.findIndex(other => other?.script === entry.script) === index);
+  for (const [tag, slots, role] of [["majorFont", heading, "heading"], ["minorFont", body, "body"]]) {
     xml = xml.replace(new RegExp(`<a:${tag}>[\\s\\S]*?</a:${tag}>`), block => {
       for (const [element, slot] of SCRIPT_SLOTS) {
         // FF-05: the East Asian slot always names a font (a script font, a font for the East Asian text, else the latin
@@ -137,7 +138,9 @@ export function themeScriptFonts(xml, plan) {
         const face = escapeAttribute(content ?? slots[slot]);
         block = block.replace(new RegExp(`<a:${element}\\b[^>]*/>`), `<a:${element} typeface="${face}"/>`);
       }
-      if (supplement && family) {
+      for (const supplement of supplements) {
+        const family = supplement[role];
+        if (!family) continue;
         const entry = `<a:font script="${supplement.script}" typeface="${escapeAttribute(family)}"/>`;
         const existing = new RegExp(`<a:font script="${supplement.script}" typeface="[^"]*"/>`);
         block = existing.test(block) ? block.replace(existing, entry) : block.replace(`</a:${tag}>`, `${entry}</a:${tag}>`);
