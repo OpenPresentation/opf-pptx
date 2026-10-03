@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-- RR-50 (repository tooling; no package output changes): CI reads the commits of the other OpenPresentation repositories and the golden baseline from core's bot-owned `ecosystem.lock.json` through `OpenPresentation/opf/.github/actions/ecosystem-refs@main` instead of hand-edited SHA pins.
-
 ## 0.12.2 (2026-10-02)
 
 Patch release: Vietnamese and Uyghur decks list only the deck's fonts (RR-17, the one RR-42 native failure).

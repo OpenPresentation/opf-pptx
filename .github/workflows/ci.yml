@@ -37,6 +37,11 @@ jobs:
       # RR-47: an expired or malformed test/quarantine.json entry fails CI. See test/QUARANTINE.md.
       - name: Check the test quarantine
         run: node --test scripts/quarantine.test.mjs scripts/browser-suites.test.mjs && node scripts/quarantine.mjs check
+      # RR-46: a reminder, never a failure: src/ changed without a changelog fragment (changes/README.md).
+      - name: Changelog fragment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: node scripts/changelog-fragments.mjs warn-missing --base origin/${{ github.base_ref }}
       # RR-50: no hand pins. The commits of the other OpenPresentation repositories (and OPF_GOLDEN_BASELINE, exported to
       # the later steps) come from core's ecosystem.lock.json, written by the roller. A `Depends-On:` trailer in the pull
       # request body tests an unmerged pull request of another repository instead (core docs/ecosystem-development.md).
