@@ -1,0 +1,845 @@
+{
+ "source": {
+  "repository": "OpenPresentation/opf-pptx",
+  "commit": "7c93a1b7813ef976c07115a11189eb111288ec3e",
+  "note": "RR-54: toPptx bytes of chart and table decks that use none of the RR-54 fields (no DataColumn objects, datasets, mapping, source or formats, and only strict-decimal or number chart cells), from main before RR-54. The RR-54 export must keep these bytes exactly. Regenerate only with an owner decision to change the default export."
+ },
+ "entries": {
+  "column": {
+   "deck": {
+    "slides": [
+     {
+      "title": "column chart",
+      "chart": {
+       "type": "column",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "a42bdfcfef810b6c4f805e4b7179d8899053439fb54cc20324f22ac3da60d5fa"
+  },
+  "column-labels": {
+   "deck": {
+    "slides": [
+     {
+      "title": "column chart",
+      "chart": {
+       "type": "column",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       },
+       "dataLabels": true,
+       "axisTitles": {
+        "category": "Quarter",
+        "value": "USD"
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "86d77608763e17532a5ed39dbddd7731d7e2d1f9b1f27b8a8623216bd47d23c8"
+  },
+  "bar": {
+   "deck": {
+    "slides": [
+     {
+      "title": "bar chart",
+      "chart": {
+       "type": "bar",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       },
+       "legend": "bottom"
+      }
+     }
+    ]
+   },
+   "sha256": "cf11f79966bf42b2e9dbed08a297675b27f82a175429463098783899b0e642b4"
+  },
+  "line": {
+   "deck": {
+    "slides": [
+     {
+      "title": "line chart",
+      "chart": {
+       "type": "line",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "54bfa726a5fcbe7794dfa523991d24ca01e79c01f19fc421b1d1153cd1a6b42a"
+  },
+  "area": {
+   "deck": {
+    "slides": [
+     {
+      "title": "area chart",
+      "chart": {
+       "type": "area",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "f4799ed8ab864ea61d3707e5d0406b614cefa6b6613f5f93c9f061cb75626392"
+  },
+  "stacked-column": {
+   "deck": {
+    "slides": [
+     {
+      "title": "stacked-column chart",
+      "chart": {
+       "type": "stacked-column",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "8445eefd9cae5ddc8bf2cca3b347c117d748ee88944be6343943068b977f17b3"
+  },
+  "percent-stacked": {
+   "deck": {
+    "slides": [
+     {
+      "title": "100pct-stacked-column-3x chart",
+      "chart": {
+       "type": "100pct-stacked-column-3x",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "323f869f4ecb68b51ca517aaf4e7180de371a23a07718450a30b93b66a09fdb9"
+  },
+  "pie": {
+   "deck": {
+    "slides": [
+     {
+      "title": "pie chart",
+      "chart": {
+       "type": "pie",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       },
+       "dataLabels": {
+        "content": [
+         "category",
+         "percent"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "4c2e9c716151207a027fb6440b7921a6b65306a2bd1f3ee95a18a81429d8fdce"
+  },
+  "doughnut": {
+   "deck": {
+    "slides": [
+     {
+      "title": "doughnut chart",
+      "chart": {
+       "type": "doughnut",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "01da982b32193bc663ed7b9cd3c6d342789ba481c3dd399f4f5830513ef6fc70"
+  },
+  "radar": {
+   "deck": {
+    "slides": [
+     {
+      "title": "radar chart",
+      "chart": {
+       "type": "radar",
+       "data": {
+        "columns": [
+         "Quarter",
+         "Revenue",
+         "Costs"
+        ],
+        "rows": [
+         [
+          "Q1",
+          12.4,
+          3
+         ],
+         [
+          "Q2",
+          null,
+          "7"
+         ],
+         [
+          "Q3",
+          18,
+          -2.5
+         ],
+         [
+          "Q4",
+          1000000,
+          0
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "886b7840eec03d73ca1e57c3cebe548812f22cd2794492cd0b9bf5bd6e7b1edb"
+  },
+  "scatter": {
+   "deck": {
+    "slides": [
+     {
+      "title": "scatter chart",
+      "chart": {
+       "type": "scatter",
+       "data": {
+        "columns": [
+         "Point",
+         "X",
+         "Y1",
+         "Y2"
+        ],
+        "rows": [
+         [
+          "a",
+          1,
+          2,
+          3
+         ],
+         [
+          "b",
+          2,
+          4,
+          null
+         ],
+         [
+          "c",
+          3.5,
+          "8",
+          1
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "7ebaf5f05505929dcdd04a0574e284efe8f2f2d49a01c305da835d08f04a81ee"
+  },
+  "scatter-two-columns": {
+   "deck": {
+    "slides": [
+     {
+      "title": "scatter chart",
+      "chart": {
+       "type": "scatter",
+       "data": {
+        "columns": [
+         "Point",
+         "Y"
+        ],
+        "rows": [
+         [
+          "a",
+          1
+         ],
+         [
+          "b",
+          4
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "f9f56f6a9701299adc29a39739b5a995f557f433726ea9e07bac478f5e0b154e"
+  },
+  "single-column": {
+   "deck": {
+    "slides": [
+     {
+      "title": "column chart",
+      "chart": {
+       "type": "column",
+       "data": {
+        "columns": [
+         "Values"
+        ],
+        "rows": [
+         [
+          3
+         ],
+         [
+          1
+         ],
+         [
+          4
+         ],
+         [
+          1
+         ],
+         [
+          5
+         ],
+         [
+          null
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "5f6202b2a613d22a23f3017e95050779cc0eab23ef513f64cf0bac11ce8de8c6"
+  },
+  "scatter-labels": {
+   "deck": {
+    "slides": [
+     {
+      "title": "scatter chart",
+      "chart": {
+       "type": "scatter",
+       "data": {
+        "columns": [
+         "Point",
+         "X",
+         "Y"
+        ],
+        "rows": [
+         [
+          "a",
+          1,
+          2
+         ],
+         [
+          "b",
+          2,
+          4
+         ]
+        ]
+       },
+       "dataLabels": true
+      }
+     }
+    ]
+   },
+   "sha256": "ee67a0f7d5863f447b79655c9814825fdc3ddf652ecacb1872e49cb1ae0f26d6"
+  },
+  "chartex-native-map": {
+   "deck": {
+    "slides": [
+     {
+      "title": "map chart",
+      "chart": {
+       "type": "map",
+       "data": {
+        "columns": [
+         "Region",
+         "Value"
+        ],
+        "rows": [
+         [
+          "France",
+          3
+         ],
+         [
+          "Spain",
+          4
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "be69787c39197ebb507eecbcbe10666008192b03a7f605e141ab3568f96e8bc5"
+  },
+  "histogram": {
+   "deck": {
+    "slides": [
+     {
+      "title": "histogram chart",
+      "chart": {
+       "type": "histogram",
+       "data": {
+        "columns": [
+         "Values"
+        ],
+        "rows": [
+         [
+          3
+         ],
+         [
+          1
+         ],
+         [
+          4
+         ],
+         [
+          1
+         ],
+         [
+          5
+         ],
+         [
+          9
+         ],
+         [
+          2
+         ],
+         [
+          6
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "55ab22a43a94daf6b545e63711c7e11cf3c79cb7e94f5e32fb446376f2a84176"
+  },
+  "treemap": {
+   "deck": {
+    "slides": [
+     {
+      "title": "treemap chart",
+      "chart": {
+       "type": "treemap",
+       "data": {
+        "columns": [
+         "Area",
+         "Size"
+        ],
+        "rows": [
+         [
+          "A",
+          5
+         ],
+         [
+          "B",
+          3
+         ],
+         [
+          "C",
+          2
+         ]
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "sha256": "ed28a7cba77671ed7ede374876bed9aecfc9d04efb4c57c6fea42bdefa039561"
+  },
+  "waterfall": {
+   "deck": {
+    "slides": [
+     {
+      "title": "waterfall chart",
+      "chart": {
+       "type": "waterfall",
+       "data": {
+        "columns": [
+         "Step",
+         "Delta"
+        ],
+        "rows": [
+         [
+          "Start",
+          10
+         ],
+         [
+          "Up",
+          4
+         ],
+         [
+          "Down",
+          -3
+         ]
+        ]
+       },
+       "dataLabels": true
+      }
+     }
+    ]
+   },
+   "sha256": "1ad58777d1ae4f187f344bb1681f4a63ba5e4fa4f93d6bf1c4d183d7dba04362"
+  },
+  "table": {
+   "deck": {
+    "slides": [
+     {
+      "title": "Table",
+      "table": {
+       "columns": [
+        "Region",
+        "Revenue",
+        "Growth"
+       ],
+       "rows": [
+        [
+         "EMEA",
+         8.2,
+         0.4
+        ],
+        [
+         "APAC",
+         6.1,
+         0.52
+        ],
+        [
+         "LATAM",
+         null,
+         true
+        ]
+       ]
+      }
+     }
+    ]
+   },
+   "sha256": "cb1d2d6a334727d2472729ed615cadd6b2d51b15d12558383412f0a4580890b7"
+  },
+  "styled-table": {
+   "deck": {
+    "slides": [
+     {
+      "title": "Styled",
+      "table": {
+       "columns": [
+        "Region",
+        {
+         "value": "Revenue",
+         "style": {
+          "align": "right"
+         }
+        }
+       ],
+       "rows": [
+        [
+         "EMEA",
+         {
+          "value": 8.2,
+          "style": {
+           "fill": "#ff0000"
+          }
+         }
+        ],
+        [
+         [
+          {
+           "text": "AP",
+           "bold": true
+          },
+          "AC"
+         ],
+         6.1
+        ]
+       ]
+      }
+     }
+    ]
+   },
+   "sha256": "c3e70e9c86bfb7870266a265949f985a6141f15347068d87c64640fa7d3737c0"
+  },
+  "mixed-blocks": {
+   "deck": {
+    "slides": [
+     {
+      "title": "Mixed",
+      "blocks": [
+       {
+        "chart": {
+         "type": "line",
+         "data": {
+          "columns": [
+           "d",
+           "v"
+          ],
+          "rows": [
+           [
+            "1",
+            2
+           ],
+           [
+            "2",
+            3
+           ]
+          ]
+         }
+        }
+       },
+       {
+        "table": {
+         "rows": [
+          [
+           "a",
+           1
+          ],
+          [
+           "b",
+           2
+          ]
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "sha256": "38be84601a65a454366060fc63ea72e33a3e3a6a54b31803f45e405b0f1cf643"
+  }
+ }
+}
