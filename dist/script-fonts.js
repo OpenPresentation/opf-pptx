@@ -57,7 +57,66 @@ export function planScriptFonts(presentation, report) {
     report?.({code: "paragraph-direction-unavailable", path: "language",
       message: "The installed @openpresentation/opf has no paragraphDirection, so right-to-left paragraphs are not marked; the preview and export must share that rule. Use a core release that exports it."});
   }
-  return {deck, slides, lang: deck.lang, rtl, contentEastAsian: contentEastAsianFonts(presentation, deck, report)};
+  // opf-pptx#168: where each slide's script fonts come from, for diagnostics.
+  const paths = (presentation.slides ?? []).map((slide, index) => slide?.design?.fontScheme !== undefined ? `slides.${index}.design.fontScheme`
+    : slide?.design?.theme !== undefined ? `slides.${index}.design.theme` : `slides.${index}`);
+  return {deck, slides, paths, report, lang: deck.lang, rtl, contentEastAsian: contentEastAsianFonts(presentation, deck, report)};
+}
+
+// ---------------------------------------------------------------------------
+// Per-slide script profiles (opf-pptx#168)
+
+const FONT_GROUPS = [["majorFont", "heading"], ["minorFont", "body"]];
+
+/**
+ * The theme font slots a slide's resolved script fonts select: for the major (heading) and minor (body) font group,
+ * the `ea` / `cs` family when a script font is selected for that slot (its source is not `latin`), and core's
+ * per-script supplement entry. Values are escaped as in the theme XML. A slot with nothing selected is no requirement:
+ * the slide's script text then follows whatever the theme carries, as before.
+ */
+export function slideScriptSelections(resolved) {
+  const wanted = [];
+  for (const [tag, role] of FONT_GROUPS) {
+    for (const [element, slot] of SCRIPT_SLOTS) {
+      if (resolved.sources?.[slot] !== "latin" && resolved[role]?.[slot]) wanted.push({tag, element, value: escapeAttribute(resolved[role][slot])});
+    }
+    if (resolved.supplement?.script && resolved.supplement[role]) wanted.push({tag, script: resolved.supplement.script, value: escapeAttribute(resolved.supplement[role])});
+  }
+  return wanted;
+}
+
+/** The ea/cs typefaces and per-script entries of a theme part, as written: {majorFont: {ea, cs, scripts}, minorFont: ...}. */
+export function themeFontSlots(xml) {
+  const slots = {};
+  for (const [tag] of FONT_GROUPS) {
+    const block = new RegExp(`<a:${tag}>[\\s\\S]*?</a:${tag}>`).exec(xml)?.[0] ?? "";
+    const face = element => new RegExp(`<a:${element}\\b[^>]*?\\btypeface="([^"]*)"`).exec(block)?.[1];
+    slots[tag] = {ea: face("ea"), cs: face("cs"), scripts: Object.fromEntries([...block.matchAll(/<a:font script="([^"]*)" typeface="([^"]*)"\/>/g)].map(match => [match[1], match[2]]))};
+  }
+  return slots;
+}
+
+/** The selections a theme does not carry. */
+export function unmetSelections(wanted, slots) {
+  return wanted.filter(item => (item.script ? slots[item.tag]?.scripts[item.script] : slots[item.tag]?.[item.element]) !== item.value);
+}
+
+const describeSelection = item => `${item.tag === "majorFont" ? "heading" : "body"} ${item.script ? `${item.script} script entry` : item.element === "ea" ? "East Asian" : "complex-script"} font "${item.value}"`;
+
+/**
+ * opf-pptx#168: a slide whose own script fonts (a per-slide font scheme or theme) differ from the presentation theme's
+ * is reported; the theme is built from slide 1, and slide runs carry no explicit ea/cs (FF-05), so PowerPoint would draw
+ * that slide's East Asian / complex-script text in slide 1's script fonts. `themeXml` is the finished presentation theme.
+ */
+export function reportPerSlideScriptFonts(plan, themeXml) {
+  if (!plan?.report || !themeXml) return;
+  const slots = themeFontSlots(themeXml);
+  plan.slides.forEach((resolved, index) => {
+    const unmet = unmetSelections(slideScriptSelections(resolved), slots);
+    if (!unmet.length) return;
+    plan.report({code: "script-font-per-slide-not-exported", path: plan.paths[index] ?? `slides.${index}`,
+      message: `Slide ${index + 1} selects the ${unmet.map(describeSelection).join(", ")}, but the PPTX theme carries slide 1's script fonts and runs name no East Asian/complex-script font (FF-05), so PowerPoint draws this slide's script text in slide 1's fonts.`});
+  });
 }
 
 // FF-05: East Asian characters in a deck whose own language has no East Asian font (an English deck with Japanese

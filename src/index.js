@@ -36,7 +36,7 @@ import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
-import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, reconcileLanguage, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
+import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, reconcileLanguage, reportPerSlideScriptFonts, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
 import { webpToPng, svgToPng, readLocalFile } from '#image-fallback';
 import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attachSvgPictures } from './svg-image.js';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
@@ -3329,6 +3329,7 @@ async function normalizePptxZip(raw, context) {
   }
 
   writeNativeFurnitureMasters(output, context);
+  if (context.scriptFonts) reportPerSlideScriptFonts(context.scriptFonts, output['ppt/theme/theme1.xml'] && decodeText(output['ppt/theme/theme1.xml'][0]));
   giveNotesMastersOwnThemes(output);
   finalizeFontsUsed(output);
   // Document references record evidence from the final normalized parts.
