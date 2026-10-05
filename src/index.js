@@ -2867,8 +2867,9 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
   const withFormats = (result, formats) => formats.series.some((code) => code !== undefined) || formats.x !== undefined ? {...result, formats} : result;
   if (data.columns.length === 1) {
     const heading = data.columns[0];
-    // The lone column is the category position of the canonical table, kept as authored: its values pass through the same
-    // strict chartNumber here. A cell that holds no number is skipped, never plotted as 0.
+    // The lone column holds the chart's values. Core (opf#376) already reads it with chartNumber and reports each
+    // non-numeric cell; a core without RR-54 hands it over as authored, so it is read (and its rejects counted) here. A
+    // cell that holds no number is skipped, never plotted as 0.
     const points = data.rows.map((row, index) => ({row: index + 1, value: chartNumber(row?.[0]), cell: row?.[0]}));
     for (const point of points) if (point.value === null && point.cell !== null && point.cell !== undefined && point.cell !== '') rejected.push({path: `/data/rows/${point.row - 1}/0`, cell: point.cell});
     const plottedPoints = points.filter((point) => point.value !== null);
