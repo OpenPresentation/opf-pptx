@@ -45,8 +45,9 @@ substitute image, as `test/export-corpus.mjs`) and the 850 gallery-support docum
 seed, timestamp and ZIP date) with main `bc97949` and with this branch, then diffing every part of the 976 packages:
 bytes first, then canonical XML (attributes sorted, namespace declarations and whitespace between elements ignored,
 `<x></x>` equal to `<x/>`). Every changed part belongs to one of the classes below; after masking them, 1,716 of 1,717
-slides are equal and the one left is the media fix (row 17). `fromPptx` of the old and the new package gives the same
-document for 975 of 976 decks (the 976th is that same media fix: the importer now reads the right picture).
+slides are equal and the one left is row 17 (an invalid `svgBlip` removed, geometry equal). `fromPptx` of the old and the new package gives the same
+document for all 976 decks, with the same diagnostics except one: the old package of row 17 also reported
+`invalid-svg-image` for its invalid `svgBlip`.
 
 | # | Change | Upstream source | Decks (parts) of 976 | Disposition |
 |---|---|---|---|---|
@@ -66,7 +67,7 @@ document for 975 of 976 decks (the 976th is that same media fix: the importer no
 | 14 | `p:cNvPr` ids of tables and the shapes after them differ (tables take ids from the slide's id pool) | lofcz/pptxgenjs-plus#11 | 87 (115) | Accepted: ids stay unique (opf-pptx's own duplicate fix is now a no-op there); nothing references them. |
 | 15 | Hyperlinks: `highlightClick="0" endSnd="0"` dropped on run links; shape links get `action="" history="1" invalidUrl="" tgtFrame=""` | hover-action port (`9b39a713`) | 13 (13) | Accepted: all are schema defaults. |
 | 16 | Slide-to-chart relationship targets are relative (`../charts/chart1.xml`, was `/ppt/charts/chart1.xml`) | `b3545e0c` (community chart XML contracts) | 176 (207) | Accepted: equivalent URIs; PowerPoint writes relative ones. |
-| 17 | Two different pictures on one slide no longer share a media part name. PptxGenJS 4.0.1 wrote `ppt/media/image-4-1.png` twice (a duplicate ZIP entry) for the SVG picture's PNG fallback and the PNG on slide 4 of `technical/content-payload-matrix`, and the picture was fitted to the other image | media part naming | 1 (slide 4, its rels, media, content types) | Accepted (correctness): the picture frame now fits its own image (`a:off`/`a:ext` change on that one picture), and import reads the right picture. |
+| 17 | A raster that an `imageResolver` returns for an asset declared `image/svg+xml` (the corpus run substitutes one PNG for every asset, so `technical/content-payload-matrix` slide 4 hits this) is embedded as a plain picture. PptxGenJS 4.0.1 wrote an `asvg:svgBlip` that pointed at the PNG itself; pptxgenjs-plus would write its broken-image placeholder (100 x 119 px) as the picture and fit the frame to it | engine SVG handling; fixed in opf-pptx (`resolveImage` embeds the bytes as the raster they are) | 1 (slide 4, its rels, content types) | Fixed in opf-pptx: geometry is the same as 4.0.1's, the invalid `svgBlip` is gone. Real SVG pictures (PNG fallback plus SVG part) are byte-identical in both. |
 | 18 | Chart categories are a flat `c:strRef`/`c:strCache` (was a one-level `c:multiLvlStrRef`) | `4f0e920b` (#60) | 165 (233) | Accepted: what PowerPoint writes for one category level; the importer reads both; multi-level categories keep `multiLvlStrRef`. |
 | 19 | The third `c:axId` (a series axis that does not exist) is no longer listed in 2-D bar, line and area charts | lofcz/pptxgenjs-plus#13 | 165 (233) | Accepted (correctness: it referenced a missing axis). |
 | 20 | Category axis `c:numFmt sourceLinked="0"` (was 1) | numFmt `sourceLinked` fix (upstream issue #1309) | 165 (233) | Accepted: with `General` and text categories nothing changes; the format now applies as written. |
