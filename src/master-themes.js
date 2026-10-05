@@ -9,7 +9,8 @@ const SLIDE_MASTER = /^ppt\/slideMasters\/slideMaster\d+\.xml$/;
 const relsOf = path => path.replace(/([^/]+)$/, '_rels/$1.rels');
 
 /**
- * FF-05 (font-fidelity-everywhere). PptxGenJS 4.0.1 points the notes master at the slide master's theme part
+ * FF-05 (font-fidelity-everywhere). PptxGenJS 4.0.1 points the notes master at the slide master's theme part (and
+ * vendor-compat.js points pptxgenjs-plus's notes master back there, replacing its default Office notes theme)
  * (`ppt/theme/theme1.xml`). Every master owns its theme part in a PowerPoint package (theme1 for the slide master,
  * theme2 for the notes master, theme3 for a handout master), and PowerPoint refuses to read a package whose notes
  * master it recognises when that master shares the slide theme ("The file or directory is corrupted and unreadable",

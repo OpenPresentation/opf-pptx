@@ -4,6 +4,7 @@ import {isFaceStyleSuffix} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
 import {giveNotesMastersOwnThemes} from './master-themes.js';
+import {legacyVendorOutput} from './vendor-compat.js';
 import {readChartCategoryHeading,writeChartCategoryHeading,repairChartWorkbookRanges} from './chart-workbook.js';
 import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
 import {attachChartexParts,chartFromChartex,CHARTEX_GRAPHIC_DATA_URI} from './chartex.js';
@@ -301,9 +302,9 @@ export async function toPptx(input, options = {}) {
 
   let raw;
   try {
+    // The package is unzipped and re-zipped by normalizePptxZip, so the intermediate ZIP is stored uncompressed.
     raw = await withDeterministicRandom(context.seed, () => pptx.write({
-      outputType: "uint8array",
-      compression: true
+      outputType: "uint8array"
     }));
   } catch (error) {
     throw new OPFPptxError("pptxgen-failed", "PPTX generation failed.", {
@@ -2878,7 +2879,11 @@ async function resolveImage(asset, presentation, options, path, outcome = {}) {
   }
   if (!resolved?.data) return resolved;
   const bytes = dataUriBytes(resolved.data);
-  if (bytes && rasterMetadata(bytes)) return resolved;
+  const raster = bytes && rasterMetadata(bytes);
+  // A raster declared as another type (for example a host that resolves an SVG asset to PNG bytes) is embedded as the
+  // raster it is. PptxGenJS treats an image/svg+xml data URI as an SVG picture and adds its own fallback, a broken-image
+  // placeholder in Node (pptxgenjs-plus; PptxGenJS 4.0.1 pointed the svgBlip at the raster itself).
+  if (raster) return dataUriMediaType(resolved.data) === raster.mediaType ? resolved : {...resolved, data: `data:${raster.mediaType};base64,${bytesToBase64(bytes)}`};
   const svg = svgDataUriBytes(resolved.data);
   if (svg) return resolveSvgImage(svg, options, path, outcome);
   const message = `The image is not a readable PNG, JPEG, GIF or WebP (${dataUriMediaType(resolved.data) ?? "unknown type"}); supply a raster through imageResolver (for example opf-render svgToPng).`;
@@ -3186,7 +3191,8 @@ function writeNativeFurnitureMasters(output, context) {
 async function normalizePptxZip(raw, context) {
   let entries;
   try {
-    entries = unzipSync(raw);
+    // RR-17: the pptxgenjs-plus output changes opf-pptx does not take (src/vendor-compat.js).
+    entries = legacyVendorOutput(unzipSync(raw));
   } catch (error) {
     throw new OPFPptxError("packaging-failed", "Generated PPTX could not be read back as a ZIP.", {
       cause: errorMessage(error)
@@ -3389,12 +3395,14 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
     let xml=decodeText(bytes);
     if (context.notesWithCarriageReturns.has(path)) xml = preserveGeneratedNotes(xml, context.notesWithCarriageReturns.get(path), path);
     if (path === '[Content_Types].xml') {
-      // PptxGenJS 4.0.1 emits one slide-master override per slide even
-      // though it creates only the actual master parts. Omit phantom master
-      // declarations without changing any existing part or relationship.
+      // PptxGenJS 4.0.1 emitted one slide-master override per slide even
+      // though it created only the actual master parts (pptxgenjs-plus fixed
+      // this, #1444). Omit any phantom master declaration without changing
+      // any existing part or relationship.
       xml = xml.replace(/<Override PartName="\/(ppt\/slideMasters\/slideMaster\d+\.xml)"[^>]*\/>/g,
         (override, part) => Object.hasOwn(entries, part) ? override : '');
-      // Explicit per-part types also correct PptxGenJS's image/jpg default.
+      // Explicit per-part types describe the actual bytes (PptxGenJS 4.0.1's
+      // image/jpg default; pptxgenjs-plus writes image/jpeg).
       const overrides = [...imageMetadata].filter(([, metadata]) => metadata).map(([part, metadata]) =>
         `<Override PartName="/${part}" ContentType="${metadata.mediaType}"/>`).join('');
       xml = xml.replace('</Types>', `${overrides}</Types>`);
@@ -3531,14 +3539,15 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
       });
       // PptxGenJS gives shapes no alternative text. An unavailable image's panel
       // carries the accessible name the preview gives its group.
-      xml=xml.replace(/<p:cNvPr id="(\d+)" name="(OPF image placeholder \d+)">/g,(node,id,name)=>{
+      xml=xml.replace(/<p:cNvPr id="(\d+)" name="(OPF image placeholder \d+)"(\/?)>/g,(node,id,name,close)=>{
         const description=context.imagePlaceholders.get(name);
         if(description===undefined)return node;
         const escapes={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;','\r':'&#13;','\n':'&#10;','\t':'&#9;'};
-        return `<p:cNvPr id="${id}" name="${name}" descr="${description.replace(/[&<>"'\r\n\t]/g,char=>escapes[char])}">`;
+        return `<p:cNvPr id="${id}" name="${name}" descr="${description.replace(/[&<>"'\r\n\t]/g,char=>escapes[char])}"${close}>`;
       });
-      // PptxGenJS 4 emits pPr before each rich run. OOXML allows one pPr,
-      // before all runs. Paragraph options belong to the first run.
+      // PptxGenJS 4.0.1 emitted pPr before each rich run (pptxgenjs-plus writes
+      // one). OOXML allows one pPr, before all runs. Paragraph options belong
+      // to the first run.
       xml=xml.replace(/<a:p>([\s\S]*?)<\/a:p>/g,(_,body)=>{
         let properties='';
         const content=body.replace(/<a:pPr\b[^>]*(?:\/>|>[\s\S]*?<\/a:pPr>)/g,node=>{properties ||= node;return '';});
@@ -3554,7 +3563,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
   return bytes;
 }
 
-// The vendored PptxGenJS 4.0.1 master hard-codes Arial as the bullet font on
+// The vendored PptxGenJS master (4.0.1 and pptxgenjs-plus 4.3.4) hard-codes Arial as the bullet font on
 // all nine bodyStyle levels, while each level's text already uses +mn-lt.
 // Point those bullets at the same theme minor (body) font so a document's
 // fontScheme also governs master bullets. a:buFont is CT_TextFont, like
@@ -3567,7 +3576,7 @@ function themeMasterBulletFonts(xml) {
     bodyStyle.split(VENDOR_MASTER_BULLET_FONT).join(THEME_MINOR_BULLET_FONT));
 }
 
-// FF-05: PptxGenJS 4.0.1 writes p:notesMasterIdLst after p:sldIdLst, but CT_Presentation is a sequence
+// FF-05: PptxGenJS (4.0.1 and pptxgenjs-plus 4.3.4) writes p:notesMasterIdLst after p:sldIdLst, but CT_Presentation is a sequence
 // (sldMasterIdLst, notesMasterIdLst, handoutMasterIdLst, sldIdLst, sldSz, ...). PowerPoint reads the out-of-order
 // list as no notes master and lists a default-theme font (Aptos) in Presentation.Fonts; schema order restores
 // the exporter's own notes master. Only the list's position changes.

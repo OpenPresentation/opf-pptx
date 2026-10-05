@@ -20,7 +20,7 @@ const THEME_SLOT = {lt: 'latin', ea: 'ea', cs: 'cs'};
 const FIXED_PITCH = 1;
 
 // Per-script theme fonts (`<a:font script="…">`) written by the vendored
-// PptxGenJS 4.0.1 theme. They are Office's defaults for scripts the deck
+// PptxGenJS theme (4.0.1 and pptxgenjs-plus 4.3.4). They are Office's defaults for scripts the deck
 // declares no font for. PowerPoint uses one only for text in that script, and
 // it does not list them in "Fonts Used". The check allows exactly these
 // script/typeface pairs in the presentation theme; any other supplement fails
