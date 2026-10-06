@@ -49,7 +49,7 @@ document.title = 'READY';
   const inputs = Object.keys(result.metafile.inputs).map(input => input.replaceAll('\\', '/'));
   for (const forbidden of ['node_modules/readable-stream/', 'node_modules/core-util-is/', 'node_modules/safe-buffer/', 'node_modules/@node-projects/jszip/lib/', 'node_modules/sharp/', 'image-fallback-node'])
     assert.ok(!inputs.some(input => input.includes(forbidden)), `browser bundle must not contain ${forbidden}`);
-  assert.ok(inputs.includes('node_modules/@openpresentation/opf-pptx/vendor/jszip/index-min.js'), 'browser bundle uses the vendored JSZip bundle');
+  assert.ok(inputs.some(input => input.endsWith('node_modules/@openpresentation/opf-pptx/vendor/jszip/index-min.js')), 'browser bundle uses the vendored JSZip bundle');
   await writeFile(path.join(consumer, 'page/index.html'), '<!doctype html><meta charset="utf-8"><title>loading</title><script type="module" src="./bundle.js"></script>');
 
   const consumerRequire = specifier => import(pathToFileURL(path.join(consumer, 'node_modules', specifier)).href);
