@@ -2100,7 +2100,7 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   const {widthInches, heightInches} = slideContext.dimensions;
   // FA-13: a text watermark is one native text box with the opacity as text alpha, centered and rotated as core's layoutWatermark says.
   if (isPlainObject(asset) && typeof asset.text === 'string') {
-    addTextWatermark(slide, asset, slideIndex, {width: widthInches * 96, height: heightInches * 96}, context, options, path);
+    addTextWatermark(slide, asset, slideIndex, {width: widthInches * 96, height: heightInches * 96}, slideContext, context, options, path);
     return;
   }
   if (asset === null || (isPlainObject(asset) && typeof asset.src !== 'string')) {
@@ -2121,12 +2121,13 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   slide.addImage({...resolved, objectName: watermarkName(), ...box, altText: assetAlt(asset, presentation) ?? 'Watermark'});
 }
 
-function addTextWatermark(slide, watermark, slideIndex, size, context, options, path) {
+// The stamp takes the slide's own resolved fonts and default text color (readable on that slide's background), as the preview does.
+function addTextWatermark(slide, watermark, slideIndex, size, slideContext, context, options, path) {
   if (typeof opfCore.layoutWatermark !== 'function') {
     options.onDiagnostic?.({code: 'watermark-not-exported', path, message: 'The installed @openpresentation/opf has no layoutWatermark, so the text watermark was not exported. Use a core release that exports it.'});
     return;
   }
-  const layout = opfCore.layoutWatermark(watermark.text, size, {fontFamily: context.fonts.heading, fontWeight: 700, textMeasurement: options.textMeasurement});
+  const layout = opfCore.layoutWatermark(watermark.text, size, {fontFamily: slideContext.fonts.heading, fontWeight: 700, textMeasurement: options.textMeasurement});
   if (!layout) {
     options.onDiagnostic?.({code: 'watermark-not-exported', path, message: 'The text watermark has no text; no watermark was exported for this slide.'});
     return;
@@ -2134,9 +2135,9 @@ function addTextWatermark(slide, watermark, slideIndex, size, context, options, 
   const opacity = watermarkOpacity(watermark);
   const {box} = layout;
   slide.addText(layout.text, {
-    ...textBoxOptions({x: box.x / 96, y: box.y / 96, w: box.width / 96, h: box.height / 96}, context, layout.fontSize * .75),
+    ...textBoxOptions({x: box.x / 96, y: box.y / 96, w: box.width / 96, h: box.height / 96}, slideContext, layout.fontSize * .75),
     ...nativeFontOptions(layout.style), bold: true,
-    color: context.textColor, transparency: Math.round((1 - opacity) * 100000) / 1000,
+    color: slideContext.textColor, transparency: Math.round((1 - opacity) * 100000) / 1000,
     align: 'center', valign: 'middle', fit: 'none', wrap: false, lineSpacingMultiple: 1,
     rotate: (layout.rotation + 360) % 360, objectName: watermarkTextName()
   });

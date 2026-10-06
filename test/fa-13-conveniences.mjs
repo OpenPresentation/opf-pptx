@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {strFromU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import * as opf from '@openpresentation/opf';
+import {renderSvg} from '@openpresentation/opf-render/svg';
 import {fromPptx, toPptx} from '../dist/index.js';
 
 // FA-13: code.highlight, Watermark.text, TextRun.code, TextRun.lang and the 1:1, 4:5 and 9:16 presets, exported natively
@@ -222,6 +223,29 @@ const runs = xml => [...xml.matchAll(/<a:r>(<a:rPr\b[\s\S]*?<\/a:rPr>)<a:t>([^<]
   // Absent fields: a deck with neither field writes no altLang and no inline-code font.
   const {slide} = await exportDeck(richDeck('en-US', ['plain ', {text: 'bold', bold: true}]));
   assert.equal(slide().includes('altLang'), false);
+}
+
+{
+  // The stamp is the readable text color of its own slide's background, the same color in the preview and the export, whether
+  // the PPTX names it as sRGB or as a scheme color that resolves to exactly that color.
+  const deck = {design: {fontScheme: 'roboto', watermark: {text: 'DRAFT', opacity: 0.15}}, slides: [
+    {title: 'White', text: 'x', design: {background: '#FFFFFF'}}, {title: 'Dark', text: 'x', design: {background: '#0B1020'}}, {title: 'Default', text: 'x'}]};
+  const {xml, slide} = await exportDeck(deck);
+  const theme = xml['ppt/theme/theme1.xml'], map = xml['ppt/slideMasters/slideMaster1.xml'].match(/<p:clrMap\b[^>]*>/)[0];
+  const slot = name => theme.match(new RegExp(`<a:${map.match(new RegExp(`\\b${name}="(\\w+)"`))[1]}>\\s*<a:srgbClr val="([0-9A-Fa-f]{6})"`))[1].toUpperCase();
+  const seen = [];
+  for (const index of [1, 2, 3]) {
+    const mark = named(slide(index), /^OPF watermark text$/)[0];
+    const color = mark.match(/<a:rPr\b[\s\S]*?<a:solidFill><a:(srgbClr|schemeClr) val="(\w+)"/);
+    const exported = color[1] === 'srgbClr' ? color[2].toUpperCase() : slot(color[2]);
+    const preview = renderSvg(deck, {slideIndex: index - 1}).match(/<text [^>]*fill="(#[0-9A-Fa-f]{6})"[^>]*>DRAFT/)[1].slice(1).toUpperCase();
+    assert.equal(exported, preview, `slide ${index}: preview and export use one color`);
+    seen.push(exported);
+  }
+  assert.equal(seen[0], '000000', 'dark text on the white slide');
+  assert.equal(seen[1], 'FFFFFF', 'light text on the dark slide');
+  const background = ['FFFFFF', '0B1020', undefined];
+  for (const [index, color] of seen.entries()) if (background[index]) assert.ok(opf.colorContrast(`#${color}`, `#${background[index]}`) >= 4.5, `slide ${index + 1} is readable`);
 }
 
 console.log('FA-13: presets, code highlight, text watermark, inline code and run language export natively and import back.');
