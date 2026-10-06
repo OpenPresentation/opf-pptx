@@ -1812,7 +1812,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         const runs=line.fragments.map(fragment=>{
           const runColor=exportColor(fragment.run.color,itemContext,itemContext.colors.text);
           const color=nativeColor(fragment.run.color,runColor,itemContext,itemContext.textColor);
-          return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
+          return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:|tel:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
         });
         // Logical alignment (RR-05): a right-to-left paragraph starts at the right edge; every wrapped line shares its paragraph's direction.
         const placed=item.text.placement?.lines[index],alignment=placed?.alignment??physicalAlignment(logicalAlignment,item.text.directions?.[index]),factor=alignment==='right'?1:alignment==='center'?.5:0;
@@ -1946,7 +1946,7 @@ function richLineRuns(line,color,native,context) {
   const fallback=color.replace(/^#/,'');
   return line.fragments.map(fragment=>{
     const runColor=exportColor(fragment.run.color,context,fallback),color=nativeColor(fragment.run.color,runColor,context,native);
-    return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
+    return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:|tel:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
   });
 }
 // Every native line of a list, marker paragraph or not, is named for the list's
@@ -2076,12 +2076,8 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   const watermark = local ? opfSlide.design.watermark : presentation.design?.watermark;
   if (watermark === undefined || watermark === null || watermark === false) return;
   const path = local ? `slides.${slideIndex}.design.watermark` : 'design.watermark';
-  const notExported = message => options.onDiagnostic?.({code: 'watermark-not-exported', path, message});
-  const asset = isPlainObject(watermark) || typeof watermark === 'string' ? watermark : null;
-  if (asset === null || (isPlainObject(asset) && typeof asset.src !== 'string')) {
-    notExported('The watermark needs an image source (a string, or an object with src); no watermark was exported for this slide.');
-    return;
-  }
+  // The schema requires an image source (a string, or an object with src), so there is no source-less watermark to report.
+  const asset = watermark;
   const {widthInches, heightInches} = slideContext.dimensions;
   const box = watermarkBox(widthInches, heightInches);
   const outcome = {box};
@@ -2332,7 +2328,7 @@ function addTablePayload(slide, authoredTable, region, context, options, path, p
         ...nativeFontOptions(runStyle),fontSize:fragment ? fragment.fontSize * .75 : fit.fontSize * .75,
         underline:run.underline ? {style:'sng',color} : undefined,strike:run.strikethrough ? 'sngStrike' : undefined,
         color,transparency,baseline:fragment?.baselineShift ? -fragment.baselineShift / fragment.fontSize * 2000 : undefined,
-        hyperlink:run.link && /^(https?:|mailto:)/i.test(run.link) ? {url:run.link} : undefined,
+        hyperlink:run.link && /^(https?:|mailto:|tel:)/i.test(run.link) ? {url:run.link} : undefined,
       };
       // PptxGenJS marks every part of a newline-containing run as a paragraph
       // break, including its final part. Split explicitly so the next styled
@@ -2833,7 +2829,7 @@ function textRuns(value, context, fallbackFontSize) {
         fontSize: run?.fontSize ?? fallbackFontSize,
         superscript: run?.superscript,
         subscript: !run?.superscript && run?.subscript,
-        hyperlink: run?.link && /^(https?:|mailto:)/i.test(run.link) ? { url: run.link } : undefined
+        hyperlink: run?.link && /^(https?:|mailto:|tel:)/i.test(run.link) ? { url: run.link } : undefined
       }
     };
   });
@@ -2860,7 +2856,7 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
     return unplottable("dataset-unknown", "The chart's dataset is missing, so it cannot be drawn here.", `The chart references dataset '${stringifyText(authored.dataset)}', which the document does not hold (or a field it names).`);
   }
   if (!authored || !Array.isArray(authored.columns) || !Array.isArray(authored.rows)) {
-    return unplottable("data-not-inline", "Chart data is not inline, so it cannot be drawn here.", "The chart data is not inline columns and rows (for example an external data source). Supply inline columns and rows.");
+    return unplottable("no-columns", "The chart has no inline data, so it cannot be drawn here.", "The chart data is not inline columns and rows. Supply inline columns and rows or a dataset.");
   }
   if (authored.rows.length === 0) return unplottable("no-rows", "The chart has no data rows.", "The chart data has no rows.");
   if (authored.columns.length === 0) return unplottable("no-columns", "The chart has no data columns.", "The chart data has no columns.");
