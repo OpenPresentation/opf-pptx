@@ -384,6 +384,7 @@ export async function fromPptx(input, options = {}) {
   const furniture = importFurniture(furnitureContexts, entries, options.onDiagnostic);
   if (Object.keys(furniture.design).length) imported.design = {...imported.design, ...furniture.design};
   if (furniture.organization) imported.organization = furniture.organization;
+  if (furniture.speaker) imported.speaker = furniture.speaker;
 
   // RR-54: the datasets recorded at export (OPF_DATASETS_V1). Chart and table frames restore their dataset references against
   // them, so the document carries them before document provenance validates the restored document.
@@ -421,7 +422,7 @@ export async function fromPptx(input, options = {}) {
   let slideProvenance = slidePaths.map(() => ({structure: "untagged"}));
   let restoredGroups = [];
   try {
-    const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true,
+    const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true, speakerConflict: furniture.speakerConflict === true,
       // Host catalogs format stored socials exactly as export did (FF-34).
       socialPlatformRecords: catalogs => socialPlatformRecords({catalogs}, options),
       nativeSections: slideSections,
@@ -1518,7 +1519,7 @@ function resolveTemplateInput(presentation, options) {
     throw new OPFPptxError(errors.some(entry => entry.code === "variable-unfilled") ? "unfilled-variables" : "invalid-variables", errors[0].message, {issues: errors, path: errors[0].path});
   }
   for (const entry of result.diagnostics) {
-    if (entry.code === "variable-example-used") options.onDiagnostic?.({code: "variable-example-used", path: entry.path, message: entry.message, id: entry.id});
+    if (entry.code === "variable-example-used" || entry.code === "variable-builtin-missing") options.onDiagnostic?.({code: entry.code, path: entry.path, message: entry.message, id: entry.id});
   }
   return result.presentation;
 }
