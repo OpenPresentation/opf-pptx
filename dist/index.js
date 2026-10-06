@@ -1720,6 +1720,16 @@ function configurePresentation(pptx, presentation, context) {
 async function addSlide(pptx, presentation, opfSlide, slideIndex, context, options) {
   const slide = pptx.addSlide();
   const slideContext = resolveSlideContext(presentation, opfSlide, context, options, slideIndex);
+  const { widthInches, heightInches } = slideContext.dimensions;
+  const layout = resolveCatalogRecord(presentation, "layouts", opfSlide.layout, "blank") ?? {};
+  if (opfSlide.layout && layout.id !== opfSlide.layout) throw new OPFPptxError("catalog-resolution-failed", `Layout '${opfSlide.layout}' needs an inline or bundled catalog record.`, { path: `slides.${slideIndex}.layout` });
+  const composeOptions = { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, textRasterPadding:options.textRasterPadding, darkBackground: isDarkHex(slideContext.colors.background), textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) };
+  // Core resolves every shared design key once (slide design, deck design, then the layout record's design): the text alignment of
+  // each item (item.alignment), and the imageFill that backgrounds and picture placements use (SlideComposition.design).
+  const geometry = composeSlide(opfSlide, composeOptions);
+  slideContext.imageFill = geometry.design.imageFill ?? "fit";
+  // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
+  if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
   slide.background = { color: slideContext.colors.background };
   const backgroundDefinition = slideContext.backgroundDefinition;
   const backgroundPath = `${opfSlide.design?.background !== undefined ? `slides.${slideIndex}.` : ''}design.background`;
@@ -1750,23 +1760,6 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   slide.color = slideContext.textColor;
   if (opfSlide.hidden === true) slide.hidden = true;
 
-  const { widthInches, heightInches } = slideContext.dimensions;
-  const layout = resolveCatalogRecord(presentation, "layouts", opfSlide.layout, "blank") ?? {};
-  if (opfSlide.layout && layout.id !== opfSlide.layout) throw new OPFPptxError("catalog-resolution-failed", `Layout '${opfSlide.layout}' needs an inline or bundled catalog record.`, { path: `slides.${slideIndex}.layout` });
-  // design.titleAlignment/contentAlignment are Design properties (slide design
-  // overrides the deck). Core only returns an accepted `placement.alignment`
-  // with outline measurement, so the same effective values must also drive
-  // text without placement, exactly as the renderer's preview does.
-  const titleAlignment=opfSlide.design?.titleAlignment??presentation.design?.titleAlignment;
-  const contentAlignment=opfSlide.design?.contentAlignment??presentation.design?.contentAlignment;
-  const fieldAlignment=field=>field==='title'?titleAlignment:contentAlignment;
-  // Core composition resolves one alignment per composed item for every engine
-  // (FF-29); the design fallback keeps cores published before item.alignment working.
-  const alignmentFor=item=>item.alignment??fieldAlignment(item.field);
-  const composeOptions = { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, darkBackground: isDarkHex(slideContext.colors.background), textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) };
-  const geometry = composeSlide(opfSlide, composeOptions);
-  // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
-  if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   // The content topology (groups, regions, root form, block ids) with the leaf boxes this geometry draws.
   recordContentTopology(context.documentProvenance, opfSlide, slideIndex, geometry.items);
@@ -1789,7 +1782,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         fill:paint(surface),line:{...paint(itemContext.colorScheme.accent5??`#${itemContext.colors.border}`),width:.75},objectName:`OPF card ${item.path}`});
     }
     if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
-      addMeasuredPayloadText(slide,item.value,item.box,itemContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:alignmentFor(item),diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?tagColor(itemContext):itemContext.textColor});
+      addMeasuredPayloadText(slide,item.value,item.box,itemContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:item.alignment,diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?tagColor(itemContext):itemContext.textColor});
     } else if (["title", "subtitle", "tag"].includes(item.field)) {
       // Estimated-font headings use one native text box, which still needs a
       // role tag. Role recovery must not depend on outline measurement support.
@@ -1799,7 +1792,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         ...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),
         ...nativeFontOptions(item.textStyle),
         color: item.field === "tag" ? tagColor(itemContext) : itemContext.textColor,
-        align: physicalAlignment(alignmentFor(item), item.text.directions?.[0]),
+        align: physicalAlignment(item.alignment, item.text.directions?.[0]),
         ...(item.text.directions?.[0] === 'rtl' ? {rtlMode: true} : {}),
         objectName,
         breakLine: false
@@ -1807,7 +1800,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
       await addMeasuredList(slide,item.text,itemContext,item.path,item.bulletImage,presentation,slideIndex,options,item.payload?.numbering!==undefined);
     } else if (item.field === "text" && item.text?.richLines) {
-      const logicalAlignment=item.text.placement?.alignment??alignmentFor(item)??'left';
+      const logicalAlignment=item.text.placement?.alignment??item.alignment??'left';
       for(const [index,line] of item.text.richLines.entries()){
         const runs=line.fragments.map(fragment=>{
           const runColor=exportColor(fragment.run.color,itemContext,itemContext.colors.text);
@@ -1822,11 +1815,11 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         if(runs.length)slide.addText(runs,{...textBoxOptions(area,itemContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1});
       }
     } else if (item.field === "text" && typeof item.value === "string") {
-      slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle),align:physicalAlignment(alignmentFor(item), item.text.directions?.[0])});
+      slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle),align:physicalAlignment(item.alignment, item.text.directions?.[0])});
     } else {
       // RR-34: a captioned item draws its media in item.box; the caption band follows as tagged text boxes linked to the media shape by name.
       const mediaNames = item.caption ? new Set([...context.imagePlacements.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()]) : undefined;
-      await addPayload(slide, presentation, item.payload, region, item.path, { ...itemContext, composition: item.composition, contentAlignment: alignmentFor(item) ?? "left", direction: geometry.direction }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
+      await addPayload(slide, presentation, item.payload, region, item.path, { ...itemContext, composition: item.composition, contentAlignment: item.alignment ?? "left", direction: geometry.direction }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
       if (item.caption) {
         const mediaName = item.field === 'video' ? `OPF media ${item.path} frame` : [...context.imagePlacements.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()].find(name => !mediaNames.has(name));
         addCaption(slide, item, mediaName, itemContext, exportHelpers, (code, message) => new OPFPptxError(code, message, {path: item.caption.path}));
@@ -1864,7 +1857,7 @@ function resolveSlideContext(presentation, slide, baseContext, options, slideInd
     || Math.abs(resolved.dimensions.heightInches - baseContext.dimensions.heightInches) > 1e-6) {
     throw new OPFPptxError("mixed-slide-dimensions", "PowerPoint requires one canvas size per presentation. Set dimensions on the deck or export this slide separately.");
   }
-  const slideContext = { ...baseContext, backgroundDefinition: resolved.backgroundDefinition, colorScheme: resolved.colorScheme, fonts: resolved.fonts, colors: resolved.colors, variables: resolved.variables, imageFill: effective.design.imageFill ?? "fit" };
+  const slideContext = { ...baseContext, backgroundDefinition: resolved.backgroundDefinition, colorScheme: resolved.colorScheme, fonts: resolved.fonts, colors: resolved.colors, variables: resolved.variables };
   // A slide-level color scheme (directly or through a slide theme) pins every
   // named color on that slide to literal sRGB; see schemeColorValue().
   const slideScheme = themeSlotColors(resolved.colorScheme), deckScheme = baseContext.themeColors ?? {};
