@@ -129,11 +129,14 @@ for (const [label, [width, height]] of Object.entries(dimensions)) {
 
 // 4. Never silent: unrepresentable variants report a specific diagnostic.
 {
-  // The schema requires src (FA-07): an opacity-only object has no image to draw and is rejected at the boundary.
+  // FA-13: a watermark names exactly one of src and text, so an opacity-only object (or one with both) is rejected by the schema.
   for (const deck of [
     { design: { watermark: { opacity: 0.2 } }, slides: [{ title: 'A', text: 'b' }] },
-    { slides: [{ title: 'A', text: 'b', design: { watermark: { opacity: 0.2 } } }] }
-  ]) await assert.rejects(toPptx(deck), error => error.code === 'invalid-opf');
+    { slides: [{ title: 'A', text: 'b', design: { watermark: { opacity: 0.2 } } }] },
+    { design: { watermark: { src: 'asset:a', text: 'DRAFT', opacity: 0.2 } }, slides: [{ title: 'A', text: 'b' }] }
+  ]) {
+    await assert.rejects(exported(deck), error => error.code === 'invalid-opf');
+  }
   const deck = { design: { watermark: 'https://example.com/watermark.png' }, slides: [{ title: 'A', text: 'b' }, { title: 'B', text: 'c', design: { watermark: 'asset:missing' } }] };
   const diagnostics = [];
   await toPptx(deck, { onDiagnostic: d => diagnostics.push(d) });

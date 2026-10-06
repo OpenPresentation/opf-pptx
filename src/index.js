@@ -34,13 +34,13 @@ import {importImageOrientation} from './image-import.js';
 import {extractSignals, normalizeSignalOptions, themeFactsFor} from './import-signals.js';
 import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
 import {dedupeMedia} from './media-dedupe.js';
-import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
+import {placeWatermarks, importWatermark, importTextWatermark, tagTextWatermarks, watermarkName, watermarkTextName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
 import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from './logo-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {chartHighlightPlan, applyChartHighlight} from './chart-highlight.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
-import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, planSlideThemes, reconcileLanguage, reportPerSlideNotesScriptFonts, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
+import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, planSlideThemes, reconcileLanguage, reportPerSlideNotesScriptFonts, runLanguageFonts, runLanguageTag, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
 import { webpToPng, svgToPng, readLocalFile } from '#image-fallback';
 import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attachSvgPictures } from './svg-image.js';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
@@ -193,6 +193,9 @@ const DIMENSION_PRESETS = Object.freeze({
   "4:3": Object.freeze({ widthInches: 10, heightInches: 7.5 }),
   "16:10": Object.freeze({ widthInches: 10, heightInches: 6.25 }),
   letter: Object.freeze({ widthInches: 11, heightInches: 8.5 }),
+  "1:1": Object.freeze({ widthInches: 7.5, heightInches: 7.5 }),
+  "4:5": Object.freeze({ widthInches: 7.5, heightInches: 9.375 }),
+  "9:16": Object.freeze({ widthInches: 7.5, heightInches: 40 / 3 }),
   a4: Object.freeze({ widthInches: 11.69, heightInches: 8.27 })
 });
 
@@ -239,6 +242,7 @@ export async function toPptx(input, options = {}) {
   context.pictureText = new Map();
   context.slideImages = new Map();
   context.watermarks = new Map();
+  context.textWatermarks = new Map();
   context.logos = new Map();
   context.logoPlaceholderTags = new Map();
   context.bulletImages = new Map();
@@ -396,7 +400,7 @@ export async function fromPptx(input, options = {}) {
   const mediaRegistry = Object.create(null);
   for (let index = 0; index < slidePaths.length; index += 1) {
     furnitureContexts[index].mediaRegistry = mediaRegistry;
-    imported.slides.push(importSlide(entries, slidePaths[index], index, dimensions, {...options, rtlDeck: observedRtl(observedLanguage), dataProvenance: {datasets}}, furniture.slides[index], furnitureContexts[index]));
+    imported.slides.push(importSlide(entries, slidePaths[index], index, dimensions, {...options, rtlDeck: observedRtl(observedLanguage), deckLang: observedLanguage.lang, codeFamily: Object.keys(entries).some(path => /^ppt\/tags\/opf/i.test(path)) ? importedCodeFamily(imported.design) : undefined, dataProvenance: {datasets}}, furniture.slides[index], furnitureContexts[index]));
   }
   if (datasets) imported.datasets = datasets;
   // Native sections (PowerPoint's own section list, `Default Section` = none)
@@ -628,6 +632,16 @@ function readCoreProperties(entries) {
   };
 }
 
+// FA-13: the code family of the imported design's font scheme (a run in it is an inline code run). The scheme's own `code` role,
+// else the bundled record's, else the shared fallback; heading and body families are never code. Only a package the exporter
+// wrote (it carries OPF tag parts) is read this way; a deck from another tool keeps its runs' font families as they are.
+function importedCodeFamily(design) {
+  const reference = design?.fontScheme;
+  const id = referenceId(reference);
+  const base = (id && findById(defaultCatalog("fontSchemes"), id)) || findById(defaultCatalog("fontSchemes"), DEFAULTS.fontScheme);
+  return resolveFontFamilies({...base, ...(isPlainObject(reference) ? reference : {})}).code;
+}
+
 function dimensionsFromPresentation(presentationRoot) {
   const size = presentationRoot["p:sldSz"];
   const width = emuToInches(size?.cx);
@@ -664,6 +678,11 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
   nativeContext.slideImagePictures = slideImage.consumed;
   nativeContext.slideImageShapes = slideImage.consumedShapes;
   const watermarkPath = `slides.${slideIndex}.design.watermark`;
+  // FA-13: a text watermark is a tagged native text box; it is not content and never imports as a text block.
+  const textWatermark = importTextWatermark(nativeContext.shapes, nativeContext.paragraphs.map(shapeParagraphs => shapeParagraphs.map(paragraph => ({text: paragraph.text}))), relationships, entries, slideIndex,
+    diagnostic => options.onDiagnostic?.({...diagnostic, path: watermarkPath}));
+  if (textWatermark.design) slide.design = {...slide.design, ...textWatermark.design};
+  nativeContext.watermarkShapes = textWatermark.consumed;
   const watermark = importWatermark(nativeContext.pictures, relationships, entries, slideIndex,
     picture => importPicture(entries, picture, slidePath, relationships, diagnostic => {
       // The recorded fit is re-derived from design.watermark.
@@ -765,7 +784,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   nativeContext.signalRoles = roles;
   const readBody = nativeBodyReader(slidePath, {
     part: (path, parser) => parseRequiredXml(entries, path, parser), relationships: path => parseRelationships(entries, path), bytes: path => entries[path]
-  }, relationships, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.${diagnostic.path}`}));
+  }, relationships, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.${diagnostic.path}`}), {deckLang: options.deckLang, codeFamily: options.codeFamily});
   const code = importCodeGroups(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.code`}));
   const metric = importMetricGroups(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.metric`}));
   const cards = importCardFrames(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
@@ -804,10 +823,10 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   for (const item of metric.items) items.push({kind:'metric',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload,sources:sourcesOf([item.shape])});
   for (const item of media.items) items.push({kind:'media',sourceText:item.payload.type==='text',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload,sources:sourcesOf([item.shape])});
   for (const [index,shape] of shapes.entries()) {
-    const role = furniture.text.has(index) ? 'furniture' : nativeContext.slideImageShapes?.has(index) ? 'slide-image' : nativeContext.logoPlaceholderShapes?.has(index) ? 'logo' : cards.has(shape) ? 'card-frame'
+    const role = furniture.text.has(index) ? 'furniture' : nativeContext.slideImageShapes?.has(index) ? 'slide-image' : nativeContext.watermarkShapes?.has(index) ? 'watermark' : nativeContext.logoPlaceholderShapes?.has(index) ? 'logo' : cards.has(shape) ? 'card-frame'
       : code.consumed.has(shape) ? 'code' : metric.consumed.has(shape) ? 'metric' : media.consumed.has(shape) ? 'media' : timelines.consumed.has(shape) ? 'timeline' : quotes.consumed.has(shape) ? 'quote' : undefined;
     if (role) roles.set(shapeKeys.get(shape), role);
-    if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index) || nativeContext.logoPlaceholderShapes?.has(index)) continue;
+    if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index) || nativeContext.watermarkShapes?.has(index) || nativeContext.logoPlaceholderShapes?.has(index)) continue;
     if (annotations.consumed.has(shape)) { roles.set(shapeKeys.get(shape), 'annotation'); continue; }
     if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)||quotes.consumed.has(shape)) continue;
     const ordinaryBody = Object.hasOwn(shape, 'p:txBody') && !shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst']?.['p:tags'];
@@ -2099,9 +2118,14 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   const watermark = local ? opfSlide.design.watermark : presentation.design?.watermark;
   if (watermark === undefined || watermark === null || watermark === false) return;
   const path = local ? `slides.${slideIndex}.design.watermark` : 'design.watermark';
-  // The schema requires an image source (a string, or an object with src), so there is no source-less watermark to report.
+  // The schema requires exactly one of src and text, so there is no source-less watermark to report.
   const asset = watermark;
   const {widthInches, heightInches} = slideContext.dimensions;
+  // FA-13: a text watermark is one native text box with the opacity as text alpha, centered and rotated as core's layoutWatermark says.
+  if (isPlainObject(asset) && typeof asset.text === 'string') {
+    addTextWatermark(slide, asset, slideIndex, {width: widthInches * 96, height: heightInches * 96}, slideContext, context, options, path);
+    return;
+  }
   const box = watermarkBox(widthInches, heightInches);
   const outcome = {box};
   const resolved = await resolveImage(asset, presentation, options, path, outcome);
@@ -2114,6 +2138,29 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   // Opacity is an a:alphaModFix on the blip, which PowerPoint applies to an SVG picture (native check 2026-10-01).
   if (outcome.svg) context.svgPictures.set(`ppt/slides/slide${slideIndex + 1}.xml|${watermarkName()}`, outcome.svg);
   slide.addImage({...resolved, objectName: watermarkName(), ...box, altText: assetAlt(asset, presentation) ?? 'Watermark'});
+}
+
+// The stamp takes the slide's own resolved fonts and default text color (readable on that slide's background), as the preview does.
+function addTextWatermark(slide, watermark, slideIndex, size, slideContext, context, options, path) {
+  if (typeof opfCore.layoutWatermark !== 'function') {
+    options.onDiagnostic?.({code: 'watermark-not-exported', path, message: 'The installed @openpresentation/opf has no layoutWatermark, so the text watermark was not exported. Use a core release that exports it.'});
+    return;
+  }
+  const layout = opfCore.layoutWatermark(watermark.text, size, {fontFamily: slideContext.fonts.heading, fontWeight: 700, textMeasurement: options.textMeasurement});
+  if (!layout) {
+    options.onDiagnostic?.({code: 'watermark-not-exported', path, message: 'The text watermark has no text; no watermark was exported for this slide.'});
+    return;
+  }
+  const opacity = watermarkOpacity(watermark);
+  const {box} = layout;
+  slide.addText(layout.text, {
+    ...textBoxOptions({x: box.x / 96, y: box.y / 96, w: box.width / 96, h: box.height / 96}, slideContext, layout.fontSize * .75),
+    ...nativeFontOptions(layout.style), bold: true,
+    color: slideContext.textColor, transparency: Math.round((1 - opacity) * 100000) / 1000,
+    align: 'center', valign: 'middle', fit: 'none', wrap: false, lineSpacingMultiple: 1,
+    rotate: (layout.rotation + 360) % 360, objectName: watermarkTextName()
+  });
+  context.textWatermarks.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, text: layout.text, opacity});
 }
 
 // The deck logo (design.logo, a slide's own logo or the primary organization's) on a cover or section slide: one native
@@ -2538,9 +2585,22 @@ function addCodePayload(slide, value, layout, region, context, path, options) {
   }
   const group = String(context.codeTags.size + 1), panelName = `OPF code ${group} panel`;
   for (const part of layout.parts) if (!part.fit) throw new OPFPptxError('layout-overflow', 'Code content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
-  context.codeTags.set(panelName,codeManifest(value,layout,group));
+  // FA-13: code.highlight is one native rectangle per run of marked lines, between the panel and the line text boxes; marked
+  // lines keep the syntax colours, the others are dimmed, from the same core helpers the preview calls.
+  const highlight = codeHighlight(value, layout, context);
+  context.codeTags.set(panelName,codeManifest(value,layout,group,highlight?.bands.length));
   const syntax = codeSyntax(value, layout, context, path, options);
   slide.addShape('rect', {...region, fill: {color: '111827'}, line: {color: '334155', width: .75}, objectName:panelName});
+  if (highlight) {
+    const bodyPart = layout.parts.find(part => part.role === 'body');
+    highlight.bands.forEach((band, bandIndex) => {
+      const lineHeight = bodyPart.fit.lineHeight;
+      const bandName = `OPF code ${group} highlight ${bandIndex + 1}`;
+      context.codeTags.set(bandName, {v:1, group, role:'highlight', index:bandIndex});
+      slide.addShape('rect', {x: region.x + .01, y: (bodyPart.box.y + band.first * lineHeight) / 96, w: region.w - .02, h: (band.last - band.first + 1) * lineHeight / 96,
+        fill: {color: highlight.colors.band.slice(1)}, line: {type: 'none'}, objectName: bandName});
+    });
+  }
   for (const [partIndex,part] of layout.parts.entries()) {
     if (!part.fit) throw new OPFPptxError('layout-overflow', 'Code content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
     for (const [index,line] of part.fit.sourceLines.entries()) {
@@ -2549,17 +2609,29 @@ function addCodePayload(slide, value, layout, region, context, path, options) {
       context.codeTags.set(objectName,{v:1,group,role:'line',part:partIndex,line:index});
       // RR-07: the same token ranges and palette the preview paints; the text of the runs is the line text, unchanged.
       const runs = syntax && part.role==='body' ? opfCore.codeLineRuns(syntax.tokens,line.start,line.end,part.text) : undefined;
+      const lineColors = highlight && part.role==='body' ? (highlight.marked.has(highlight.numbers[index]) ? highlight.colors.lit : highlight.colors.dim) : undefined;
       const lineText = part.text.slice(line.start,line.end);
       const lineOptions = {
         ...textBoxOptions({x:part.box.x/96,y:(part.box.y+index*part.fit.lineHeight)/96,w:part.box.width/96,h:part.fit.lineHeight/96},context,part.fit.fontSize*.75),
         ...nativeFontOptions(part.style),
-        color:part.role==='body'?'E5E7EB':'93C5FD',align:'left',fit:'none',wrap:false,lineSpacingMultiple:1,
+        color:part.role==='body'?(lineColors?.plain.slice(1)??'E5E7EB'):'93C5FD',align:'left',fit:'none',wrap:false,lineSpacingMultiple:1,
         tabStops:tabStops.length?tabStops:undefined,objectName,
       };
       // A run's own options replace the line's, so every run repeats the font, size, alignment and tab stops and differs only in colour.
-      slide.addText(runs?.some(run=>run.kind) ? runs.map(run=>({text:part.text.slice(run.start,run.end),options:{...lineOptions,color:syntax.palette[run.kind??'plain'].slice(1)}})) : lineText,lineOptions);
+      slide.addText(runs?.some(run=>run.kind) ? runs.map(run=>({text:part.text.slice(run.start,run.end),options:{...lineOptions,color:(lineColors??syntax.palette)[run.kind??'plain'].slice(1)}})) : lineText,lineOptions);
     }
   }
+}
+
+// FA-13: the marked lines of code.highlight, their bands (runs of displayed lines) and the lit/dimmed colours, from core (the preview
+// calls the same functions); undefined when the code marks no line.
+function codeHighlight(value, layout, context) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.highlight)) return undefined;
+  const body = layout.parts.find(part => part.role === 'body');
+  if (!body?.fit) return undefined;
+  const lines = opfCore.codeHighlightLines(value.highlight, body.text).lines;
+  if (!lines.length) return undefined;
+  return {marked: new Set(lines), numbers: opfCore.codeLineNumbers(body.fit.sourceLines), bands: opfCore.codeHighlightBands(body.fit.sourceLines, lines), colors: opfCore.codeHighlightColors(context.colorScheme)};
 }
 
 // Token ranges and palette for the code body, from core (the preview calls the same functions); undefined for plain code.
@@ -2838,6 +2910,12 @@ function chosenFamilyMeasurement(measurement) {
   return wrapped;
 }
 
+// FA-13: TextRun.lang as the run's own proofing language (a:rPr lang), when it differs from the deck language.
+function langOptions(context, tag) {
+  const lang = runLanguageTag(context.scriptFonts, tag);
+  return lang ? {lang} : {};
+}
+
 function nativeFontOptions(style) {
   const face=style.fontFace;
   if(face!==undefined) {
@@ -2894,7 +2972,8 @@ function textRuns(value, context, fallbackFontSize) {
         fontSize: run?.fontSize ?? fallbackFontSize,
         superscript: run?.superscript,
         subscript: !run?.superscript && run?.subscript,
-        hyperlink: run?.link && /^(https?:|mailto:|tel:)/i.test(run.link) ? { url: run.link } : undefined
+        hyperlink: run?.link && /^(https?:|mailto:|tel:)/i.test(run.link) ? { url: run.link } : undefined,
+        ...langOptions(context, run?.lang)
       }
     };
   });
@@ -3495,6 +3574,7 @@ async function normalizePptxZip(raw, context) {
   placeSlideImages(entries, context.slideImages, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
   });
+  tagTextWatermarks(entries, context.textWatermarks);
   placeWatermarks(entries, context.watermarks, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
   });
@@ -3788,6 +3868,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
     if (context.scriptFonts) xml = partScriptFonts(path, xml, context.scriptFonts, context.partSlides.get(path) ?? 0);
     else if (/^ppt\/theme\/theme\d+\.xml$/.test(path)) xml = themeEastAsianFromLatin(xml);
     if (/^ppt\/(?:slides\/slide|notesSlides\/notesSlide)\d+\.xml$/.test(path)) xml = stripRunScriptFonts(xml);
+    if (context.scriptFonts && /^ppt\/slides\/slide\d+\.xml$/.test(path)) xml = runLanguageFonts(xml, context.scriptFonts, context.partSlides.get(path) ?? 0);
     return encodeText(normalizePartReferences(xml, renameMaps));
   }
   return bytes;
