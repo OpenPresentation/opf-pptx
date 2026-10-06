@@ -79,17 +79,21 @@ const dLbl = (index, color, labels, {size, font}) =>
  *   - the label text colour: the chart text colour outside a mark, the contrasting colour (core's `textColorForFill`, as the
  *     preview) inside one, per series, and per point on pie and doughnut charts.
  *
- * `info`: {resolved, kind, palette (series colours, hex without #), labelColor, font, textSize, pointCount}.
+ * FA-14: with a chart highlight (`info.highlight`, src/chart-highlight.js) `palette` holds the highlight-aware series colours, and a
+ * label inside a mark whose colour differs per point (pie and doughnut slices, columns and bars with a category highlight) is written
+ * per point with the colour that contrasts with that point's fill.
+ *
+ * `info`: {resolved, kind, palette (series colours, hex without #), labelColor, font, textSize, pointCount, highlight?}.
  */
 export function applyDataLabels(xml, info) {
-  const {resolved, kind, palette, labelColor, font, textSize, pointCount} = info;
+  const {resolved, kind, palette, labelColor, font, textSize, pointCount, highlight} = info;
   const labels = resolved.dataLabels;
   // Where the label sits on its mark: a bar or pie label placed inside the mark, and the labels of an area or a doughnut ring,
   // take the colour that contrasts with the mark; every other label keeps the chart text colour (as the preview does).
   const inside = kind === 'area' || kind === 'doughnut' || (['bar', 'pie', 'histogram', 'pareto', 'waterfall'].includes(kind) && INSIDE.has(labels.position));
   const contrast = fill => typeof opfCore.textColorForFill === 'function' ? String(opfCore.textColorForFill(`#${fill}`, `#${labelColor}`)).replace(/^#/, '').toUpperCase() : labelColor;
-  const block = (color, {points = 0, leaderLines = false} = {}) =>
-    `<c:dLbls>${Array.from({length: points}, (_, index) => dLbl(index, inside ? contrast(palette[index % palette.length]) : labelColor, labels, {size: textSize, font})).join('')}` +
+  const block = (color, {points = 0, leaderLines = false, fills} = {}) =>
+    `<c:dLbls>${Array.from({length: points}, (_, index) => dLbl(index, inside ? contrast(fills?.[index] ?? palette[index % palette.length]) : labelColor, labels, {size: textSize, font})).join('')}` +
     `<c:numFmt formatCode="General" sourceLinked="0"/><c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>${labelText(color, textSize, font)}${labelFlags(labels, {leaderLines})}</c:dLbls>`;
   const circular = kind === 'pie' || kind === 'doughnut';
   const replaceBlocks = (text, make) => text.replace(/<c:dLbls>[\s\S]*?<\/c:dLbls>/g, existing => make(existing));
@@ -98,7 +102,9 @@ export function applyDataLabels(xml, info) {
   const withSeries = xml.replace(/<c:ser>[\s\S]*?<\/c:ser>/g, ser => {
     const index = seriesIndex++;
     const color = inside && !circular ? contrast(palette[index % palette.length]) : labelColor;
-    return replaceBlocks(ser, existing => block(color, {points: circular ? pointCount : 0, leaderLines: /<c:showLeaderLines\b/.test(existing)}));
+    const fills = highlight?.pointFills(index);
+    const points = circular ? pointCount : inside && fills ? fills.length : 0;
+    return replaceBlocks(ser, existing => block(color, {points, fills, leaderLines: /<c:showLeaderLines\b/.test(existing)}));
   });
   const outside = withSeries.split(/(<c:ser>[\s\S]*?<\/c:ser>)/);
   const groupLevel = outside.map((part, index) => index % 2 ? part : replaceBlocks(part, existing => block(labelColor, {leaderLines: /<c:showLeaderLines\b/.test(existing)}))).join('');
