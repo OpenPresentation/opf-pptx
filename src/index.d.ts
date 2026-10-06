@@ -70,9 +70,9 @@ export interface ChartMappingAdaptedDiagnostic { code: "chart-mapping-adapted"; 
 /** RR-54 (`full` provenance): a chart or table data record, or the datasets map (`path: "datasets"`), is over the 16 MiB tag limit and is not stored; the native values still export. */
 export interface DataProvenanceOmittedDiagnostic { code: "data-provenance-omitted"; path: string; message: string }
 
-/** A template variable was unfilled and its `example` was used (template export only). */
+/** A template variable was unfilled and its `example` was used (template export only), or a built-in variable such as `{{speaker.name}}` has no source value in the document (`variable-builtin-missing`; it exports as nothing). */
 export interface VariableExampleUsedDiagnostic {
-  code: "variable-example-used";
+  code: "variable-example-used" | "variable-builtin-missing";
   /** JSON pointer of the variable's declaration. */
   path: string;
   message: string;
