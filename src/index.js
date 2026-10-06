@@ -3655,11 +3655,14 @@ function normalizeNestedZip(bytes, context) {
   const entries = repairChartWorkbookRanges(unzipSync(bytes));
   const output = {};
   for (const path of Object.keys(entries).sort()) {
-    // A gap in the chart data is a blank workbook cell, not a numeric cell with an empty value.
+    // A gap in the chart data is a blank workbook cell, not a numeric cell with an empty value. RR-54 (opf-pptx#172): the
+    // engine writes a scatter (and bubble) X gap as `<v>${val}</v>`, so a null X value became `<v>null</v>`, a numeric cell
+    // that is no number; it is a gap too. Zero values are kept as `<v>0</v>` (pptxgenjs-plus fixed the `values[idx] || ''`
+    // of PptxGenJS 4.0.1, upstream issue #1430; test/chart-workbook-values.mjs).
     const entryBytes = path === "docProps/core.xml"
       ? encodeText(normalizeCoreProperties(decodeText(entries[path]), context.timestamp))
       : /^xl\/worksheets\/sheet\d+\.xml$/.test(path)
-        ? encodeText(decodeText(entries[path]).replace(/<c ((?:r|s)="[^"]*"(?: (?:r|s)="[^"]*")*)><v><\/v><\/c>/g, "<c $1/>"))
+        ? encodeText(decodeText(entries[path]).replace(/<c ((?:r|s)="[^"]*"(?: (?:r|s)="[^"]*")*)><v>(?:null|undefined)?<\/v><\/c>/g, "<c $1/>"))
         : entries[path];
     output[path] = [entryBytes, {
       level: context.compressionLevel,
