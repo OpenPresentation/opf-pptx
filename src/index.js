@@ -19,6 +19,7 @@ import {attachMediaTags,importMediaGroups,mediaCaption,mediaFrameRecord,mediaTex
 import {addCaption, addFootnotes} from './annotation-export.js';
 import {attachAnnotationTags, captionValue, importAnnotations, restoreCitations} from './annotation-provenance.js';
 import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
+import {headingValue,joinRichLines} from './rich-heading.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
 import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
@@ -684,12 +685,22 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
   // fill an absent role by geometry; explicit native placeholders still apply.
   const inferHeadings = !items.some(item => item.heading||item.sourceText);
   const heading = field => {const index=items.findIndex(item=>item.heading===field);return index<0?null:items.splice(index,1)[0];};
+  // FA-10: a heading is its plain text, or TextRun[] when its native runs are formatted differently from one another (the way
+  // body text reads current native runs). A tagged line group brings its own value; one native shape (a title placeholder, or the
+  // shape the importer took for the title) is read through the native body reader.
+  const headingText = item => {
+    const key = item.sources?.length === 1 ? /^sp:(\d+)$/.exec(item.sources[0]) : null;
+    const parts = item.richText === undefined && key ? joinRichLines([{index: Number(key[1])}], nativeContext.readBody, () => '') : undefined;
+    const value = item.richText ?? (parts ? headingValue(parts) : undefined);
+    // Only when it reads as the same words as the plain path: the native text is authoritative.
+    return Array.isArray(value) && value.map(run => typeof run === 'string' ? run : run.text).join('') === item.text ? value : item.text;
+  };
   const tagItem=heading('tag');
-  if(tagItem)slide.tag=tagItem.text;
+  if(tagItem)slide.tag=headingText(tagItem);
   const titleItem = heading('title')??takeTitleItem(items, dimensions, inferHeadings);
-  if (titleItem) slide.title = titleItem.text;
+  if (titleItem) slide.title = headingText(titleItem);
   const subtitleItem = heading('subtitle')??takeSubtitleItem(items, titleItem, dimensions, inferHeadings);
-  if (subtitleItem) slide.subtitle = subtitleItem.text;
+  if (subtitleItem) slide.subtitle = headingText(subtitleItem);
 
   // Heading inference keeps its existing scalar/native metrics. Only remaining
   // ordinary body shapes gain current rich values; tagged recovery is separate.
@@ -766,10 +777,11 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   const cards = importCardFrames(shapes, paragraphs, relationships, entries, diagnostic => options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
   const media = importMediaGroups(shapes, paragraphs, relationships, entries, slideIndex, diagnostic => options.onDiagnostic?.(diagnostic), nativeContext.mediaRegistry);
   nativeContext.mediaAssets = media.assets;
-  const headings=importHeadingGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
+  nativeContext.readBody=readBody;
+  const headings=importHeadingGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}),readBody);
   const plainText=importPlainTextGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
   const timelines=importTimelineGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
-  const quotes=importQuoteGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.quote`}));
+  const quotes=importQuoteGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.quote`}),readBody);
   // RR-34: tagged caption and footnote lines are not content; captions re-attach to their media block and notes rebuild cite/footnote.
   const annotations=importAnnotations({shapes,paragraphs,relationships,entries,slideIndex,readBody,report:diagnostic=>options.onDiagnostic?.(diagnostic)});
   nativeContext.annotations=annotations;
@@ -778,7 +790,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
     if(item){
       const bounds=group.shapes.map(shape=>shapeBounds(shape['p:spPr']?.['a:xfrm'])).filter(Boolean);
       if(bounds.length){const x=Math.min(...bounds.map(b=>b.x)),y=Math.min(...bounds.map(b=>b.y));item.bounds={x,y,w:Math.max(...bounds.map(b=>b.x+b.w))-x,h:Math.max(...bounds.map(b=>b.y+b.h))-y};}
-      items.push({...item,heading:group.field,sourceText:!group.field,sources:sourcesOf(group.shapes)});
+      items.push({...item,heading:group.field,sourceText:!group.field,sources:sourcesOf(group.shapes),...(group.richText!==undefined?{richText:group.richText}:{})});
     }
   }
   for(const group of timelines.items){
@@ -1618,6 +1630,18 @@ function contrastRatio(first, second) {
   const a = relativeLuminance(first), b = relativeLuminance(second);
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
+// The tag's color as a literal (the one tagColor writes, resolved).
+function tagHex(context) {
+  return contrastRatio(context.colors.accent, context.colors.background) < TAG_MIN_CONTRAST ? context.colors.text : context.colors.accent;
+}
+
+// The defaults a rich heading or quote body is exported with on every run (weight, color, size, family). The tag records them so that
+// import can tell the heading's own look from run formatting the author chose.
+function richBase(fit, style, color) {
+  const font = nativeFontOptions(style);
+  return {bold: font.bold === true, color: `#${normalizeHex(color)}`, fontSize: Math.round(fit.fontSize * .75 * 100) / 100, fontFamily: font.fontFace};
+}
+
 function tagColor(context) {
   if (contrastRatio(context.colors.accent, context.colors.background) < TAG_MIN_CONTRAST) return context.textColor;
   return nativeColor('primary', context.colors.accent, context);
@@ -1790,7 +1814,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
     }
     if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
       addMeasuredPayloadText(slide,item.value,item.box,itemContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:alignmentFor(item),diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?tagColor(itemContext):itemContext.textColor});
-    } else if (["title", "subtitle", "tag"].includes(item.field)) {
+    } else if (["title", "subtitle", "tag"].includes(item.field) && !item.text?.richLines) {
       // Estimated-font headings use one native text box, which still needs a
       // role tag. Role recovery must not depend on outline measurement support.
       const objectName = `OPF heading ${item.path} line 0`;
@@ -1806,21 +1830,17 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
       });
     } else if ((item.field === "items" || item.field === "bullets") && item.text?.listEntries) {
       await addMeasuredList(slide,item.text,itemContext,item.path,item.bulletImage,presentation,slideIndex,options,item.payload?.numbering!==undefined);
-    } else if (item.field === "text" && item.text?.richLines) {
-      const logicalAlignment=item.text.placement?.alignment??alignmentFor(item)??'left';
-      for(const [index,line] of item.text.richLines.entries()){
-        const runs=line.fragments.map(fragment=>{
-          const runColor=exportColor(fragment.run.color,itemContext,itemContext.colors.text);
-          const color=nativeColor(fragment.run.color,runColor,itemContext,itemContext.textColor);
-          return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
-        });
-        // Logical alignment (RR-05): a right-to-left paragraph starts at the right edge; every wrapped line shares its paragraph's direction.
-        const placed=item.text.placement?.lines[index],alignment=placed?.alignment??physicalAlignment(logicalAlignment,item.text.directions?.[index]),factor=alignment==='right'?1:alignment==='center'?.5:0;
-        const area=placed?{...region,x:(placed.x+line.width*factor-item.box.width*factor)/96,y:placed.y/96,h:placed.height/96}:{...region,y:region.y+line.y/96,h:line.height/96};
-        // PptxGenJS reads the paragraph direction from the first run's options, not from the shape options.
-        if(item.text.directions?.[index]==='rtl')for(const run of runs)run.options.rtlMode=true;
-        if(runs.length)slide.addText(runs,{...textBoxOptions(area,itemContext,item.text.fontSize*.75),align:alignment,fit:'none',wrap:false,lineSpacingMultiple:1});
-      }
+    } else if (["text", "title", "subtitle", "tag"].includes(item.field) && item.text?.richLines) {
+      // FA-10: a TextRun[] heading draws and exports like rich body text; its lines are named and tagged as a heading (the body's are not).
+      const heading = item.field !== 'text';
+      addRichFitLines(slide, item.text, item.box, itemContext, {
+        value: item.value, alignment: item.text.placement?.alignment ?? alignmentFor(item) ?? 'left',
+        fallback: item.field === 'tag' ? tagColor(itemContext) : itemContext.textColor,
+        ...(heading ? {
+          objectName: index => `OPF heading ${item.path} line ${index}`,
+          tag: (name, index, count, boundary) => context.headingTags.set(name, {v: 1, group: item.path, field: item.field, line: index, count, ...boundary, base: richBase(item.text, item.textStyle, item.field === 'tag' ? tagHex(itemContext) : itemContext.colors.text)})
+        } : {})
+      });
     } else if (item.field === "text" && typeof item.value === "string") {
       slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle),align:physicalAlignment(alignmentFor(item), item.text.directions?.[0])});
     } else {
@@ -2394,6 +2414,39 @@ function pixelBox(region) {
   return {x: region.x * 96, y: region.y * 96, width: region.w * 96, height: region.h * 96};
 }
 
+// One native text box per laid-out rich line (core's richLines), each carrying its runs: run color, size, weight, underline, strike,
+// super/subscript (a citation marker is a baseline run) and http(s)/mailto links. The body's lines stay untagged; a heading or quote
+// body passes `objectName` and `tag`, which name and tag every line with the boundary between wrapped lines (a soft wrap inserts
+// nothing, a hard line break keeps its separator), recovered from the flattened text. `fallback` is the color of runs without one.
+function addRichFitLines(slide, fit, box, context, {value, alignment: logicalAlignment, fallback, objectName, tag}) {
+  const region = {x: box.x / 96, y: box.y / 96, w: box.width / 96, h: box.height / 96};
+  const runText = run => typeof run === 'string' ? run : run.text;
+  const whole = typeof value === 'string' ? value : value.map(runText).join('');
+  const count = fit.richLines.length;
+  let cursor = 0;
+  for (const [index, line] of fit.richLines.entries()) {
+    const runs = line.fragments.map(fragment => {
+      const runColor = exportColor(fragment.run.color, context, context.colors.text);
+      const color = nativeColor(fragment.run.color, runColor, context, fallback);
+      return {text: fragment.text, options: {...nativeFontOptions(fragment.style), fontSize: (fragment.nominalSize ?? fragment.fontSize) * .75, color, underline: fragment.run.underline ? {style: 'sng', color} : undefined, strike: fragment.run.strikethrough ? 'sngStrike' : undefined, baseline: fragment.baselineShift ? -fragment.baselineShift / (fragment.nominalSize ?? fragment.fontSize) * 2000 : undefined, hyperlink: fragment.kind !== 'marker' && fragment.run.link && /^(https?:|mailto:)/i.test(fragment.run.link) ? {url: fragment.run.link} : undefined}};
+    });
+    // Logical alignment (RR-05): a right-to-left paragraph starts at the right edge; every wrapped line shares its paragraph's direction.
+    const placed = fit.placement?.lines[index], alignment = placed?.alignment ?? physicalAlignment(logicalAlignment, fit.directions?.[index]), factor = alignment === 'right' ? 1 : alignment === 'center' ? .5 : 0;
+    const area = placed ? {...region, x: (placed.x + line.width * factor - box.width * factor) / 96, y: placed.y / 96, h: placed.height / 96} : {...region, y: region.y + line.y / 96, h: line.height / 96};
+    // PptxGenJS reads the paragraph direction from the first run's options, not from the shape options.
+    if (fit.directions?.[index] === 'rtl') for (const run of runs) run.options.rtlMode = true;
+    let name;
+    if (tag) {
+      const text = fit.lines[index] ?? '', end = cursor + text.length;
+      const newline = index < count - 1 && whole.startsWith(text, cursor) ? /^(\r\n|\r|\n)/.exec(whole.slice(end)) : null;
+      name = objectName(index);
+      tag(name, index, count, {boundary: index === count - 1 ? 'end' : newline ? 'hard' : 'soft', separator: newline ? newline[0] : ''});
+      cursor = end + (newline ? newline[0].length : 0);
+    }
+    if (runs.length) slide.addText(runs, {...textBoxOptions(area, context, fit.fontSize * .75), align: alignment, fit: 'none', wrap: false, lineSpacingMultiple: 1, ...(name ? {objectName: name} : {})});
+  }
+}
+
 // Match the published renderer's payload geometry and shared core text fitting.
 // Each fitted line remains native editable text, without PowerPoint rewrapping it.
 function addMeasuredPayloadText(slide, text, box, context, options, config) {
@@ -2588,6 +2641,15 @@ function addQuotePayload(slide, value, layout, context, options, path) {
   // Every line shape is tagged (OPF_QUOTE_V1) so an unchanged export re-imports as a quote payload (FF-57).
   const group=String(context.quoteTags.size),anchor=quoteManifest(value,layout);
   for (const [index,part] of layout.parts.entries()) {
+    // FA-10: a TextRun[] quote body (core's rich lines, quotation marks joined to its first and last run) is exported line by line like rich body text, with the same quote tags.
+    if (part.runs && part.fit.richLines) {
+      addRichFitLines(slide, part.fit, part.box, context, {
+        value: part.text, alignment: part.fit.placement?.alignment ?? context.contentAlignment ?? 'left', fallback: context.textColor,
+        objectName: line => `OPF quote ${group} part ${index} line ${line}`,
+        tag: (name, line, count, boundary) => context.quoteTags.set(name, {v: 1, role: 'text', group, part: index, line, count, ...boundary, base: richBase(part.fit, part.style, context.colors.text), ...(index === 0 && line === 0 ? {anchor} : {})})
+      });
+      continue;
+    }
     addMeasuredPayloadText(slide,part.text,part.box,context,options,{
       path:part.path,fit:part.fit,textStyle:part.style,diagnosticsHandled:true,
       color:part.role==='footer'?context.mutedColor:context.textColor,

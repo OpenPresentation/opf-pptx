@@ -2,6 +2,7 @@ import {XMLParser} from 'fast-xml-parser';
 import {validatePresentation} from '@openpresentation/opf';
 import {attachTextTags,decodeTextTag} from './code-provenance.js';
 import {sourceLineParagraphs} from './text-provenance.js';
+import {cleanBase,headingValue,joinRichLines,unwrapQuoteRuns} from './rich-heading.js';
 
 // FF-57: a `quote` payload exports as native text lines (a body part and an optional footer part). Each line shape carries an
 // OPF_QUOTE_V1 tag, so an unchanged export imports back as {quote: ...} instead of loose text blocks. Like timelines, only topology
@@ -18,7 +19,8 @@ export const attachQuoteTags=(entries,records)=>attachTextTags(entries,records,T
 export function quoteManifest(value,layout) {
   const shorthand=typeof value==='string',fields=shorthand?[]:FIELDS.filter(field=>value[field]);
   return {shorthand,...(fields.length?{footer:{fields,...(fields.length===2?{split:value.attribution.length}:{})}}:{}),
-    parts:layout.parts.map(part=>({role:part.role,lines:part.fit.sourceLines.length}))};
+    // A rich body (FA-10) has richLines instead of sourceLines; both write one native shape per fitted line.
+    parts:layout.parts.map(part=>({role:part.role,lines:(part.fit.sourceLines??part.fit.lines).length}))};
 }
 function validateManifest(manifest) {
   if(!manifest||typeof manifest.shorthand!=='boolean'||!Array.isArray(manifest.parts)||manifest.parts.length<1||manifest.parts.length>2)throw Error('Invalid quote topology.');
@@ -51,7 +53,8 @@ function footerFields(text,footer,report) {
   return {attribution:text.slice(0,at),source:text.slice(at+SEPARATOR.length)};
 }
 
-export function importQuoteGroups(shapes,paragraphs,relationships,entries,report) {
+// `readBody` (optional) is the native body reader: with it the quote text keeps its native run formatting as TextRun[] (FA-10).
+export function importQuoteGroups(shapes,paragraphs,relationships,entries,report,readBody) {
   const groups=new Map(),consumed=new Set(),items=[];
   for(const [index,shape]of shapes.entries()){
     const tags=[];let unreadable=false;
@@ -77,6 +80,13 @@ export function importQuoteGroups(shapes,paragraphs,relationships,entries,report
     }
     const [body,footer]=ordered.map(lines=>sourceLineParagraphs(lines,paragraphs)[0].text),local=[];
     let quote={text:unwrap(body)};
+    // The body lines are one logical text: rich runs when any word is formatted differently from the rest.
+    // Only a rich export records the body's own look (tag.base); a plain string quote stays a string.
+    const base=cleanBase(ordered[0][0]?.data.base);
+    const richParts=base?joinRichLines(ordered[0],readBody,(line,last)=>last?'':line.data.boundary==='hard'?(line.data.separator||'\n'):''):undefined;
+    const rich=richParts?unwrapQuoteRuns(headingValue(richParts,base)):undefined;
+    // Only when it reads as the same words as the plain path (the native text is authoritative).
+    if(Array.isArray(rich)&&rich.map(run=>typeof run==='string'?run:run.text).join('')===quote.text)quote={text:rich};
     if(footer)quote={...quote,...footerFields(footer,manifest.footer,diagnostic=>local.push(diagnostic))};
     if(manifest.shorthand&&Object.keys(quote).length===1)quote=quote.text;
     if(!validatePresentation({slides:[{quote}]}).valid)throw Error('Current native text does not form a valid quote.');
