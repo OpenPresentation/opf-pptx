@@ -1,7 +1,7 @@
 import {XMLParser} from 'fast-xml-parser';
 import {validatePresentation} from '@openpresentation/opf';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
-import {chartUsesDataFields, isDatasetRef, resolveTableData, tableCellDisplayValue, tableUsesDataFields} from './chart-data.js';
+import {chartUsesDataFields, isDatasetRef, numberFormatFromExcel, resolveTableData, tableCellDisplayValue, tableUsesDataFields} from './chart-data.js';
 
 // RR-54: chart and table data survive a PPTX round trip (core docs/chart-table-data.md).
 //
@@ -79,6 +79,15 @@ const canonicalValue = text => NUMBER.test(text.trim()) && Number.isFinite(Numbe
 // A General format code is left out: on a plain save PowerPoint writes <c:formatCode>General</c:formatCode> into every
 // cache that has none (PptxGenJS writes none on pie and doughnut series), so General and no code are the same evidence.
 const generalCode = code => /^\s*general\s*$/i.test(code);
+// A format code is hashed in core's canonical form (numberFormatFromExcel), because a plain PowerPoint save re-spells codes
+// without changing what they show: `$#,##0.0` becomes `\$#,##0.0` and `#,##0 "units"` becomes `#,##0\ "units"` (native
+// check opf#385). Core reads quoted and backslash-escaped literals and literal-safe characters to the same NumberFormat, so
+// both spellings hash equal, while a real change (another number of decimals, another unit) still changes the hash. A code
+// core cannot map is hashed as written; the `opf:` prefix keeps a mapped form apart from a verbatim code of the same text.
+const formatEvidence = code => {
+  const format = numberFormatFromExcel(code);
+  return typeof format === 'string' ? `format:opf:${format}` : `format:${code}`;
+};
 function hash(text) {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let index = 0; index < text.length; index++) {
@@ -97,7 +106,7 @@ export function chartEvidence(xml) {
   for (const match of String(xml).matchAll(/<(c:v|c:formatCode|cx:pt|cx:v)\b[^>]*>([^<]*)<\/\1>|<cx:lvl\b[^>]*?\bformatCode="([^"]*)"/g)) {
     const code = match[3] !== undefined ? decodeEntities(match[3]) : match[1] === 'c:formatCode' ? decodeEntities(match[2]) : undefined;
     if (code === undefined) parts.push(`${match[1]}:${canonicalValue(decodeEntities(match[2]))}`);
-    else if (!generalCode(code)) parts.push(`format:${code}`);
+    else if (!generalCode(code)) parts.push(formatEvidence(code));
   }
   return hash(parts.join('\u0000'));
 }
