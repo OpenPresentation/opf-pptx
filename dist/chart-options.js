@@ -82,6 +82,18 @@ const dLbl = (index, color, labels, {size, font}) =>
  * `info`: {resolved, kind, palette (series colours, hex without #), labelColor, font, textSize, pointCount}.
  */
 export function applyDataLabels(xml, info) {
+  // FA-15: a combo chart labels its column group like clustered columns and its line groups like line points (core's
+  // `linePosition`); the series colours run on across the groups.
+  if (info.kind === 'combo') {
+    let offset = 0;
+    return xml.replace(/<c:(barChart|lineChart)>[\s\S]*?<\/c:\1>/g, (group, element) => {
+      const line = element === 'lineChart';
+      const dataLabels = line ? {...info.resolved.dataLabels, position: info.resolved.dataLabels.linePosition ?? 'above'} : info.resolved.dataLabels;
+      const palette = info.palette.slice(offset).concat(info.palette.slice(0, offset));
+      offset = (offset + (group.match(/<c:ser>/g)?.length ?? 0)) % Math.max(1, info.palette.length);
+      return applyDataLabels(group, {...info, kind: line ? 'line' : 'bar', palette, resolved: {...info.resolved, dataLabels}});
+    });
+  }
   const {resolved, kind, palette, labelColor, font, textSize, pointCount} = info;
   const labels = resolved.dataLabels;
   // Where the label sits on its mark: a bar or pie label placed inside the mark, and the labels of an area or a doughnut ring,
@@ -133,7 +145,7 @@ function titleString(title) {
  * plus `notes` naming what the three fields cannot express. `defaults` is what an export writes without the field:
  * `{legend: 'right' | undefined}` (a legend at the right of multi-series, pie and doughnut charts) and the chart kind.
  */
-export function chartOptionsFromClassic(chartSpace, {chartNode, target, seriesCount, circular, scatter, seriesFormats = []}) {
+export function chartOptionsFromClassic(chartSpace, {chartNode, target, seriesCount, circular, scatter, seriesFormats = [], combo}) {
   // An older core's schema has no such fields (additionalProperties is false), so nothing is added to the imported chart.
   if (!coreKnowsChartOptions()) return {options: {}, notes: []};
   const chart = chartSpace?.['c:chart'];
@@ -151,6 +163,9 @@ export function chartOptionsFromClassic(chartSpace, {chartNode, target, seriesCo
     const category = titleString(asArray(plotArea?.['c:catAx'])[0]?.['c:title']), value = titleString(asArray(plotArea?.['c:valAx'])[0]?.['c:title']);
     if (category) axisTitles.category = category;
     if (value) axisTitles.value = value;
+    // FA-15: a combo chart's secondary value axis title.
+    const secondary = titleString(combo?.secondaryValueAxis?.['c:title']);
+    if (secondary) axisTitles.secondary = secondary;
   }
   if (Object.keys(axisTitles).length) out.axisTitles = axisTitles;
 
@@ -164,12 +179,12 @@ export function chartOptionsFromClassic(chartSpace, {chartNode, target, seriesCo
     if (!(defaultLegend && position === 'right')) out.legend = position;
   } else if (defaultLegend) out.legend = 'none';
 
-  const dataLabels = classicDataLabels(chartNode, target, notes, seriesFormats);
+  const dataLabels = classicDataLabels(chartNode, target, notes, seriesFormats, combo);
   if (dataLabels !== undefined) out.dataLabels = dataLabels;
   return {options: out, notes};
 }
 
-function classicDataLabels(chartNode, target, notes, seriesFormats = []) {
+function classicDataLabels(chartNode, target, notes, seriesFormats = [], combo) {
   const series = asArray(chartNode?.['c:ser']);
   // The labels the chart shows: the first series' block when it has one (PptxGenJS writes pie and doughnut visibility as per
   // point overrides), else the chart group's block.
@@ -191,7 +206,14 @@ function classicDataLabels(chartNode, target, notes, seriesFormats = []) {
   // RR-54: a label format that is a series' own number format imports with that column's format (or its own note).
   if (numberFormat && numberFormat !== 'General' && numberFormat !== '#,##0' && numberFormat !== '0%' && !seriesFormats.includes(numberFormat)) notes.push({option: 'dataLabels', message: `The label number format '${numberFormat}' cannot be expressed; labels import in the General format.`});
   const out = {};
-  const position = DLBL_POS_BACK[source['c:dLblPos']?.val ?? block['c:dLblPos']?.val];
+  let position = DLBL_POS_BACK[source['c:dLblPos']?.val ?? block['c:dLblPos']?.val];
+  if (combo) {
+    // FA-15: one OPF position covers both parts. A line position the columns cannot take (below, left, right) was asked for the
+    // lines; otherwise the column position (center, inside-end, inside-base) is the one, and 'center' is written to both.
+    const lineSeries = asArray(combo.lineNode?.['c:ser']).map(entry => entry?.['c:dLbls']).find(entry => entry !== undefined) ?? combo.lineNode?.['c:dLbls'];
+    const linePosition = DLBL_POS_BACK[lineSeries?.['c:dLblPos']?.val];
+    if (['below', 'left', 'right'].includes(linePosition)) position = linePosition;
+  }
   const supported = support?.dataLabels.positions ?? [];
   if (position && position !== support?.dataLabels.defaultPosition) {
     if (!support || supported.includes(position)) out.position = position;

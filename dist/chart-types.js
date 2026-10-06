@@ -27,6 +27,9 @@ export const CHART_TYPES = Object.freeze({
   radar: category('radar', { aspose: 'Radar', radarStyle: 'standard', markers: false }),
   'radar-with-markers': category('radar', { aspose: 'RadarWithMarkers', radarStyle: 'marker', markers: true }),
   'filled-radar': category('radar', { aspose: 'FilledRadar', radarStyle: 'filled', markers: false }),
+  // FA-15: clustered columns (a c:barChart on the primary axes) with line series with markers (a c:lineChart per value axis;
+  // the secondary one crosses at the right on a deleted second c:catAx). Core's resolveChartData says which series is which.
+  combo: { family: 'combo', pptx: 'bar', aspose: 'ClusteredColumn', barDir: 'col', grouping: 'clustered', markers: true },
   // Office 2016 chartex constructs (cx:chartSpace, one cx:series per plot,
   // named by layoutId). `requires` is the markup-compatibility namespace the
   // slide's mc:Choice names, so older readers take the classic fallback.
@@ -139,6 +142,25 @@ export function chartTypeFromNative(element, node) {
   }
 }
 
+/**
+ * A combo chart in a parsed c:plotArea: exactly one clustered (or standard) column c:barChart and one or two standard
+ * c:lineChart groups, and no other chart group. Returns {bar, lines: [{node, secondary}]} (a line group is secondary when it
+ * plots against an axis the column group does not use) or null for any other plot area.
+ */
+export function comboFromNative(plotArea) {
+  if (!plotArea) return null;
+  const bars = asArray(plotArea['c:barChart']);
+  const lines = asArray(plotArea['c:lineChart']);
+  if (bars.length !== 1 || lines.length < 1 || lines.length > 2) return null;
+  if (NATIVE_CHART_ELEMENTS.some((element) => element !== 'barChart' && element !== 'lineChart' && plotArea[`c:${element}`] !== undefined)) return null;
+  const [bar] = bars;
+  if ((bar['c:barDir']?.val ?? 'col') !== 'col' || !['clustered', 'standard'].includes(bar['c:grouping']?.val ?? 'clustered')) return null;
+  if (lines.some((line) => !['standard', undefined].includes(line['c:grouping']?.val))) return null;
+  const axes = (node) => asArray(node['c:axId']).map((axis) => String(axis?.val));
+  const primary = axes(bar);
+  return { bar, lines: lines.map((node) => ({ node, secondary: axes(node).some((id) => !primary.includes(id)) })) };
+}
+
 export const NATIVE_CHART_ELEMENTS = Object.freeze([
   'barChart', 'bar3DChart', 'lineChart', 'line3DChart', 'pieChart', 'pie3DChart', 'ofPieChart',
   'doughnutChart', 'areaChart', 'area3DChart', 'scatterChart', 'radarChart',
@@ -151,6 +173,7 @@ function asArray(value) {
 // PptxGenJS omits or cannot express parts of these constructs. Rewrite only
 // the generated chart-type element so the part states the exact grouping.
 export function applyChartConstruct(xml, spec) {
+  if (spec?.family === 'combo') return applyComboConstruct(xml);
   // ScatterWithMarkers: the core catalog records scatterStyle "marker" (markers, no connecting line). PptxGenJS writes lineMarker and relies on the series line being noFill.
   if (spec?.family === 'xy') return xml.replace(/<c:scatterStyle val="[^"]*"\/>/, '<c:scatterStyle val="marker"/>');
   if (!spec || spec.family !== 'category') return xml;
@@ -173,4 +196,22 @@ export function applyChartConstruct(xml, spec) {
     body = body.replace(/<c:overlap val="[^"]*"\/>/, '<c:overlap val="100"/>');
   }
   return xml.slice(0, start) + open + body + xml.slice(end);
+}
+
+// FA-15: PptxGenJS writes each c:lineChart of a multi-type chart without the c:grouping CT_LineChart requires, gives its series
+// the bar-only c:invertIfNegative, and writes c:dLbls before c:marker (CT_LineSer orders marker, dPt, dLbls). Rewrite every line
+// group of a combo chart into schema order; the c:barChart already states barDir and grouping.
+export function applyComboConstruct(xml) {
+  return xml.replace(/<c:lineChart>([\s\S]*?)<\/c:lineChart>/g, (_, body) => {
+    let next = `<c:grouping val="standard"/>${body.replace(/<c:grouping val="[^"]*"\/>/g, '')}`;
+    next = next.replace(/<c:invertIfNegative val="[^"]*"\/>/g, '');
+    next = next.replace(/<c:ser>[\s\S]*?<\/c:ser>/g, (ser) => {
+      const marker = /<c:marker>[\s\S]*?<\/c:marker>/.exec(ser)?.[0];
+      const labels = /<c:dLbls>[\s\S]*?<\/c:dLbls>/.exec(ser);
+      if (!marker || !labels || ser.indexOf(marker) < labels.index) return ser;
+      const without = ser.replace(marker, '');
+      return without.replace(/<c:dLbls>/, `${marker}<c:dLbls>`);
+    });
+    return `<c:lineChart>${next}</c:lineChart>`;
+  });
 }

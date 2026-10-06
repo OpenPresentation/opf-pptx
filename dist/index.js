@@ -8,7 +8,7 @@ import {legacyVendorOutput} from './vendor-compat.js';
 import {readChartCategoryHeading,writeChartCategoryHeading,writeChartWorkbookFormats,repairChartWorkbookRanges} from './chart-workbook.js';
 import {applyChartNumberFormats,chartNumber,excelCode,formattedColumns,inlineChartData,inlineTableData,isDatasetRef,numericRanges,resolveChartData} from './chart-data.js';
 import {attachDataProvenance,chartDataRecord,chartEvidence,readDataTag,readDatasetsTag,restoreChartData,restoreTableData,tableDataRecord} from './data-provenance.js';
-import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
+import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,comboFromNative,NATIVE_CHART_ELEMENTS} from './chart-types.js';
 import {attachChartexParts,chartFromChartex,CHARTEX_GRAPHIC_DATA_URI} from './chartex.js';
 import {applyDataLabels,chartOptionsFromClassic,chartTargetFor,classicChartOptions,reportChartOptionDiagnostics,resolveChartOptionsFor} from './chart-options.js';
 import {attachCodeTags, attachTextTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
@@ -916,9 +916,10 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
       : chartFromRelationship(entries, slidePath, relationships, chartRelId, report);
     const stored = imported && record('chart');
     const part = relationships.get(chartRelId)?.path;
-    const chart = stored && part && entries[part]
+    const restored = stored && part && entries[part]
       ? restore('chart', imported, () => restoreChartData(imported, stored, chartEvidence(decodeText(entries[part])), {datasets: data.datasets, report: diagnostic => data.report?.('chart', diagnostic)}))
       : imported;
+    const chart = restored?.type === 'combo' ? elideComboDefault(restored, data.datasets) : restored;
     return {
       kind: "chart",
       bounds,
@@ -1211,9 +1212,12 @@ function chartFromRelationship(entries, slidePath, relationships, relId, report)
   const plotArea = doc["c:chartSpace"]?.["c:chart"]?.["c:plotArea"];
   if (!plotArea) return null;
 
-  const chartNode = firstChartNode(plotArea);
+  // FA-15: a clustered column group with one or two line groups is a combo chart; its series are read in c:order.
+  const combo = comboFromNative(plotArea);
+  const comboSeries = combo ? comboSeriesOf(combo) : undefined;
+  const chartNode = combo ? {node: combo.bar, type: 'combo'} : firstChartNode(plotArea);
   if (!chartNode) return null;
-  const series = asArray(chartNode.node["c:ser"]);
+  const series = comboSeries ? comboSeries.map(entry => entry.ser) : asArray(chartNode.node["c:ser"]);
   if (series.length === 0) return null;
   if (series.length > MAX_CHART_CACHE_POINTS) {
     throw new OPFPptxError('invalid-chart-cache', 'Chart cache exceeds the 100,000-series import limit; reduce its series before importing.', {path: relationship.path});
@@ -1226,7 +1230,8 @@ function chartFromRelationship(entries, slidePath, relationships, relId, report)
   const xCode = chartNode.type === 'scatter' ? cacheFormatCode(series[0]?.["c:xVal"]) : undefined;
   // RR-35: axis titles, legend position and data labels read back into the chart's option fields.
   const withOptions = chart => {
-    const {options, notes} = chartOptionsFromClassic(doc["c:chartSpace"], {chartNode: chartNode.node, target: chartTargetFor(chartNode.type), seriesCount: series.length, circular: chartNode.type === 'pie' || chartNode.type === 'doughnut', scatter: chartNode.type === 'scatter', seriesFormats: valueCodes});
+    const {options, notes} = chartOptionsFromClassic(doc["c:chartSpace"], {chartNode: chartNode.node, target: chartTargetFor(chartNode.type), seriesCount: series.length, circular: chartNode.type === 'pie' || chartNode.type === 'doughnut', scatter: chartNode.type === 'scatter', seriesFormats: valueCodes,
+      ...(combo ? {combo: {lineNode: combo.lines[0]?.node, secondaryValueAxis: secondaryValueAxisOf(plotArea, combo)}} : {})});
     for (const note of notes) report?.(note);
     if (budget.rejected?.length) report?.({code: 'chart-value-not-numeric', option: 'data', message: `${budget.rejected.length} cached chart ${budget.rejected.length === 1 ? 'value is' : 'values are'} not a number (first at ${budget.rejected[0]}) and ${budget.rejected.length === 1 ? 'imports as a gap' : 'import as gaps'}, never as a guessed value.`});
     return chart && Object.keys(options).length ? {...chart, ...options} : chart;
@@ -1257,8 +1262,55 @@ function chartFromRelationship(entries, slidePath, relationships, relId, report)
     data: {
       columns: formattedColumns([readChartCategoryHeading(entries,relationship.path) ?? "Category", ...names], [undefined, ...valueCodes], report),
       rows
-    }
+    },
+    ...(comboSeries ? comboFields(comboSeries, names, report) : {})
   });
+}
+
+// FA-15: the series of a combo plot area with their role and axis, in c:order (document order breaks ties).
+function comboSeriesOf(combo) {
+  const entries = [
+    ...asArray(combo.bar["c:ser"]).map(ser => ({ser, role: 'bar', secondary: false})),
+    ...combo.lines.flatMap(group => asArray(group.node["c:ser"]).map(ser => ({ser, role: 'line', secondary: group.secondary}))),
+  ];
+  const order = (entry, index) => {
+    const value = Number(entry.ser?.["c:order"]?.val);
+    return Number.isFinite(value) ? value : index;
+  };
+  return entries.map((entry, index) => ({...entry, key: order(entry, index), index})).sort((a, b) => a.key - b.key || a.index - b.index);
+}
+
+// The c:valAx a secondary line group plots against (its axis that the column group does not use), or undefined.
+function secondaryValueAxisOf(plotArea, combo) {
+  const group = combo.lines.find(entry => entry.secondary);
+  if (!group) return undefined;
+  const ids = new Set(asArray(group.node["c:axId"]).map(axis => String(axis?.val)));
+  return asArray(plotArea["c:valAx"]).find(axis => ids.has(String(axis?.["c:axId"]?.val)));
+}
+
+// `line` and `secondaryAxis` of an imported combo chart by series name (elideComboDefault drops a `line` that is the default).
+// Combo lines always draw markers in OPF; a native line without markers is reported, never silently changed.
+function comboFields(comboSeries, names, report) {
+  const line = names.filter((_, index) => comboSeries[index].role === 'line');
+  const secondaryAxis = names.filter((_, index) => comboSeries[index].secondary);
+  const unmarked = names.filter((_, index) => comboSeries[index].role === 'line' && comboSeries[index].ser?.["c:marker"]?.["c:symbol"]?.val === 'none');
+  if (unmarked.length) report?.({option: 'line', message: `The combo chart's line ${unmarked.length === 1 ? 'series' : 'series'} ${unmarked.map(name => `'${name}'`).join(', ')} ${unmarked.length === 1 ? 'has' : 'have'} no markers; OPF combo lines always draw markers, so ${unmarked.length === 1 ? 'it imports' : 'they import'} with markers.`});
+  if (new Set(line).size !== line.length || new Set(names).size !== names.length) {
+    report?.({option: 'line', message: 'Two series of the combo chart share a name, so which of them is a line cannot be said by name; the chart imports with its default line (the last series).'});
+    return {};
+  }
+  return {...(line.length ? {line} : {}), ...(secondaryAxis.length ? {secondaryAxis} : {})};
+}
+
+// An imported combo chart writes `line` only when it differs from the default (the last plotted series), judged on the final
+// data (a restored data record can order the columns differently from the native series).
+function elideComboDefault(chart, datasets) {
+  if (!Array.isArray(chart.line)) return chart;
+  const {line, ...rest} = chart;
+  const resolved = resolveChartData(rest, {datasets: datasets ?? {}});
+  if (!resolved.ok || !Array.isArray(resolved.combo)) return chart;
+  const defaults = resolved.columns.slice(1).filter((_, index) => resolved.combo[index]?.role === 'line');
+  return defaults.length === line.length && defaults.every(name => line.includes(name)) ? rest : chart;
 }
 
 // The format code of a numeric cache (c:numRef/c:numCache or c:numLit), or undefined.
@@ -2211,7 +2263,10 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
   const textSize = chartTextSize(context);
   // RR-54: the columns' number formats (Excel codes per exported series) for the caches, labels, value axis and workbook.
   // The value axis shows the first plotted series' format (General when it has none), as the preview does.
+  // A combo chart's secondary value axis shows its first series' format (FA-15).
+  const secondaryIndex = chartData.combo?.findIndex((entry) => entry.axis === 'secondary') ?? -1;
   const numberFormats = chartData.formats && {...chartData.formats, axis: chartData.spec.grouping === 'percentStacked' ? undefined : chartData.formats.series[0],
+    ...(secondaryIndex >= 0 ? {secondaryAxis: chartData.formats.series[secondaryIndex]} : {}),
     labels: !chartOptions?.dataLabels?.content?.includes('percent'), scatter: chartData.type === 'scatter'};
   context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chartData.heading,labelColor,spec:chartData.spec,textSize,
     options:chartOptions,kind:chartTargetFor(chart.type)?.kind,pointCount:chartData.pointCount,numberFormats});
@@ -2235,7 +2290,7 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
   // bar chart with one series whenever chartColors is a custom array of more than one colour, so PowerPoint drew each
   // column of a single-series column or bar chart in a different colour. One colour for that series writes no c:dPt.
   const chartColors = chartData.type === 'bar' && chartData.series.length === 1 ? palette.slice(0, 1) : palette;
-  slide.addChart(chartData.type, chartData.series, {
+  const chartOptionsXml = {
     objectName,
     x: region.x,
     y: region.y,
@@ -2271,7 +2326,37 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     ...(chartData.spec.radarStyle ? { radarStyle: chartData.spec.radarStyle } : {}),
     // ScatterWithMarkers: markers only, no connecting line.
     ...(chartData.type === 'scatter' ? { lineSize: 0, lineDataSymbol: 'circle' } : {})
-  });
+  };
+  if (chartData.combo?.length && chartData.combo.length === chartData.series.length) {
+    slide.addChart(...comboChart(chartData, chartOptionsXml, {palette, chartOptions, labelColor, font: context.fonts.body, textSize}));
+    return;
+  }
+  slide.addChart(chartData.type, chartData.series, chartOptionsXml);
+}
+
+// FA-15: a combo chart is one PptxGenJS multi-type chart: a clustered column c:barChart on the primary axes, a c:lineChart with
+// markers for the primary-axis lines, and one for the secondary-axis lines on a second c:valAx (at the right, crossing at the
+// maximum of a deleted second c:catAx). Each series keeps its palette colour by its index in the whole chart (PptxGenJS restarts
+// the colour cycle per chart type), and the embedded workbook holds every series. The secondary axis has no gridlines and only
+// its own title; applyComboConstruct puts the line groups into schema order afterwards.
+function comboChart(chartData, options, {palette, chartOptions, labelColor, font, textSize}) {
+  const series = chartData.series.map((entry, index) => ({...entry, color: palette[index % palette.length]}));
+  const part = (role, axis) => series.filter((_, index) => chartData.combo[index].role === role && (role === 'bar' || chartData.combo[index].axis === axis));
+  const bars = part('bar'), primaryLines = part('line', 'primary'), secondaryLines = part('line', 'secondary');
+  const lineOptions = {lineDataSymbol: 'circle'};
+  const types = [
+    // The column group's own colour list: with one column series, a longer list would make PptxGenJS colour each column (c:dPt, RR-36).
+    ...(bars.length ? [{type: 'bar', data: bars, options: {barDir: 'col', barGrouping: 'clustered', chartColors: bars.map((entry) => entry.color)}}] : []),
+    ...(primaryLines.length ? [{type: 'line', data: primaryLines, options: lineOptions}] : []),
+    ...(secondaryLines.length ? [{type: 'line', data: secondaryLines, options: {...lineOptions, secondaryValAxis: true, secondaryCatAxis: true}}] : []),
+  ];
+  // A gap in a line series breaks the line, as the preview draws it (PptxGenJS defaults to span).
+  const {barGrouping: _grouping, ...rest} = options;
+  const shared = {...rest, displayBlanksAs: 'gap'};
+  if (!secondaryLines.length) return [types, {...shared, barDir: 'col'}];
+  const title = chartOptions?.axisTitles?.secondary;
+  const secondaryValue = {valGridLine: {style: 'none'}, showValAxisTitle: Boolean(title), ...(title ? {valAxisTitle: title, valAxisTitleColor: labelColor, valAxisTitleFontFace: font, valAxisTitleFontSize: textSize / 100} : {})};
+  return [types, {...shared, barDir: 'col', valAxes: [{}, secondaryValue], catAxes: [{}, {catAxisHidden: true, showCatAxisTitle: false}]}];
 }
 
 // RR-54: a chart or table that uses a dataset, DataColumn objects, a mapping, a data source or number formats records its
@@ -2887,7 +2972,9 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
       : 'that PowerPoint has not yet accepted natively from this exporter (pass chartex: \'native\' to write its chartex part)';
     adaptations.push({adaptation: "chartex-fallback", message: `The '${typeName}' chart is a PowerPoint extension (chartex) chart ${reason}; its data is exported as a native clustered column chart instead.`});
   }
-  const mapped = {type: spec.pptx, spec, chartex, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined, diagnostics, heading: data.columns[0], pointCount: data.rows.length};
+  const mapped = {type: spec.pptx, spec, chartex, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined, diagnostics, heading: data.columns[0], pointCount: data.rows.length,
+    // FA-15: core's combo plan (column series, then the primary-axis lines, then the secondary-axis lines), aligned with the series.
+    ...(spec.family === 'combo' ? {combo: comboPlanOf(resolvedData, data.columns.length - 1)} : {})};
   // Number formats only when a column has one: a chart without formats carries no `formats` and is written as before.
   const withFormats = (result, formats) => formats.series.some((code) => code !== undefined) || formats.x !== undefined ? {...result, formats} : result;
   if (data.columns.length === 1) {
@@ -2962,6 +3049,12 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
   // A scatter chart's first series is its X values (PptxGenJS writes one c:ser per Y series, each with c:xVal).
   const formats = spec.family === 'xy' ? {series: codes.slice(1), x: codes[0]} : {series: codes};
   return withFormats({...mapped, series, hasCategories: true, adaptations, notNumeric}, formats);
+}
+
+/** Core's combo plan; a core without one draws every series as columns except the last, a line on the primary axis (the preview's rule). */
+function comboPlanOf(resolved, count) {
+  if (Array.isArray(resolved.combo) && resolved.combo.length === count) return resolved.combo;
+  return Array.from({length: count}, (_, index) => ({role: count > 1 && index === count - 1 ? 'line' : 'bar', axis: 'primary'}));
 }
 
 /** A chart column's name: the string, or a DataColumn's `name`. */

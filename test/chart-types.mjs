@@ -62,7 +62,8 @@ const expected = {
   'filled-radar': {element: 'radarChart', radarStyle: 'filled'},
 };
 
-const classic = Object.keys(CHART_TYPES).filter((id) => CHART_TYPES[id].family !== 'chartex');
+// The combo chart (FA-15) is a mixed composition with its own test (test/combo-charts.mjs).
+const classic = Object.keys(CHART_TYPES).filter((id) => CHART_TYPES[id].family !== 'chartex' && CHART_TYPES[id].family !== 'combo');
 assert.deepEqual(classic.sort(), Object.keys(expected).sort(), 'every classic kept chart type has an expectation');
 
 let checked = 0;
@@ -109,6 +110,19 @@ for (const record of keptRecords) {
   assert.equal(spec.aspose, record.mappings.renderers['aspose-slides'].chartType, `${record.id}: Aspose.Slides ChartType`);
   assert.equal(spec.family === 'chartex', openxml.composition === 'extension', `${record.id}: chartex family is the catalog's extension composition`);
   if (spec.family === 'chartex') continue;
+  if (spec.family === 'combo') {
+    // A mixed composition: a clustered column barChart and a lineChart with markers, both exported (test/combo-charts.mjs).
+    assert.equal(openxml.composition, 'mixed', record.id);
+    assert.deepEqual(openxml.series.map((entry) => entry.element), ['barChart', 'lineChart'], record.id);
+    assert.equal(spec.barDir, openxml.barDir, `${record.id}: barDir`);
+    assert.equal(spec.grouping, openxml.grouping, `${record.id}: grouping`);
+    assert.equal(spec.markers, openxml.series[1].marker === true, `${record.id}: line markers`);
+    const {xml} = await exportChart(record.id, dataFor(record.id));
+    assert.match(xml, /<c:barChart><c:barDir val="col"\/><c:grouping val="clustered"\/>/, `${record.id}: exported column group`);
+    assert.match(xml, /<c:lineChart><c:grouping val="standard"\/>/, `${record.id}: exported line group`);
+    checked++;
+    continue;
+  }
   assert.equal(openxml.composition, 'single', record.id);
   assert.equal(nativeElement[spec.pptx], openxml.element, `${record.id}: chart element`);
   if (spec.pptx === 'bar') assert.equal(spec.barDir, openxml.barDir, `${record.id}: barDir`);
