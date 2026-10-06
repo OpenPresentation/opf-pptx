@@ -10,6 +10,7 @@ import {applyChartNumberFormats,chartNumber,excelCode,formattedColumns,inlineCha
 import {attachDataProvenance,chartDataRecord,chartEvidence,readDataTag,readDatasetsTag,restoreChartData,restoreTableData,tableDataRecord} from './data-provenance.js';
 import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
 import {attachChartexParts,chartFromChartex,CHARTEX_GRAPHIC_DATA_URI} from './chartex.js';
+import {applyChartAlt,readFrameAlt} from './chart-alt.js';
 import {applyDataLabels,chartOptionsFromClassic,chartTargetFor,classicChartOptions,reportChartOptionDiagnostics,resolveChartOptionsFor} from './chart-options.js';
 import {attachCodeTags, attachTextTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
@@ -261,6 +262,7 @@ export async function toPptx(input, options = {}) {
   context.metricTags = new Map();
   context.metricDescriptions = new Map();
   context.chartHeadings = new Map();
+  context.chartAlts = new Map();
   context.chartFonts = new Map();
   context.chartPalettes = new Map();
   context.chartex = new Map();
@@ -919,12 +921,14 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
     const chart = stored && part && entries[part]
       ? restore('chart', imported, () => restoreChartData(imported, stored, chartEvidence(decodeText(entries[part])), {datasets: data.datasets, report: diagnostic => data.report?.('chart', diagnostic)}))
       : imported;
+    // FA-09: the frame's descr (or PowerPoint's decorative marker) is the chart's text alternative.
+    const alt = chart ? readFrameAlt(frame["p:nvGraphicFramePr"]?.["p:cNvPr"]) : undefined;
     return {
       kind: "chart",
       bounds,
       name,
       payload: chart
-        ? { type: "chart", chart }
+        ? { type: "chart", chart: alt === undefined ? chart : { ...chart, alt } }
         : { type: "text", text: `PowerPoint chart: ${name || chartRelId}` }
     };
   }
@@ -2217,6 +2221,8 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     options:chartOptions,kind:chartTargetFor(chart.type)?.kind,pointCount:chartData.pointCount,numberFormats});
   recordPayloadData(context, objectName, 'chart', presentation, path);
   context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
+  // FA-09: the chart's text alternative (the frame's descr; the empty string is PowerPoint's decorative marker), applied before the chartex frame copies the head.
+  if (typeof chart.alt === 'string') context.chartAlts.set(objectName, chart.alt);
   const preferredPalette = CHART_COLORS.map(color=>`#${color}`);
   const palette = (typeof opfComposition.chartPaletteForFill === "function" ? opfComposition.chartPaletteForFill(panelFill, preferredPalette) : preferredPalette.map(color=>chartColorForFill(panelFill,color))).map(color=>normalizeHex(color));
   context.chartPalettes.set(objectName,palette);
@@ -3390,6 +3396,7 @@ async function normalizePptxZip(raw, context) {
     }
   }
   applyChartFonts(entries,context.chartFonts,parseRelationships);
+  if (context.chartAlts.size) for (const [part, bytes] of Object.entries(entries)) if (/^ppt\/slides\/slide\d+\.xml$/.test(part)) { const xml = decodeText(bytes), next = applyChartAlt(xml, context.chartAlts); if (next !== xml) entries[part] = encodeText(next); }
   // Chartex charts: the native cx:chartSpace part, its style parts and the mc:AlternateContent frame (the classic chart above is the fallback).
   try {
     attachChartexParts(entries, context.chartex, parseRelationships);
