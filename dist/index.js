@@ -2650,13 +2650,27 @@ function addTimelinePayload(slide, value, layout, context, options, path) {
   const {x1,y1,x2,y2}=layout.connector;
   slide.addShape('line',{objectName:connectorName,x:x1/96,y:y1/96,w:(x2-x1)/96,h:(y2-y1)/96,line:{color:context.colors.border,width:3*scale*.75}});
   context.timelineTags.set(connectorName,{v:1,group,role:'connector'});
+  // FA-11: a status draws from the deck's colors through core's shared shapes: native ellipses (solid fill, or the
+  // background fill plus a line for a hollow marker or a ring) and a muted text color for a planned event. An older core draws plain markers.
+  const statusColors={background:`#${normalizeHex(context.colors.background)}`,primary:`#${context.colors.accent}`,text:`#${normalizeHex(context.colors.text)}`,mutedText:`#${context.colors.mutedText}`};
+  const statusShapes=typeof opfCore.timelineMarkerShapes==='function';
   for(const marker of layout.markers){
-    const objectName=`OPF timeline ${group} marker ${marker.eventIndex}`;
-    slide.addShape('ellipse',{objectName,x:(marker.x-marker.radius)/96,y:(marker.y-marker.radius)/96,w:marker.radius*2/96,h:marker.radius*2/96,fill:{color:context.colors.accent},line:{transparency:100}});
-    context.timelineTags.set(objectName,{v:1,group,role:'marker',eventIndex:marker.eventIndex});
+    if(!statusShapes||!marker.status){
+      const objectName=`OPF timeline ${group} marker ${marker.eventIndex}`;
+      slide.addShape('ellipse',{objectName,x:(marker.x-marker.radius)/96,y:(marker.y-marker.radius)/96,w:marker.radius*2/96,h:marker.radius*2/96,fill:{color:context.colors.accent},line:{transparency:100}});
+      context.timelineTags.set(objectName,{v:1,group,role:'marker',eventIndex:marker.eventIndex});
+      continue;
+    }
+    for(const shape of opfCore.timelineMarkerShapes(marker,statusColors)){
+      const objectName=`OPF timeline ${group} ${shape.role} ${marker.eventIndex}`;
+      slide.addShape(shape.shape,{objectName,x:(shape.cx-shape.radius)/96,y:(shape.cy-shape.radius)/96,w:shape.radius*2/96,h:shape.radius*2/96,
+        fill:{color:normalizeHex(shape.fill)},line:shape.stroke?{color:normalizeHex(shape.stroke.color),width:shape.stroke.width*.75}:{transparency:100}});
+      context.timelineTags.set(objectName,{v:1,group,role:shape.role,eventIndex:marker.eventIndex,...(shape.role==='marker'?{status:marker.status}:{})});
+    }
   }
   for(const [index,part]of layout.parts.entries()){
-    addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,timeline:{group,part:index,anchor}});
+    const statusColor=part.status==='planned'&&typeof opfCore.timelineTextColor==='function'?normalizeHex(opfCore.timelineTextColor(part,statusColors)):undefined;
+    addMeasuredPayloadText(slide,part.text,part.box,context,options,{path:part.path,fit:part.fit,textStyle:part.style,align:part.alignment,diagnosticsHandled:true,timeline:{group,part:index,anchor},...(statusColor?{color:statusColor}:{})});
   }
 }
 
