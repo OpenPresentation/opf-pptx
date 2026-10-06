@@ -22,7 +22,7 @@ import {attachAnnotationTags, captionValue, importAnnotations, restoreCitations}
 import {attachHeadingTags,importHeadingGroups} from './heading-provenance.js';
 import {attachPlainTextTags,importPlainTextGroups} from './text-provenance.js';
 import {attachTimelineTags,timelineManifest,importTimelineGroups} from './timeline-provenance.js';
-import {attachQuoteTags,quoteManifest,importQuoteGroups} from './quote-provenance.js';
+import {attachQuoteTags,quoteManifest,importQuoteGroups,quotePhotoName} from './quote-provenance.js';
 import {attachFurnitureTags, furnitureManifest, importFurniture, manifestPartIndex, staticDateFallback} from './furniture-provenance.js';
 import {restoreRunColors} from './run-colors.js';
 import {joinWrappedText} from './content-topology.js';
@@ -250,6 +250,7 @@ export async function toPptx(input, options = {}) {
   context.plainTextTags = new Map();
   context.timelineTags = new Map();
   context.quoteTags = new Map();
+  context.quotePhotos = new Map();
   context.furnitureTags = new Map();
   context.furnitureLogoTags = new Map();
   context.furnitureFields = new Map();
@@ -772,7 +773,11 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   const headings=importHeadingGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
   const plainText=importPlainTextGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
   const timelines=importTimelineGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}`}));
-  const quotes=importQuoteGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.quote`}));
+  const quotes=importQuoteGroups(shapes,paragraphs,relationships,entries,diagnostic=>options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.quote`}),nativeContext.pictures,
+    picture=>importPicture(entries,picture,slidePath,relationships,diagnostic=>{
+      // The recorded crop is re-derived from the circular frame of the quote photo.
+      if(diagnostic.code!=='unsupported-image-crop')options.onDiagnostic?.({...diagnostic,path:`slides.${slideIndex}.quote.photo`});
+    }));
   // RR-34: tagged caption and footnote lines are not content; captions re-attach to their media block and notes rebuild cite/footnote.
   const annotations=importAnnotations({shapes,paragraphs,relationships,entries,slideIndex,readBody,report:diagnostic=>options.onDiagnostic?.(diagnostic)});
   nativeContext.annotations=annotations;
@@ -790,9 +795,9 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
     items.push({kind:'timeline',sourceText:true,bounds:union,payload:group.payload,sources:sourcesOf(group.shapes)});
   }
   for(const group of quotes.items){
-    const bounds=group.shapes.map(shape=>shapeBounds(shape['p:spPr']?.['a:xfrm'])).filter(Boolean);
+    const bounds=[...group.shapes.map(shape=>shapeBounds(shape['p:spPr']?.['a:xfrm'])),...group.pictures.map(picture=>shapeBounds(picture['p:spPr']?.['a:xfrm']))].filter(Boolean);
     let union;for(const bound of bounds){if(!union)union={...bound};else{const x=Math.min(union.x,bound.x),y=Math.min(union.y,bound.y);union={x,y,w:Math.max(union.x+union.w,bound.x+bound.w)-x,h:Math.max(union.y+union.h,bound.y+bound.h)-y};}}
-    items.push({kind:'quote',bounds:union,payload:group.payload,sources:sourcesOf(group.shapes)});
+    items.push({kind:'quote',bounds:union,payload:group.payload,sources:[...sourcesOf(group.shapes),...group.pictures.map(picture=>`pic:${nativeContext.pictures.indexOf(picture)}`)]});
   }
   for (const item of code.items) items.push({kind:'code',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload,sources:sourcesOf([item.shape])});
   for (const item of metric.items) items.push({kind:'metric',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload,sources:sourcesOf([item.shape])});
@@ -837,7 +842,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   }
 
   for (const [index, picture] of nativeContext.pictures.entries()) {
-    const pictureRole = furniture.pictures.has(index) ? 'furniture' : nativeContext.slideImagePictures?.has(index) ? 'slide-image' : nativeContext.watermarkPictures?.has(index) ? 'watermark' : nativeContext.logoPictures?.has(index) ? 'logo' : undefined;
+    const pictureRole = furniture.pictures.has(index) ? 'furniture' : nativeContext.slideImagePictures?.has(index) ? 'slide-image' : nativeContext.watermarkPictures?.has(index) ? 'watermark' : nativeContext.logoPictures?.has(index) ? 'logo' : quotes.consumedPictures.has(picture) ? 'quote' : undefined;
     if (pictureRole) { roles.set(`pic:${index}`, pictureRole); continue; }
     const report = diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.pictures.${index}`});
     const item = importPicture(entries, picture, slidePath, relationships, report);
@@ -1926,7 +1931,7 @@ async function addPayload(slide, presentation, payload, region, path, context, o
       addMetricPayload(slide, payload.metric,metricLayout,context,path,options);
       break;
     case "quote":
-      addQuotePayload(slide, payload.quote, quoteLayout, context, options, path);
+      await addQuotePayload(slide, presentation, payload.quote, quoteLayout, context, options, path);
       break;
     case "timeline":
       addTimelinePayload(slide, payload.timeline, timelineLayout, context, options, path);
@@ -2597,7 +2602,7 @@ function addMetricPayload(slide,value,layout,context,path,options) {
   }
 }
 
-function addQuotePayload(slide, value, layout, context, options, path) {
+async function addQuotePayload(slide, presentation, value, layout, context, options, path) {
   if (!layout) throw new OPFPptxError('missing-quote-layout', 'Quote export requires a coordinated core build with shared quote geometry.', {path});
   for (const part of layout.parts) if (!part.fit) throw new OPFPptxError('layout-overflow', 'Quote content has no usable internal space; increase its cell size before exporting.', {path:part.path,issues:layout.diagnostics});
   // Every line shape is tagged (OPF_QUOTE_V1) so an unchanged export re-imports as a quote payload (FF-57).
@@ -2609,6 +2614,27 @@ function addQuotePayload(slide, value, layout, context, options, path) {
       quote:{group,part:index,anchor},
     });
   }
+  if (layout.photo) await addQuotePhoto(slide, presentation, layout.photo, group, context, options);
+}
+
+// FA-12: the attributed person's headshot is a native picture in the core circle frame: cropped to fill it (a:srcRect after the bytes
+// are embedded) with the `ellipse` preset geometry, the alt text as its description, tagged into the quote's provenance group.
+async function addQuotePhoto(slide, presentation, photo, group, context, options) {
+  const box = { x: photo.box.x / 96, y: photo.box.y / 96, w: photo.box.width / 96, h: photo.box.height / 96 };
+  const outcome = { box, cover: true };
+  const resolved = await resolveImage(photo.value, presentation, options, photo.path, outcome);
+  if (!resolved) {
+    addImagePlaceholder(slide, presentation, photo.value, box, photo.path, context, options);
+    return;
+  }
+  const objectName = quotePhotoName(group);
+  // PowerPoint is not confirmed to apply a non-rectangular mask to an SVG picture, so an SVG photo exports as its PNG raster (as a masked slide image does).
+  if (outcome.svg) options.onDiagnostic?.({ code: 'svg-image-rasterized', path: photo.path, message: 'An SVG quote photo exports as its PNG raster so the circular mask applies as in the preview; PowerPoint has not been confirmed to apply it to an SVG picture.' });
+  context.quotePhotos.set(objectName, { region: box, mode: 'crop', path: photo.path, shape: photo.shape });
+  context.quoteTags.set(objectName, { v: 1, role: 'photo', group });
+  const alt = assetAlt(photo.value, presentation);
+  context.pictureText.set(objectName, pictureText(alt, photo.value, presentation));
+  slide.addImage({ ...resolved, objectName, ...box, altText: alt });
 }
 
 function addTimelinePayload(slide, value, layout, context, options, path) {
@@ -3409,7 +3435,7 @@ async function normalizePptxZip(raw, context) {
     const relationships = parseRelationships(entries, part);
     for (const [picture] of decodeText(bytes).matchAll(/<p:pic>[\s\S]*?<\/p:pic>/g)) {
       const name = picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1];
-      const placement = context.imagePlacements.get(name) ?? context.slideImages.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : name === logoName() ? context.logos.get(part) : undefined);
+      const placement = context.imagePlacements.get(name) ?? context.quotePhotos.get(name) ?? context.slideImages.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : name === logoName() ? context.logos.get(part) : undefined);
       const id = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
       if (placement) imageSources.set(relationships.get(id)?.path, placement.path);
     }
@@ -3686,7 +3712,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
         }
         const text = context.pictureText.get(picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1]);
         if (text) picture = writePictureText(picture, text);
-        const placement = context.imagePlacements.get(picture.match(/name="(OPF image \d+)"/)?.[1]);
+        const placement = context.imagePlacements.get(picture.match(/name="(OPF image \d+)"/)?.[1]) ?? context.quotePhotos.get(picture.match(/name="(OPF quote photo \d+)"/)?.[1]);
         if (!placement) return picture;
         const id = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
         const dimensions = imageMetadata.get(relationships.get(id)?.path);
@@ -3699,6 +3725,8 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
           const attrs = Object.entries(fitted.crop).map(([key, value]) => `${key}="${value}"`).join(' ');
           picture = picture.replace('<a:stretch>', `<a:srcRect ${attrs}/><a:stretch>`);
         }
+        // The circular headshot mask: the core frame's DrawingML preset (ellipse) instead of the rectangle.
+        if (placement.shape) picture = picture.replace(/<a:prstGeom\b[\s\S]*?<\/a:prstGeom>/, `<a:prstGeom prst="${placement.shape.preset}"><a:avLst/></a:prstGeom>`);
         return picture;
       });
       // Native bullets otherwise inherit the first rich run's size, font and
