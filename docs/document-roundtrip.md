@@ -35,10 +35,10 @@ Only values the document states are stored; engine defaults are not. A document 
 | `design.theme`, `colorScheme`, `fontScheme`, `dimensions`, `background` | yes | yes, unless the value names an image, logo, file or URL | no tags at all |
 | deck composition defaults (`titleAlignment`, `contentAlignment`, `contentBox`, `contentDirection`, `chartPrimary`, `imageFill`, `listBullet`) | yes | yes | |
 | `design.logo` (deck and slide design; brand assets, spec-gap P1) | yes | no (a logo always names a source) | |
-| `narrative`, `tone`, `purpose`, `language`, `audience` | yes, any form | only as catalog ids (bundled or inline records) | |
+| `narrative` (a string: catalog id, URL or `pkg:` reference; FA-02), `tone`, `purpose`, `language`, `audience` | yes, any form | only as catalog ids (bundled or inline records) | |
 | `organization`, `speaker`, `takeaway`, `duration`, `tags`, `variables`, `filename`, `extensions` | yes | no | |
 | slide `id`, `section`, `extensions` | yes | no | |
-| slide `beat`, `layout`, `type`, `composition`, slide design references and hints | yes | yes (design values without image/file/URL sources) | |
+| slide `beat` (links to a beat of the narrative record), `layout`, `type`, `composition`, slide design references and hints | yes | yes (design values without image/file/URL sources) | |
 | slide `layoutRecord`: the inline `catalogs.layouts` record for the slide's `layout` (FF-29) | yes | yes, unless it names an image, file or URL (its own `$schema` excepted) | |
 | slide `content`: the content topology (groups, regions, root form, block ids and extensions, group composition, leaf boxes; below) | yes | no | |
 | the whole `assets` registry (referenced or not), one field per asset id | yes | no | |
