@@ -37,6 +37,7 @@ import {placeWatermarks, importWatermark, watermarkName, watermarkBox, watermark
 import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from './logo-provenance.js';
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
+import {chartHighlightPlan, applyChartHighlight} from './chart-highlight.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
 import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, planSlideThemes, reconcileLanguage, reportPerSlideNotesScriptFonts, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
 import { webpToPng, svgToPng, readLocalFile } from '#image-fallback';
@@ -2236,7 +2237,12 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
   context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
   const preferredPalette = CHART_COLORS.map(color=>`#${color}`);
   const palette = (typeof opfComposition.chartPaletteForFill === "function" ? opfComposition.chartPaletteForFill(panelFill, preferredPalette) : preferredPalette.map(color=>chartColorForFill(panelFill,color))).map(color=>normalizeHex(color));
-  context.chartPalettes.set(objectName,palette);
+  // FA-14: chart.highlight. A highlighted chart writes accent and muted colours over the series palette, and its data labels
+  // contrast with those colours (src/chart-highlight.js).
+  const highlight = chartData.chartex ? undefined : chartHighlightPlan({options: chartOptions, data: chartData.resolved, kind: chartTargetFor(chart.type)?.kind, panelFill, labelColor, primary: `#${context.colors.accent}`,
+    schemeFor: hex => schemeColorValue('primary', hex, context)});
+  context.chartPalettes.set(objectName,highlight ? highlight.seriesFills : palette);
+  if (highlight) context.chartHeadings.get(objectName).highlight = highlight;
   if (chartData.chartex) {
     // The native chartex part is added when the package is normalized (attachChartexParts); the classic chart below becomes its fallback.
     // PptxGenJS rewrites the series it is given (labels become nested levels), so the chartex part keeps its own copy.
@@ -2925,7 +2931,8 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
       : 'that PowerPoint has not yet accepted natively from this exporter (pass chartex: \'native\' to write its chartex part)';
     adaptations.push({adaptation: "chartex-fallback", message: `The '${typeName}' chart is a PowerPoint extension (chartex) chart ${reason}; its data is exported as a native clustered column chart instead.`});
   }
-  const mapped = {type: spec.pptx, spec, chartex, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined, diagnostics, heading: data.columns[0], pointCount: data.rows.length};
+  // FA-14: the resolved table (category, X, series columns), which chart.highlight names its series and categories in.
+  const mapped = {resolved: {columns: data.columns, hasX: resolvedData.hasX === true, rows: data.rows}, type: spec.pptx, spec, chartex, barDir: spec.barDir, barGrouping: spec.pptx === 'bar' || spec.pptx === 'area' ? spec.grouping : undefined, diagnostics, heading: data.columns[0], pointCount: data.rows.length};
   // Number formats only when a column has one: a chart without formats carries no `formats` and is written as before.
   const withFormats = (result, formats) => formats.series.some((code) => code !== undefined) || formats.x !== undefined ? {...result, formats} : result;
   if (data.columns.length === 1) {
@@ -3396,13 +3403,18 @@ async function normalizePptxZip(raw, context) {
       const {heading,labelColor,spec,textSize}=context.chartHeadings.get(name);
       if(heading!==undefined)writeChartCategoryHeading(entries,chartPart,heading);
       entries[chartPart]=encodeText(omitEmptyNumberPoints(applyChartConstruct(decodeText(entries[chartPart]),spec)));
+      const highlight=context.chartHeadings.get(name).highlight;
+      if(highlight){
+        try{entries[chartPart]=encodeText(applyChartHighlight(decodeText(entries[chartPart]),highlight));}
+        catch(error){throw new OPFPptxError('packaging-failed',`Chart highlight could not be written: ${errorMessage(error)}`);}
+      }
       // PptxGenJS hardcodes a black fallback in pie/doughnut label properties.
       // Normalize only our generated chart text styles; point/series fills stay intact.
       entries[chartPart]=encodeText(decodeText(entries[chartPart]).replace(/<c:txPr>[\s\S]*?<\/c:txPr>/g,properties=>properties.replace(/<a:solidFill>[\s\S]*?<\/a:solidFill>/g,()=>`<a:solidFill><a:srgbClr val="${labelColor}"/></a:solidFill>`)));
       entries[chartPart]=encodeText(applyChartTextSize(decodeText(entries[chartPart]),textSize));
       // RR-35: data labels last, so their own text colours (contrast inside a mark) are not normalized away.
       const {options:chartOptions,kind:optionKind,pointCount}=context.chartHeadings.get(name);
-      if(chartOptions?.dataLabels)entries[chartPart]=encodeText(applyDataLabels(decodeText(entries[chartPart]),{resolved:chartOptions,kind:optionKind,palette:context.chartPalettes.get(name),labelColor,font:context.chartFonts.get(name)?.body??'Arial',textSize,pointCount}));
+      if(chartOptions?.dataLabels)entries[chartPart]=encodeText(applyDataLabels(decodeText(entries[chartPart]),{resolved:chartOptions,kind:optionKind,palette:context.chartPalettes.get(name),labelColor,font:context.chartFonts.get(name)?.body??'Arial',textSize,pointCount,highlight}));
       // RR-54: the columns' number formats, after the labels: caches, label and value-axis formats, then the workbook cells.
       const numberFormats=context.chartHeadings.get(name).numberFormats;
       if(numberFormats){
