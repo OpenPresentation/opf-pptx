@@ -3,7 +3,7 @@ import {autoNumScheme, deriveListNumbering, withDisplayedNumbers} from './number
 import {isFaceStyleSuffix} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
 import {applyChartFonts, applyPitchFamilies, finalizeFontsUsed, fontPitchFamilies} from './package-fonts.js';
-import {giveNotesMastersOwnThemes} from './master-themes.js';
+import {giveNotesMastersOwnThemes, giveSlidesScriptMasters} from './master-themes.js';
 import {legacyVendorOutput} from './vendor-compat.js';
 import {readChartCategoryHeading,writeChartCategoryHeading,repairChartWorkbookRanges} from './chart-workbook.js';
 import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
@@ -36,7 +36,7 @@ import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from
 import {nativeBackgroundFill, nativeImageBackgroundFill, nativePatternPreset} from './background.js';
 import {importBackground} from './background-import.js';
 import {themeSlotColors, writeThemeColors, schemeColorValue, schemeBackgroundFill, schemeBackgroundValue, defaultTextSchemeValues, tableTextSchemeValue, solidColorXml, writeMasterBackground, inheritLayoutBackground, readThemeSlotColors, recoverColorScheme, recoverTheme, presentationThemePath} from './theme-colors.js';
-import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, reconcileLanguage, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
+import {languageDiagnostics, observeLanguage, observedRtl, partScriptFonts, physicalAlignment, planScriptFonts, planSlideThemes, reconcileLanguage, reportPerSlideNotesScriptFonts, stripRunScriptFonts, themeEastAsianFromLatin} from './script-fonts.js';
 import { webpToPng, svgToPng, readLocalFile } from '#image-fallback';
 import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attachSvgPictures } from './svg-image.js';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
@@ -340,9 +340,17 @@ export async function fromPptx(input, options = {}) {
   };
 
   // FF-07: the language the runs carry. A stored FF-32 reference can still win below.
+  const languageThemePath = presentationThemePath(presentationRoot, presentationRels, path => parseRelationships(entries, path), entries);
+  // opf-pptx#168: each slide's theme, through its layout and master (several masters carry per-slide script fonts).
+  const relatedPart = (path, type) => path ? [...parseRelationships(entries, path).values()].find(rel => rel.type?.endsWith(`/${type}`) && rel.path && entries[rel.path])?.path : undefined;
   const observedLanguage = observeLanguage({
     slides: slidePaths.map(path => decodeText(entries[path])),
-    theme: (path => path && entries[path] ? decodeText(entries[path]) : null)(presentationThemePath(presentationRoot, presentationRels, path => parseRelationships(entries, path), entries)),
+    theme: languageThemePath && entries[languageThemePath] ? decodeText(entries[languageThemePath]) : null,
+    themePath: languageThemePath,
+    slideThemes: slidePaths.map(path => {
+      const theme = relatedPart(relatedPart(relatedPart(path, 'slideLayout'), 'slideMaster'), 'theme');
+      return theme ? {path: theme, xml: decodeText(entries[theme])} : null;
+    }),
     catalogs: bundledCatalogs
   });
   if (observedLanguage.language !== undefined) imported.language = observedLanguage.language;
@@ -3330,6 +3338,17 @@ async function normalizePptxZip(raw, context) {
 
   writeNativeFurnitureMasters(output, context);
   giveNotesMastersOwnThemes(output);
+  // opf-pptx#168: one slide master and theme per script profile, so each slide's own East Asian / complex-script fonts
+  // reach PowerPoint through its master's theme (runs name none, FF-05). One profile: no change.
+  if (context.scriptFonts && output['ppt/theme/theme1.xml']) {
+    const slideThemes = planSlideThemes(context.scriptFonts, decodeText(output['ppt/theme/theme1.xml'][0]));
+    try {
+      giveSlidesScriptMasters(output, slideThemes);
+    } catch (error) {
+      throw new OPFPptxError('packaging-failed', 'Slide masters for per-slide script fonts could not be written.', {cause: errorMessage(error)});
+    }
+    reportPerSlideNotesScriptFonts(context.scriptFonts, slideThemes);
+  }
   finalizeFontsUsed(output);
   // Document references record evidence from the final normalized parts.
   if (context.documentProvenance) {
