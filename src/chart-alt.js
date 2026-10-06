@@ -5,7 +5,18 @@ const DECORATIVE_URI = '{C183D7F6-B498-43B3-948B-1728B52AA6E4}';
 const DECORATIVE_NS = 'http://schemas.microsoft.com/office/drawing/2017/decorative';
 const ESCAPES = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;', '\r': '&#13;', '\n': '&#10;', '\t': '&#9;'};
 const escape = value => value.replace(/[&<>"'\r\n\t]/g, char => ESCAPES[char]);
-const decorativeExtension = `<a:extLst><a:ext uri="${DECORATIVE_URI}"><adec:decorative xmlns:adec="${DECORATIVE_NS}" val="1"/></a:ext></a:extLst>`;
+const decorativeExt = `<a:ext uri="${DECORATIVE_URI}"><adec:decorative xmlns:adec="${DECORATIVE_NS}" val="1"/></a:ext>`;
+const decorativeExtPattern = new RegExp(`<a:ext\\b[^>]*\\buri="${DECORATIVE_URI.replace(/[{}]/g, '\\$&')}"[^>]*>[\\s\\S]*?</a:ext>`, 'g');
+
+// The one a:extLst of a p:cNvPr is edited in place: PowerPoint's own extensions (a16:creationId and others) stay untouched and in
+// order, an earlier decorative ext is replaced and never duplicated, and an extLst left with no ext is removed.
+function withDecorative(body, decorative) {
+  const list = body.match(/<a:extLst(?:\s[^>]*)?(?:\/>|>[\s\S]*?<\/a:extLst>)/);
+  const inner = list ? list[0].replace(/^<a:extLst(?:\s[^>]*)?>|<\/a:extLst>$|^<a:extLst(?:\s[^>]*)?\/>$/g, '').replace(decorativeExtPattern, '') : '';
+  const exts = decorative ? inner + decorativeExt : inner;
+  const next = exts.trim() === '' ? '' : `<a:extLst>${exts}</a:extLst>`;
+  return list ? body.slice(0, list.index) + next + body.slice(list.index + list[0].length) : body + next;
+}
 
 /** Write `alt` on the first `p:cNvPr` of a graphic frame: `descr` for text, the decorative extension for the empty string. */
 export function writeFrameAlt(frame, alt) {
@@ -15,10 +26,8 @@ export function writeFrameAlt(frame, alt) {
   const end = selfClosing ? start.index + start[0].length : frame.indexOf('</p:cNvPr>', start.index);
   if (end < 0) return frame;
   let tag = start[0].replace(/\sdescr="[^"]*"/, '');
-  let body = selfClosing ? '' : frame.slice(start.index + start[0].length, end);
-  body = body.replace(/<a:extLst>\s*<a:ext\b[^>]*\buri="\{C183D7F6-B498-43B3-948B-1728B52AA6E4\}"[\s\S]*?<\/a:ext>\s*<\/a:extLst>/, '');
-  if (alt === '') body += decorativeExtension;
-  else tag = tag.replace(/\s*\/?>$/, match => ` descr="${escape(alt)}"${match.trim()}`);
+  const body = withDecorative(selfClosing ? '' : frame.slice(start.index + start[0].length, end), alt === '');
+  if (alt !== '') tag = tag.replace(/\s*\/?>$/, match => ` descr="${escape(alt)}"${match.trim()}`);
   const tail = selfClosing ? start.index + start[0].length : end + '</p:cNvPr>'.length;
   const open = selfClosing && body ? tag.replace(/\s*\/>$/, '>') : tag;
   const close = !selfClosing || body ? '</p:cNvPr>' : '';

@@ -76,4 +76,58 @@ for (const type of ['column', 'waterfall']) {
   assert.match(unmarked, /descr="now text"/);
 }
 
+// 7. A p:cNvPr that already has an a:extLst (PowerPoint's a16:creationId and others) keeps exactly one: the decorative ext is merged in,
+// replaced rather than duplicated, and removed again (with the extLst only when nothing else is left in it).
+{
+  const creation = '<a:ext uri="{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}"><a16:creationId xmlns:a16="http://schemas.microsoft.com/office/drawing/2014/main" id="{AAAA}"/></a:ext>';
+  const other = '<a:ext uri="{11111111-2222-3333-4444-555555555555}"><x:y xmlns:x="urn:x"/></a:ext>';
+  const frameWith = inner => '<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="c">' + inner + '</p:cNvPr></p:nvGraphicFramePr></p:graphicFrame>';
+  const extLists = xml => (xml.match(/<a:extLst>/g) ?? []).length;
+  const decorative = xml => (xml.match(/adec:decorative /g) ?? []).length;
+  const frame = frameWith('<a:extLst>' + creation + other + '</a:extLst>');
+
+  // decorative into an existing extLst: one extLst, the others untouched and in order, the decorative ext last
+  const marked = writeFrameAlt(frame, '');
+  assert.equal(extLists(marked), 1);
+  assert.equal(decorative(marked), 1);
+  assert.ok(marked.includes('<a:extLst>' + creation + other + '<a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}">'), 'existing exts kept in order, decorative appended');
+  assert.doesNotThrow(() => parser.parse(marked));
+
+  // marking twice replaces, never duplicates
+  const again = writeFrameAlt(marked, '');
+  assert.equal(again, marked);
+
+  // an existing decorative ext in the middle is replaced; the exts around it keep their order
+  const middle = frameWith('<a:extLst>' + creation + '<a:ext uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}"><adec:decorative xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="0"/></a:ext>' + other + '</a:extLst>');
+  const replaced = writeFrameAlt(middle, '');
+  assert.equal(decorative(replaced), 1);
+  assert.doesNotMatch(replaced, /val="0"/);
+  assert.ok(replaced.indexOf('creationId') < replaced.indexOf('x:y') && replaced.indexOf('x:y') < replaced.indexOf('adec:decorative'));
+
+  // text alt removes the decorative ext but keeps the other exts and their extLst
+  const texted = writeFrameAlt(marked, 'Sales by region');
+  assert.match(texted, /<p:cNvPr id="4" name="c" descr="Sales by region">/);
+  assert.equal(decorative(texted), 0);
+  assert.equal(extLists(texted), 1);
+  assert.ok(texted.includes('<a:extLst>' + creation + other + '</a:extLst>'));
+
+  // when the decorative ext was the only one, the extLst goes with it
+  const solo = writeFrameAlt(frameWith(''), '');
+  assert.equal(extLists(solo), 1);
+  const soloText = writeFrameAlt(solo, 'Now text');
+  assert.equal(extLists(soloText), 0);
+  assert.doesNotMatch(soloText, /extLst/);
+  assert.ok(soloText.includes('<p:cNvPr id="4" name="c" descr="Now text"></p:cNvPr>'));
+
+  // other children of the cNvPr stay before the extLst; an empty extLst element is dropped
+  const link = writeFrameAlt(frameWith('<a:hlinkClick r:id="rId2"/><a:extLst>' + creation + '</a:extLst>'), '');
+  assert.ok(link.indexOf('hlinkClick') < link.indexOf('<a:extLst>') && extLists(link) === 1);
+  assert.doesNotMatch(writeFrameAlt(frameWith('<a:extLst/>'), 'x'), /extLst/);
+
+  // import: a frame whose extLst holds both creationId and decorative reads back as decorative; creationId alone reads as no alt
+  assert.equal(readFrameAlt(parser.parse(marked)['p:graphicFrame']['p:nvGraphicFramePr']['p:cNvPr']), '');
+  assert.equal(readFrameAlt(parser.parse(frame)['p:graphicFrame']['p:nvGraphicFramePr']['p:cNvPr']), undefined);
+  assert.equal(readFrameAlt(parser.parse(texted)['p:graphicFrame']['p:nvGraphicFramePr']['p:cNvPr']), 'Sales by region');
+}
+
 console.log('chart alt: classic and chartex frames, decorative marker, import');
