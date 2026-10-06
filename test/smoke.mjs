@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { unzipSync, zipSync } from "fflate";
 import { legacyVendorOutput } from "../dist/vendor-compat.js";
 import PptxGenJS from "../vendor/pptxgenjs/pptxgen.es.js";
-import { validatePresentation } from "@openpresentation/opf";
+import { validate } from "@openpresentation/opf";
 import { fromPptx, OPFPptxError, runtimePolicy, toPptx } from "../dist/index.js";
 
 const deck = {
@@ -74,8 +74,8 @@ assert.match(text(entries["docProps/core.xml"]), /1980-01-01T00:00:00Z/);
 assert.match(text(entries["ppt/slides/slide1.xml"]), /Editable Text/);
 
 const imported = await fromPptx(first);
-const importedValidation = validatePresentation(imported);
-assert.equal(importedValidation.valid, true, JSON.stringify(importedValidation.errors));
+const importedValidation = validate(imported, {only: ['format']});
+assert.equal(importedValidation.valid, true, JSON.stringify(importedValidation.findings));
 assert.equal(imported.name, deck.name);
 assert.equal(imported.author, deck.author);
 assert.equal(imported.description, deck.description);
@@ -99,7 +99,7 @@ assert.match(text(roundTripEntries["ppt/slides/slide1.xml"]), /Editable Text/);
 
 const complexBytes = await makeComplexPptx();
 const complexImport = await fromPptx(complexBytes);
-assert.equal(validatePresentation(complexImport).valid, true);
+assert.equal(validate(complexImport, {only: ['format']}).valid, true);
 assert.equal(complexImport.slides[0].title, "Complex PPTX");
 assert.ok(
   complexImport.slides[0].blocks.some((block) => /PowerPoint shape:/.test(block.text)),
