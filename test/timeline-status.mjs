@@ -45,8 +45,8 @@ for(const options of [{},fontOptions]){
   assert.equal(fillOf(planned),bg);assert.equal(lineOf(planned)['a:solidFill']['a:srgbClr'].val,fillOf(done));
   assert.equal(fillOf(rings[0]),bg);assert.equal(lineOf(rings[0])['a:solidFill']['a:srgbClr'].val,fillOf(done));
   const ext=shape=>Number(shape['p:spPr']['a:xfrm']['a:ext'].cx);
-  assert.ok(ext(rings[0])>ext(current),'the ring is larger than the dot');
-  assert.ok(ext(planned)<=ext(done),'a hollow marker keeps the outer size');
+  assert.equal(ext(rings[0]),1.6*ext(current),'the ring ellipse is exactly 1.6 times the dot');
+  assert.equal(ext(planned),ext(done),'a hollow marker is the same size as a filled one');
   // Text: bold label for the current event, muted (>= 4.5:1) text for the planned one, the usual color elsewhere.
   const runOf=(eventIndex,field)=>{
     const part=layout.parts.findIndex(p=>p.eventIndex===eventIndex&&p.role===field);
