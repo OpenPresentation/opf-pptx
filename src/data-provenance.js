@@ -13,10 +13,11 @@ import {chartUsesDataFields, isDatasetRef, resolveTableData, tableCellDisplayVal
 //
 //   OPF_DATASETS_V1  on p:presentation (beside OPF_DOCUMENT_V1): the whole `datasets` map, unused datasets included.
 //   OPF_DATA_V1      on each chart or table graphic frame that uses one of the fields above:
-//     chart  {v: 1, kind: 'chart', data, mapping?, evidence: [hash]}   `data` is the authored chart.data (a dataset
-//            reference, or inline columns with DataColumn objects and `source`); `evidence` hashes the native caches
-//            (series names, categories, values and format codes) of the chart part(s) the frame shows (the chartex part
-//            and its classic fallback).
+//     chart  {v: 1, kind: 'chart', data, mapping?, dataset?: hash, evidence: [hash]}   `data` is the authored
+//            chart.data (a dataset reference, or inline columns with DataColumn objects and `source`); `evidence`
+//            hashes the native caches (series names, categories, values and format codes) of the chart part(s) the frame
+//            shows (the chartex part and its classic fallback); `dataset` hashes the referenced dataset, so a slide
+//            pasted into a deck whose dataset of the same id holds other data keeps its values inline.
 //     table  {v: 1, kind: 'table', table}                                a dataset-backed table, as authored
 //            {v: 1, kind: 'table', headers: [[column, header, text]], cells: [[row, column, value, format, text]]}
 //                                                                         an inline table: the DataColumn or formatted
@@ -26,14 +27,18 @@ import {chartUsesDataFields, isDatasetRef, resolveTableData, tableCellDisplayVal
 // PowerPoint's Edit Data changes them), a dataset table while every native cell still shows the dataset's display text,
 // and an inline table cell by cell while the native cell shows the recorded text. Otherwise the native values stay (with
 // the format codes core maps back, src/chart-data.js) and a diagnostic names what was not restored. Tags are untrusted
-// input: they are size-limited, shape-checked and validated as OPF, and never executed.
+// input: they are size-limited (16 MiB, the limit of the document tag), depth- and shape-checked, validated as OPF, and
+// never executed; a record that fails a check, or that a restore cannot use, is reported and the native values stay.
 
 export const DATA_TAG = 'OPF_DATA_V1';
 export const DATASETS_TAG = 'OPF_DATASETS_V1';
 const REL_TAGS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tags';
 const NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const TAGS_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml';
-const MAX_TAG_CHARS = 32 * 1024 * 1024;
+const MAX_TAG_CHARS = 16 * 1024 * 1024;
+// Datasets and records nest a few levels (datasets, id, rows, row, cell; a table cell's runs and style). A deeper value is
+// not one the exporter writes, and is refused before anything recurses into it.
+const MAX_DEPTH = 32;
 
 const enc = new TextEncoder(), dec = new TextDecoder('utf-8', {fatal: true});
 const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false});
@@ -41,6 +46,19 @@ const array = value => value === undefined ? [] : Array.isArray(value) ? value :
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const own = (value, key) => object(value) && Object.hasOwn(value, key);
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+const index = value => Number.isSafeInteger(value) && value >= 0;
+// Key-sorted JSON, so the dataset hash does not depend on key order.
+const canonical = value => JSON.stringify(value, (_key, item) => object(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+function tooDeep(value) {
+  const stack = [[value, 0]];
+  while (stack.length) {
+    const [item, depth] = stack.pop();
+    if (item === null || typeof item !== 'object') continue;
+    if (depth >= MAX_DEPTH) return true;
+    for (const child of Object.values(item)) stack.push([child, depth + 1]);
+  }
+  return false;
+}
 
 /** The text a table cell value shows: strings and numbers as written, rich runs joined, null and absent as ''. */
 export function cellText(value) {
@@ -58,6 +76,9 @@ const decodeEntities = text => text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 // A cached number in Excel's 15 significant digits, so a resave that rewrites 0.30000000000000004 as 0.3 keeps the evidence.
 const canonicalValue = text => NUMBER.test(text.trim()) && Number.isFinite(Number(text)) ? String(Number(Number(text).toPrecision(15))) : text;
+// A General format code is left out: on a plain save PowerPoint writes <c:formatCode>General</c:formatCode> into every
+// cache that has none (PptxGenJS writes none on pie and doughnut series), so General and no code are the same evidence.
+const generalCode = code => /^\s*general\s*$/i.test(code);
 function hash(text) {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let index = 0; index < text.length; index++) {
@@ -74,7 +95,9 @@ function hash(text) {
 export function chartEvidence(xml) {
   const parts = [];
   for (const match of String(xml).matchAll(/<(c:v|c:formatCode|cx:pt|cx:v)\b[^>]*>([^<]*)<\/\1>|<cx:lvl\b[^>]*?\bformatCode="([^"]*)"/g)) {
-    parts.push(match[3] !== undefined ? `format:${decodeEntities(match[3])}` : `${match[1]}:${canonicalValue(decodeEntities(match[2]))}`);
+    const code = match[3] !== undefined ? decodeEntities(match[3]) : match[1] === 'c:formatCode' ? decodeEntities(match[2]) : undefined;
+    if (code === undefined) parts.push(`${match[1]}:${canonicalValue(decodeEntities(match[2]))}`);
+    else if (!generalCode(code)) parts.push(`format:${code}`);
   }
   return hash(parts.join('\u0000'));
 }
@@ -82,10 +105,14 @@ export function chartEvidence(xml) {
 // ---------------------------------------------------------------------------
 // Export
 
+/** The hash of a dataset, or undefined when the map does not hold the id. */
+const datasetHash = (datasets, id) => own(datasets, id) ? hash(canonical(datasets[id])) : undefined;
+
 /** The record of a chart that uses an RR-54 data field, or undefined (the frame then carries no tag). */
-export function chartDataRecord(chart) {
+export function chartDataRecord(chart, datasets) {
   if (!chartUsesDataFields(chart)) return undefined;
-  return {v: 1, kind: 'chart', data: clone(chart.data), ...(chart.mapping !== undefined ? {mapping: clone(chart.mapping)} : {})};
+  const dataset = isDatasetRef(chart.data) ? datasetHash(datasets, chart.data.dataset) : undefined;
+  return {v: 1, kind: 'chart', data: clone(chart.data), ...(chart.mapping !== undefined ? {mapping: clone(chart.mapping)} : {}), ...(dataset ? {dataset} : {})};
 }
 
 /** The record of a table that is dataset-backed or formats numbers, or undefined. `layout` is the exported table layout. */
@@ -128,14 +155,15 @@ const tagPart = (name, value) => enc.encode(`<?xml version="1.0" encoding="UTF-8
  * per recorded chart or table frame (both frames of a chartex chart share it) and OPF_DATASETS_V1 beside the document
  * tag. `records` maps generated frame names to records; `datasets` is the document's datasets map.
  */
-export function attachDataProvenance(entries, {records, datasets, parseRelationships, report}) {
-  // A record the importer would refuse (MAX_TAG_CHARS) is not written; the native values still export and import.
+export function attachDataProvenance(entries, {records, paths = new Map(), datasets, parseRelationships, report}) {
+  // A record the importer would refuse (MAX_TAG_CHARS) is not written; the native values still export and import. `paths`
+  // maps a frame name to the document path of its chart or table, which the diagnostic names.
   const fits = (value, path) => {
     if (enc.encode(JSON.stringify(value)).byteLength * 2 <= MAX_TAG_CHARS) return true;
-    report?.({code: 'data-provenance-omitted', path, message: 'The recorded chart or table data exceeds the 32 MiB tag limit, so it is not stored; the native values export and re-import, without the dataset references, mapping and formats.'});
+    report?.({code: 'data-provenance-omitted', path, message: `The recorded ${path === 'datasets' ? 'datasets map' : 'chart or table data'} exceeds the ${MAX_TAG_CHARS / (1024 * 1024)} MiB tag limit, so it is not stored; the native values export and re-import, without the dataset references, mapping and formats.`});
     return false;
   };
-  for (const [name, record] of [...records]) if (!fits(record, name)) records.delete(name);
+  for (const [name, record] of [...records]) if (!fits(record, paths.get(name) ?? name)) records.delete(name);
   const storedDatasets = object(datasets) && Object.keys(datasets).length && fits(datasets, 'datasets') ? datasets : undefined;
   if (!records.size && !storedDatasets) return;
   const types = [];
@@ -233,7 +261,9 @@ function readTags(entries, container, relationships, name) {
   if (found.length > 1) throw Error(`Multiple ${name} tags.`);
   const value = found[0].val;
   if (typeof value !== 'string' || value.length > MAX_TAG_CHARS) throw Error(`Oversized or empty ${name} tag.`);
-  return decodeTextTag(value);
+  const decoded = decodeTextTag(value);
+  if (tooDeep(decoded)) throw Error(`The ${name} tag nests deeper than ${MAX_DEPTH} levels.`);
+  return decoded;
 }
 
 /** The stored datasets map, or undefined. An unreadable or invalid record is reported and ignored. */
@@ -257,7 +287,16 @@ export function readDataTag(entries, frame, relationships) {
   if (record === undefined) return undefined;
   if (!object(record) || record.v !== 1 || !['chart', 'table'].includes(record.kind)) throw Error('Unsupported data provenance version.');
   if (record.kind === 'chart' && (!object(record.data) || !Array.isArray(record.evidence) || !record.evidence.every(item => typeof item === 'string'))) throw Error('Invalid chart data record.');
+  if (record.kind === 'chart' && record.dataset !== undefined && typeof record.dataset !== 'string') throw Error('Invalid chart data record.');
   if (record.kind === 'table' && !(object(record.table) || (Array.isArray(record.headers) && Array.isArray(record.cells)))) throw Error('Invalid table data record.');
+  // Inline table entries are [column, header, text] and [row, column, value, format, text]; their indices are array
+  // indices (non-negative integers), never a key such as "__proto__" or "length".
+  if (record.kind === 'table' && !object(record.table)) {
+    const header = entry => Array.isArray(entry) && entry.length === 3 && index(entry[0]) && object(entry[1]) && typeof entry[2] === 'string';
+    const cell = entry => Array.isArray(entry) && entry.length === 5 && index(entry[0]) && index(entry[1]) && typeof entry[2] === 'number' && Number.isFinite(entry[2])
+      && (entry[3] === null || typeof entry[3] === 'string') && typeof entry[4] === 'string';
+    if (!record.headers.every(header) || !record.cells.every(cell)) throw Error('Invalid table data record.');
+  }
   return record;
 }
 
@@ -274,6 +313,10 @@ export function restoreChartData(chart, record, evidence, {datasets, report}) {
   }
   if (isDatasetRef(record.data) && !own(datasets, record.data.dataset)) {
     report({code: 'chart-dataset-unavailable', message: `The chart referenced dataset '${record.data.dataset}', which this package's datasets record does not hold (a slide pasted from another deck, or a missing record); the chart imports its values inline.`});
+    return chart;
+  }
+  if (isDatasetRef(record.data) && record.dataset !== undefined && datasetHash(datasets, record.data.dataset) !== record.dataset) {
+    report({code: 'chart-dataset-unavailable', message: `The chart referenced dataset '${record.data.dataset}', but this package's dataset of that id holds other data than at export (a slide pasted from another deck); the chart imports its values inline.`});
     return chart;
   }
   const {mapping: _mapping, ...rest} = chart;

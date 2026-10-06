@@ -67,6 +67,8 @@ export interface ChartMapGeodataDiagnostic { code: "chart-map-geodata"; path: st
 export interface ChartValueNotNumericDiagnostic { code: "chart-value-not-numeric"; path: string; message: string; count: number }
 /** RR-54: core adapted a `chart.mapping` (an X column on a chart without an X axis, a series that repeats the category or X column); `pointer` is core's JSON Pointer. */
 export interface ChartMappingAdaptedDiagnostic { code: "chart-mapping-adapted"; path: string; message: string; pointer: string }
+/** RR-54 (`full` provenance): a chart or table data record, or the datasets map (`path: "datasets"`), is over the 16 MiB tag limit and is not stored; the native values still export. */
+export interface DataProvenanceOmittedDiagnostic { code: "data-provenance-omitted"; path: string; message: string }
 
 /** A template variable was unfilled and its `example` was used (template export only). */
 export interface VariableExampleUsedDiagnostic {
@@ -114,7 +116,7 @@ export interface ToPptxOptions {
   /** Match preview/pagination clearance around supplied vector text outlines; default 1. */
   textRasterPadding?: number;
   /** Layout diagnostics, `media-provenance-omitted` when video data cannot be stored, plus `unresolved-font-scheme` (once per reference path) when a font-scheme id matches no record and the default `aptos` scheme is used as the base. */
-  onDiagnostic?: (diagnostic: LayoutDiagnostic | FontSchemeDiagnostic | MediaProvenanceDiagnostic | ChartDataUnplottableDiagnostic | ChartDataAdaptedDiagnostic | ChartMapGeodataDiagnostic | ChartValueNotNumericDiagnostic | ChartMappingAdaptedDiagnostic | ContentPlaceholderDiagnostic | UnresolvedAssetDiagnostic | WatermarkNotExportedDiagnostic | SvgSanitizedDiagnostic | SvgImageRasterizedDiagnostic | VariableExampleUsedDiagnostic) => void;
+  onDiagnostic?: (diagnostic: LayoutDiagnostic | FontSchemeDiagnostic | MediaProvenanceDiagnostic | ChartDataUnplottableDiagnostic | ChartDataAdaptedDiagnostic | ChartMapGeodataDiagnostic | ChartValueNotNumericDiagnostic | ChartMappingAdaptedDiagnostic | DataProvenanceOmittedDiagnostic | ContentPlaceholderDiagnostic | UnresolvedAssetDiagnostic | WatermarkNotExportedDiagnostic | SvgSanitizedDiagnostic | SvgImageRasterizedDiagnostic | VariableExampleUsedDiagnostic) => void;
   baseDir?: string;
   compressionLevel?: number;
   imageResolver?: (src: string, context: ImageResolverContext) => ImageResolverResult | Promise<ImageResolverResult | null | undefined> | null | undefined;

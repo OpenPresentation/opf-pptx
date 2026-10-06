@@ -265,6 +265,7 @@ export async function toPptx(input, options = {}) {
   context.chartex = new Map();
   // RR-54: the authored data form of charts and tables (OPF_DATA_V1) and the datasets map (OPF_DATASETS_V1), `full` mode only.
   context.dataRecords = new Map();
+  context.dataRecordPaths = new Map();
   context.datasets = presentation.datasets;
   context.reportDiagnostic = options.onDiagnostic;
   context.imageFormat = options.imageFormat ?? "compatible";
@@ -876,6 +877,15 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
       return undefined;
     }
   };
+  // A record that passed its checks but cannot be restored (it fails validation in a way that throws) is reported too.
+  const restore = (kind, imported, apply) => {
+    try {
+      return apply();
+    } catch (error) {
+      data.report?.(kind, {code: 'invalid-data-provenance', message: `${errorMessage(error)} The ${kind} imports the values it shows.`});
+      return imported;
+    }
+  };
   if (table) {
     const stored = importedTable && record('table');
     return {
@@ -884,7 +894,7 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
       name,
       payload: {
         type: "table",
-        table: stored ? restoreTableData(importedTable, stored, {datasets: data.datasets, report: diagnostic => data.report?.('table', diagnostic)}) : importedTable
+        table: stored ? restore('table', importedTable, () => restoreTableData(importedTable, stored, {datasets: data.datasets, report: diagnostic => data.report?.('table', diagnostic)})) : importedTable
       }
     };
   }
@@ -898,7 +908,7 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
     const stored = imported && record('chart');
     const part = relationships.get(chartRelId)?.path;
     const chart = stored && part && entries[part]
-      ? restoreChartData(imported, stored, chartEvidence(decodeText(entries[part])), {datasets: data.datasets, report: diagnostic => data.report?.('chart', diagnostic)})
+      ? restore('chart', imported, () => restoreChartData(imported, stored, chartEvidence(decodeText(entries[part])), {datasets: data.datasets, report: diagnostic => data.report?.('chart', diagnostic)}))
       : imported;
     return {
       kind: "chart",
@@ -1310,15 +1320,17 @@ function firstChartNode(plotArea) {
 const MAX_CHART_CACHE_POINTS = 100_000;
 const MAX_CHART_CACHE_CELLS = 1_000_000;
 
-// Import complete decimal exponent tokens with their range checks. RR-54: every other token is core's strict chart number,
-// or an XML decimal form (a leading '+', leading zeros, '.5', '5.'); anything else is a gap, never a stripped or guessed value.
+// Import complete decimal exponent tokens with their range checks. RR-54: every other token is an XML decimal (xsd:double
+// without an exponent: a leading '+', leading zeros, '.5', '5.', and any number of digits, so 1e20, which the exporter
+// writes as "100000000000000000000", reads back); anything else is a gap, never a stripped or guessed value.
 function numericCacheValue(value, path) {
   if (value === null || value.trim() === '') return null;
   const token = value.trim();
   const exponent = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))[eE][+-]?\d+$/.exec(token);
-  if (!exponent) return /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(token)
-    ? chartNumber(token.replace(/^\+/, '').replace(/^(-?)0+(?=\d)/, '$1').replace(/^(-?)\./, '$10.').replace(/\.$/, ''))
-    : null;
+  if (!exponent) {
+    const number = /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(token) ? Number(token) : NaN;
+    return Number.isFinite(number) ? number : null;
+  }
   const parsed = Number(token);
   if (!Number.isFinite(parsed) || (parsed === 0 && /[1-9]/.test(exponent[1]))) {
     const reason = Number.isFinite(parsed) ? 'underflows to zero' : 'overflows';
@@ -2189,7 +2201,8 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
   const circular = chartData.type === 'pie' || chartData.type === 'doughnut';
   const textSize = chartTextSize(context);
   // RR-54: the columns' number formats (Excel codes per exported series) for the caches, labels, value axis and workbook.
-  const numberFormats = chartData.formats && {...chartData.formats, axis: chartData.spec.grouping === 'percentStacked' ? undefined : chartData.formats.series.find(code => code !== undefined),
+  // The value axis shows the first plotted series' format (General when it has none), as the preview does.
+  const numberFormats = chartData.formats && {...chartData.formats, axis: chartData.spec.grouping === 'percentStacked' ? undefined : chartData.formats.series[0],
     labels: !chartOptions?.dataLabels?.content?.includes('percent'), scatter: chartData.type === 'scatter'};
   context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chartData.heading,labelColor,spec:chartData.spec,textSize,
     options:chartOptions,kind:chartTargetFor(chart.type)?.kind,pointCount:chartData.pointCount,numberFormats});
@@ -2259,8 +2272,11 @@ function recordPayloadData(context, objectName, kind, presentation, path, layout
   if (context.provenanceMode !== 'full' || !context.dataRecords || !presentation) return;
   let authored = presentation;
   for (const key of String(path).split('.')) authored = authored !== null && typeof authored === 'object' ? authored[Array.isArray(authored) ? Number(key) : key] : undefined;
-  const record = kind === 'chart' ? chartDataRecord(authored) : tableDataRecord(authored, layout);
-  if (record) context.dataRecords.set(objectName, record);
+  const record = kind === 'chart' ? chartDataRecord(authored, presentation.datasets) : tableDataRecord(authored, layout);
+  if (record) {
+    context.dataRecords.set(objectName, record);
+    context.dataRecordPaths.set(objectName, String(path));
+  }
 }
 
 function addTablePayload(slide, authoredTable, region, context, options, path, presentation) {
@@ -2904,7 +2920,6 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
     return withFormats({...mapped, series, heading: "Row", hasCategories: true, adaptations, notNumeric}, formats);
   }
 
-  const notNumeric = notNumericDiagnostic(rejected);
   const labels = data.rows.map((row) => stringifyText(row?.[0]));
   let series = data.columns.slice(1).map((name, seriesIndex) => ({
     name,
@@ -2922,6 +2937,13 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
     series = series.slice(0, plotted);
     codes = codes.slice(0, plotted);
   }
+  // Only the exported cells count. Core reports a cell at its authored column, which is its resolved position (1 for the
+  // first series) unless a mapping reorders the columns; a series that a pie or a single-series construct drops is not counted.
+  const position = (entry) => {
+    const column = Number(/\/(\d+)$/.exec(entry.path ?? '')?.[1]);
+    return source.mapping === undefined ? column : data.columns.indexOf(dataColumnName(authored.columns[column]));
+  };
+  const notNumeric = notNumericDiagnostic(rejected.filter((entry) => !(position(entry) > plotted)));
   if (spec.family === 'xy' && series.length === 1) {
     // [Point, X, Y...] carries its own X column; a lone value column is plotted against the row numbers.
     series = [{name: 'X', labels, values: data.rows.map((_, index) => index + 1)}, ...series];
@@ -2931,6 +2953,11 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
   // A scatter chart's first series is its X values (PptxGenJS writes one c:ser per Y series, each with c:xVal).
   const formats = spec.family === 'xy' ? {series: codes.slice(1), x: codes[0]} : {series: codes};
   return withFormats({...mapped, series, hasCategories: true, adaptations, notNumeric}, formats);
+}
+
+/** A chart column's name: the string, or a DataColumn's `name`. */
+function dataColumnName(column) {
+  return typeof column === 'string' ? column : column !== null && typeof column === 'object' && typeof column.name === 'string' ? column.name : undefined;
 }
 
 /** One chart-value-not-numeric diagnostic per chart (core reports one per cell), or undefined. */
@@ -3457,7 +3484,7 @@ async function normalizePptxZip(raw, context) {
     // datasets map beside the document tag.
     if (context.provenanceMode === 'full') {
       try {
-        attachDataProvenance(parts, {records: context.dataRecords, datasets: context.datasets, parseRelationships, report: context.reportDiagnostic});
+        attachDataProvenance(parts, {records: context.dataRecords, paths: context.dataRecordPaths, datasets: context.datasets, parseRelationships, report: context.reportDiagnostic});
       } catch (error) {
         throw new OPFPptxError("packaging-failed", "Chart and table data tags could not be attached.", {cause: errorMessage(error)});
       }

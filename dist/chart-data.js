@@ -96,8 +96,13 @@ export function applyChartNumberFormats(xml, {series = [], x, axis, labels = tru
     ? text.replace(/<c:formatCode>[^<]*<\/c:formatCode>/g, `<c:formatCode>${escapeXml(code)}</c:formatCode>`)
     : text.replace(/<c:numCache>/g, `<c:numCache><c:formatCode>${escapeXml(code)}</c:formatCode>`);
   const labelFormats = (text, code) => code === undefined || !labels ? text : text.replace(/<c:dLbls>[\s\S]*?<\/c:dLbls>/g, block => block.replace(/<c:numFmt\b[^>]*\/>/g, `<c:numFmt formatCode="${escapeXml(code)}" sourceLinked="0"/>`));
+  // Radar and scatter series carry no labels of their own (PptxGenJS writes the chart group's only), so every series would
+  // show the first series' format. When shown labels differ by series, each series gets a copy of the group's labels,
+  // in the CT_RadarSer / CT_ScatterSer position (before trendline, errBars, cat, val, xVal and yVal).
+  const group = xml.split(/<c:ser>[\s\S]*?<\/c:ser>/).join('').match(/<c:dLbls>[\s\S]*?<\/c:dLbls>/)?.[0];
+  const ownLabels = labels && group && /<c:showVal val="1"\/>/.test(group) && series.some(code => code !== series[0]);
   let index = 0;
-  const out = xml.replace(/<c:ser>[\s\S]*?<\/c:ser>/g, ser => {
+  const out = (ownLabels ? xml.replace(/<c:ser>[\s\S]*?<\/c:ser>/g, ser => /<c:dLbls>/.test(ser) ? ser : ser.replace(/<c:(?:trendline|errBars|cat|val|xVal|yVal)>/, at => `${group}${at}`)) : xml).replace(/<c:ser>[\s\S]*?<\/c:ser>/g, ser => {
     const code = series[index++];
     const result = ser.replace(/<c:(val|yVal|xVal)>[\s\S]*?<\/c:\1>/g, (role, name) => formatCode(role, name === 'xVal' ? x : code));
     return labelFormats(result, code);
