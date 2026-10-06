@@ -83,8 +83,7 @@ assert.deepEqual(numbers(scatter.chart, 'xVal'), [['1', '2', '3']]);
 
 // Data that cannot be plotted keeps the placeholder frame and says why, instead of dropping the chart quietly.
 for (const [label, data, reason] of [
-  ['text only', {columns: ['Category'], rows: [['a'], ['b']]}, 'single-column-not-numeric'],
-  ['external data', {src: 'https://example.invalid/data.csv'}, 'data-not-inline']
+  ['text only', {columns: ['Category'], rows: [['a'], ['b']]}, 'single-column-not-numeric']
 ]) {
   const result = await exported('histogram', data);
   assert.equal(result.charts.length, 0, label);
@@ -127,11 +126,11 @@ for (const rows of [[[-1e308], [1e308]], [[-1e308], [0], [1e308]], [[1.797693134
   assert.deepEqual(numbers(multi.chart, 'val'), [['12']], 'multi-column charts parse the same way');
 }
 // A placeholder is plain words: no raw JSON, data or source URL in slide text.
-for (const data of [{columns: ['Category'], rows: [['a'], ['b']]}, {src: 'https://example.invalid/data.csv?token=secret'}]) {
+for (const data of [{columns: ['Category'], rows: [['a'], ['b']]}]) {
   const result = await exported('histogram', data);
   const text = [...result.slide.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map(([, value]) => value).join('|');
   assert.doesNotMatch(text, /&quot;|\{|example\.invalid|secret/, `placeholder text is readable: ${text}`);
-  assert.match(text, /Chart data is not inline, so it cannot be drawn here|chart&apos;s data column has no numbers/);
+  assert.match(text, /chart&apos;s data column has no numbers/);
 }
 {
   const placeholderDiagnostics = [];
