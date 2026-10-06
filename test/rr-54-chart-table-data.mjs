@@ -85,7 +85,12 @@ const formatted = {slides: [{title: 'Formats', chart: {type: 'column', dataLabel
   assert.deepEqual(series.map(ser => numFmt(block(ser, 'dLbls')[0])), [['$#,##0.0', '0'], ['0%', '0'], ['#,##0 &quot;units&quot;', '0'], ['General', '0']], 'each series data label shows its column format');
   const valAx = block(chart, 'valAx')[0], catAx = block(chart, 'catAx')[0];
   assert.deepEqual(numFmt(valAx), ['$#,##0.0', '0'], 'the value axis shows the first series format, not source-linked');
-  assert.deepEqual(numFmt(catAx), ['General', '1'], 'the category axis is unchanged');
+  // The category axis is the engine's own (PptxGenJS 4.0.1 wrote sourceLinked="1", pptxgenjs-plus 4.3.4 writes "0"): the
+  // formatted chart's must equal the same chart's without formats.
+  const plain = structuredClone(formatted);
+  plain.slides[0].chart.data.columns = plain.slides[0].chart.data.columns.map(column => typeof column === 'string' ? column : column.name);
+  const plainCatAx = block((await exported(plain)).chart, 'catAx')[0];
+  assert.deepEqual(numFmt(catAx), numFmt(plainCatAx), 'the category axis is unchanged');
   // The embedded workbook: one custom numFmt and cell style per code, on every value cell of its column (gaps too).
   const {styles, sheet} = workbook();
   assert.match(styles, /<numFmts count="4"><numFmt numFmtId="0" formatCode="General"\/><numFmt numFmtId="164" formatCode="\$#,##0.0"\/><numFmt numFmtId="165" formatCode="0%"\/><numFmt numFmtId="166" formatCode="#,##0 &quot;units&quot;"\/><\/numFmts>/);
