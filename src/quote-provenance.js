@@ -2,6 +2,7 @@ import {XMLParser} from 'fast-xml-parser';
 import {validatePresentation} from '@openpresentation/opf';
 import {attachTextTags,decodeTextTag} from './code-provenance.js';
 import {sourceLineParagraphs} from './text-provenance.js';
+import {cleanBase,headingValue,joinRichLines,unwrapQuoteRuns} from './rich-heading.js';
 
 // FF-57: a `quote` payload exports as native text lines (a body part and an optional footer part). Each line shape carries an
 // OPF_QUOTE_V1 tag, so an unchanged export imports back as {quote: ...} instead of loose text blocks. Like timelines, only topology
@@ -31,7 +32,8 @@ export function quoteManifest(value,layout) {
     length+=value[field].length;
   }
   return {shorthand,...(fields.length?{footer:{fields,...(fields.length>1?{splits}:{})}}:{}),...(layout.photo?{photo:true}:{}),
-    parts:layout.parts.map(part=>({role:part.role,lines:part.fit.sourceLines.length}))};
+    // A rich body (FA-10) has richLines instead of sourceLines; both write one native shape per fitted line.
+    parts:layout.parts.map(part=>({role:part.role,lines:(part.fit.sourceLines??part.fit.lines).length}))};
 }
 function validateManifest(manifest) {
   if(!manifest||typeof manifest.shorthand!=='boolean'||!Array.isArray(manifest.parts)||manifest.parts.length<1||manifest.parts.length>2)throw Error('Invalid quote topology.');
@@ -74,7 +76,8 @@ function footerFields(text,footer,report) {
 }
 
 // `pictures` and `readPicture` (the ordinary picture importer) restore the headshot of a quote with a photo.
-export function importQuoteGroups(shapes,paragraphs,relationships,entries,report,pictures=[],readPicture=()=>undefined) {
+// `readBody` (optional) is the native body reader: with it the quote text keeps its native run formatting as TextRun[] (FA-10).
+export function importQuoteGroups(shapes,paragraphs,relationships,entries,report,pictures=[],readPicture=()=>undefined,readBody) {
   const groups=new Map(),consumed=new Set(),consumedPictures=new Set(),items=[];
   const candidates=[...shapes.map((shape,index)=>({index,shape,container:shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst']})),
     ...pictures.map((picture,index)=>({index,picture,container:picture['p:nvPicPr']?.['p:nvPr']?.['p:custDataLst']}))];
@@ -104,6 +107,13 @@ export function importQuoteGroups(shapes,paragraphs,relationships,entries,report
     }
     const [body,footer]=ordered.map(lines=>sourceLineParagraphs(lines,paragraphs)[0].text),local=[];
     let quote={text:unwrap(body)};
+    // The body lines are one logical text: rich runs when any word is formatted differently from the rest.
+    // Only a rich export records the body's own look (tag.base); a plain string quote stays a string.
+    const base=cleanBase(ordered[0][0]?.data.base);
+    const richParts=base?joinRichLines(ordered[0],readBody,(line,last)=>last?'':line.data.boundary==='hard'?(line.data.separator||'\n'):''):undefined;
+    const rich=richParts?unwrapQuoteRuns(headingValue(richParts,base)):undefined;
+    // Only when it reads as the same words as the plain path (the native text is authoritative).
+    if(Array.isArray(rich)&&rich.map(run=>typeof run==='string'?run:run.text).join('')===quote.text)quote={text:rich};
     if(footer)quote={...quote,...footerFields(footer,manifest.footer,diagnostic=>local.push(diagnostic))};
     // The headshot is the current native picture; a deleted or unreadable one is reported, never invented.
     if(manifest.photo){

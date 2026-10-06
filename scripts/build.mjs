@@ -13,6 +13,7 @@ await copyFile(new URL('src/card-provenance.js', root), new URL('card-provenance
 await copyFile(new URL('src/media-provenance.js', root), new URL('media-provenance.js', dist));
 await copyFile(new URL('src/heading-provenance.js', root), new URL('heading-provenance.js', dist));
 await copyFile(new URL('src/text-provenance.js', root), new URL('text-provenance.js', dist));
+await copyFile(new URL('src/rich-heading.js', root), new URL('rich-heading.js', dist));
 await copyFile(new URL('src/timeline-provenance.js', root), new URL('timeline-provenance.js', dist));
 await copyFile(new URL('src/quote-provenance.js', root), new URL('quote-provenance.js', dist));
 await copyFile(new URL('src/furniture-provenance.js', root), new URL('furniture-provenance.js', dist));
