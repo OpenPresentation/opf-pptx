@@ -119,7 +119,7 @@ export interface ToPptxOptions {
   fonts?: Fonts;
   /** Match preview/pagination clearance around supplied vector text outlines; default 1. */
   textRasterPadding?: number;
-  /** Layout diagnostics, `media-provenance-omitted` when video data cannot be stored, plus `unresolved-font-scheme` (once per reference path) when a font-scheme id matches no record and the default `aptos` scheme is used as the base, and `unresolved-theme` (once per reference path) when a theme id matches no record. */
+  /** Layout diagnostics, `media-provenance-omitted` when video data cannot be stored, plus `unresolved-font-scheme` (once per reference path) when a font-scheme id matches no record and the default `aptos` scheme is used as the base, and, from core's slide context, `unresolved-theme`, `unresolved-color-scheme` and `unresolved-layout` (once per reference path) when an id matches no record: the default theme (`minimal`) and colour scheme (`cool-horizon`) are used, and a slide whose layout is unknown, like one with no layout, is composed with no layout record. None of them refuses the export. */
   onDiagnostic?: (diagnostic: LayoutDiagnostic | FontSchemeDiagnostic | SlideContextReferenceDiagnostic | MediaProvenanceDiagnostic | ChartDataUnplottableDiagnostic | ChartDataAdaptedDiagnostic | ChartMapGeodataDiagnostic | ChartValueNotNumericDiagnostic | ChartMappingAdaptedDiagnostic | DataProvenanceOmittedDiagnostic | ContentPlaceholderDiagnostic | UnresolvedAssetDiagnostic | SvgSanitizedDiagnostic | SvgImageRasterizedDiagnostic | VariableExampleUsedDiagnostic) => void;
   baseDir?: string;
   compressionLevel?: number;

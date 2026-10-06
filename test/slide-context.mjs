@@ -53,15 +53,25 @@ assert.ok(!georgia.families.has('Aptos') && !georgia.families.has('Roboto'), 'a 
 const estimated = unzipSync(await toPptx({...deck, slides: [deck.slides[1]]}));
 assert.ok(strFromU8(estimated['ppt/slides/slide1.xml']).includes(`typeface="${resolveSlideContext(deck, 1).options.fontFamilies.body}"`));
 
-// A reference that matches no record is reported once per place it is written, from core's context.
+// A reference that matches no record is reported once per place it is written, from core's context, and never refuses the export.
 {
   const diagnostics = [];
-  await toPptx({name: 'Unknown theme', design: {theme: 'no-such-theme'}, slides: [{title: 'One', text: 'a'}, {title: 'Two', text: 'b'}]}, {onDiagnostic: diagnostic => diagnostics.push(diagnostic)});
-  const unresolved = diagnostics.filter(diagnostic => diagnostic.code === 'unresolved-theme');
-  assert.deepEqual(unresolved.map(({path, id}) => ({path, id})), [{path: 'design.theme', id: 'no-such-theme'}]);
+  const deck = {name: 'Unknown ids', design: {theme: 'no-such-theme', colorScheme: 'no-such-scheme'}, slides: [{layout: 'no-such-layout', title: 'One', text: 'a'}, {title: 'Two', text: 'b'}]};
+  const bytes = await toPptx(deck, {onDiagnostic: diagnostic => diagnostics.push(diagnostic)});
+  const where = code => diagnostics.filter(diagnostic => diagnostic.code === code).map(({path, id}) => ({path, id}));
+  assert.deepEqual(where('unresolved-theme'), [{path: 'design.theme', id: 'no-such-theme'}]);
+  assert.deepEqual(where('unresolved-color-scheme'), [{path: 'design.colorScheme', id: 'no-such-scheme'}]);
+  assert.deepEqual(where('unresolved-layout'), [{path: 'slides.0.layout', id: 'no-such-layout'}]);
+  // The fallbacks are the default theme and colour scheme: the second slide is the same as in a deck that names them.
+  const named = await toPptx({...deck, design: {theme: 'minimal', colorScheme: 'cool-horizon'}});
+  const slide = value => strFromU8(unzipSync(value)['ppt/slides/slide2.xml']);
+  assert.equal(slide(bytes), slide(named), 'unknown theme and colour scheme export as the defaults');
 }
 
-// An unresolved layout is refused, as before.
-await assert.rejects(() => toPptx({name: 'Unknown layout', slides: [{layout: 'no-such-layout', title: 'x'}]}), {code: 'catalog-resolution-failed', path: 'slides.0.layout'});
+// A layout-less slide is composed with no layout record: its package equals the one core's context describes (automatic composition).
+{
+  const context = resolveSlideContext({name: 'Cover', slides: [{title: 'Cover'}]}, 0);
+  assert.equal(context.options.layout, undefined, 'core gives a layout-less slide no layout record');
+}
 
 console.log(JSON.stringify({test: 'slide-context', passed: true}));

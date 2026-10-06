@@ -203,13 +203,6 @@ const DIMENSION_PRESETS = Object.freeze({
   a4: Object.freeze({ widthInches: 11.69, heightInches: 8.27 })
 });
 
-// The exporter's fallback records for a theme and a colour scheme reference that match no record. Core's resolveSlideContext owns
-// every other default (font scheme, canvas, layout).
-const DEFAULTS = Object.freeze({
-  theme: "minimal",
-  colorScheme: "cool-horizon"
-});
-
 const CHART_COLORS = [
   "2874A6",
   "1B4F72",
@@ -1651,10 +1644,9 @@ function exportFonts(core, textMeasurement) {
 function resolvePresentationContext(presentation, options, core = coreContext({...presentation, slides: [{}]}, 0, {...options, textMeasurement: undefined})) {
   const design = presentation.design ?? {};
   // `core` defaults to the deck level: the resolution of a slide that sets nothing of its own.
-  // The exporter's own theme and colour scheme records keep their fallbacks (the default theme and colour scheme for a reference that
-  // matches no record), so a deck that names an unknown one exports as it always has; core's records stay empty then.
-  const theme = resolveDesignRecord(presentation, "themes", design.theme, DEFAULTS.theme);
-  const colorScheme = resolveDesignRecord(presentation, "colorSchemes", design.colorScheme ?? theme?.colorScheme, DEFAULTS.colorScheme);
+  // The theme and colour scheme records come from core, which falls back to the default records (reporting unresolved-theme and
+  // unresolved-color-scheme) for a reference that matches no record.
+  const {theme, colorScheme} = core.resolved;
   const dimensions = {widthInches: core.options.width / 96, heightInches: core.options.height / 96};
   const variables = resolveVariableColors(presentation.variables);
   const background = resolveBackground(design.background ?? theme?.background, colorScheme, variables);
@@ -1671,6 +1663,7 @@ function resolvePresentationContext(presentation, options, core = coreContext({.
     compressionLevel: Number.isInteger(options.compressionLevel) ? options.compressionLevel : 6,
     layoutName: "OPF_CANVAS",
     dimensions,
+    theme,
     colorScheme,
     backgroundDefinition: design.background ?? theme?.background,
     fonts,
@@ -1787,7 +1780,7 @@ function masterBackground(context) {
 function exportTheme(presentation, context) {
   const reference = presentation.design?.theme;
   const id = referenceId(reference);
-  const theme = id ? resolveDesignRecord(presentation, "themes", reference, DEFAULTS.theme) : null;
+  const theme = id ? context.theme : null;
   const scheme = context.colorScheme;
   return {
     themeColors: themeSlotColors(scheme),
@@ -1846,12 +1839,11 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const slide = pptx.addSlide();
   const slideContext = exportSlideContext(presentation, slideIndex, context, options);
   const { widthInches, heightInches } = slideContext.dimensions;
-  const missingLayout = slideContext.core.diagnostics.find(diagnostic => diagnostic.code === "unresolved-layout");
-  if (missingLayout) throw new OPFPptxError("catalog-resolution-failed", `Layout '${missingLayout.id}' needs an inline or bundled catalog record.`, { path: missingLayout.path });
-  const layout = slideContext.core.options.layout ?? resolveCatalogRecord(presentation, "layouts", undefined, "blank") ?? {};
+  // A slide with no layout, or one that names a layout no catalog defines, is composed with no layout record (automatic composition),
+  // as in the preview; core reports the unknown id as unresolved-layout.
   // Core's resolved options (canvas, layout, families, alignment, content box, darkBackground), with the exporter's own additions:
-  // the families after the measurement provider's resolution of the chosen family and the host's social platform records.
-  const composeOptions = { ...slideContext.core.options, layout, fontFamilies: slideContext.composeFonts, textRasterPadding:options.textRasterPadding, socialPlatforms: socialPlatformRecords(presentation, options) };
+  // the families after the measurement provider's resolution of the chosen family, the raster padding and the host's social platform records.
+  const composeOptions = { ...slideContext.core.options, fontFamilies: slideContext.composeFonts, textRasterPadding:options.textRasterPadding, socialPlatforms: socialPlatformRecords(presentation, options) };
   // Core resolves every shared design key once (slide design, deck design, then the layout record's design): the text alignment of
   // each item (item.alignment), and the imageFill that backgrounds and picture placements use (SlideComposition.design).
   const geometry = composeSlide(opfSlide, composeOptions);
@@ -1971,10 +1963,9 @@ function exportSlideContext(presentation, slideIndex, baseContext, options) {
   const effective = { ...presentation, design: { ...presentation.design, ...slide.design } };
   const core = coreContext(presentation, slideIndex, options);
   const resolved = resolvePresentationContext(effective, options, core);
-  // A reference that matched no record is reported once per place it is written. An unresolved layout is not reported here:
-  // addSlide refuses it.
+  // A reference that matched no record is reported once per place it is written.
   for (const diagnostic of core.diagnostics) {
-    if (diagnostic.code === "unresolved-layout" || baseContext.reportedReferences?.has(diagnostic.path)) continue;
+    if (baseContext.reportedReferences?.has(diagnostic.path)) continue;
     baseContext.reportedReferences?.add(diagnostic.path);
     options.onDiagnostic?.(diagnostic);
   }
@@ -3486,23 +3477,6 @@ function assetAlt(asset, presentation) {
   return undefined;
 }
 
-function resolveCatalogRecord(presentation, kind, reference, fallbackId) {
-  const id = referenceId(reference) ?? fallbackId;
-  const inlineRecords = normalizeRecords(presentation.catalogs?.[kind]);
-  return findById(inlineRecords, id)
-    ?? findById(defaultCatalog(kind), id)
-    ?? findById(defaultCatalog(kind), fallbackId)
-    ?? null;
-}
-
-function resolveDesignRecord(presentation, kind, reference, fallbackId) {
-  const base = resolveCatalogRecord(presentation, kind, reference, fallbackId) ?? {};
-  return {
-    ...base,
-    ...(isPlainObject(reference) ? withoutSchema(reference) : {})
-  };
-}
-
 function referenceId(reference) {
   if (typeof reference === "string") return reference;
   if (isPlainObject(reference) && typeof reference.id === "string") return reference.id;
@@ -3540,10 +3514,6 @@ function normalizeRecords(catalog) {
 
 function findById(records, id) {
   return records.find((record) => record?.id === id) ?? null;
-}
-
-function withoutSchema(value) {
-  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$schema"));
 }
 
 // A solid color or pattern background color is a ColorRef (hex, `var:` variable, colour-scheme slot or role), resolved
