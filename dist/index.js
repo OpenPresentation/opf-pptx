@@ -10,7 +10,6 @@ import {applyChartNumberFormats,chartNumber,excelCode,formattedColumns,inlineCha
 import {attachDataProvenance,chartDataRecord,chartEvidence,readDataTag,readDatasetsTag,restoreChartData,restoreTableData,tableDataRecord} from './data-provenance.js';
 import {CHARTEX_FALLBACK,resolveChartType,chartTypeFromNative,applyChartConstruct,NATIVE_CHART_ELEMENTS} from './chart-types.js';
 import {attachChartexParts,chartFromChartex,CHARTEX_GRAPHIC_DATA_URI} from './chartex.js';
-import {applyChartAlt,readFrameAlt} from './chart-alt.js';
 import {applyDataLabels,chartOptionsFromClassic,chartTargetFor,classicChartOptions,reportChartOptionDiagnostics,resolveChartOptionsFor} from './chart-options.js';
 import {attachCodeTags, attachTextTags, codeManifest, importCodeGroups, nativeShapeParagraphs, nativeTextShapes} from './code-provenance.js';
 import {attachMetricTags,metricManifest,importMetricGroups} from './metric-provenance.js';
@@ -262,7 +261,6 @@ export async function toPptx(input, options = {}) {
   context.metricTags = new Map();
   context.metricDescriptions = new Map();
   context.chartHeadings = new Map();
-  context.chartAlts = new Map();
   context.chartFonts = new Map();
   context.chartPalettes = new Map();
   context.chartex = new Map();
@@ -386,7 +384,6 @@ export async function fromPptx(input, options = {}) {
   const furniture = importFurniture(furnitureContexts, entries, options.onDiagnostic);
   if (Object.keys(furniture.design).length) imported.design = {...imported.design, ...furniture.design};
   if (furniture.organization) imported.organization = furniture.organization;
-  if (furniture.speaker) imported.speaker = furniture.speaker;
 
   // RR-54: the datasets recorded at export (OPF_DATASETS_V1). Chart and table frames restore their dataset references against
   // them, so the document carries them before document provenance validates the restored document.
@@ -424,7 +421,7 @@ export async function fromPptx(input, options = {}) {
   let slideProvenance = slidePaths.map(() => ({structure: "untagged"}));
   let restoredGroups = [];
   try {
-    const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true, speakerConflict: furniture.speakerConflict === true,
+    const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true,
       // Host catalogs format stored socials exactly as export did (FF-34).
       socialPlatformRecords: catalogs => socialPlatformRecords({catalogs}, options),
       nativeSections: slideSections,
@@ -922,14 +919,12 @@ function importGraphicFrame(entries, frame, slidePath, relationships, importedTa
     const chart = stored && part && entries[part]
       ? restore('chart', imported, () => restoreChartData(imported, stored, chartEvidence(decodeText(entries[part])), {datasets: data.datasets, report: diagnostic => data.report?.('chart', diagnostic)}))
       : imported;
-    // FA-09: the frame's descr (or PowerPoint's decorative marker) is the chart's text alternative.
-    const alt = chart ? readFrameAlt(frame["p:nvGraphicFramePr"]?.["p:cNvPr"]) : undefined;
     return {
       kind: "chart",
       bounds,
       name,
       payload: chart
-        ? { type: "chart", chart: alt === undefined ? chart : { ...chart, alt } }
+        ? { type: "chart", chart }
         : { type: "text", text: `PowerPoint chart: ${name || chartRelId}` }
     };
   }
@@ -1523,7 +1518,7 @@ function resolveTemplateInput(presentation, options) {
     throw new OPFPptxError(errors.some(entry => entry.code === "variable-unfilled") ? "unfilled-variables" : "invalid-variables", errors[0].message, {issues: errors, path: errors[0].path});
   }
   for (const entry of result.diagnostics) {
-    if (entry.code === "variable-example-used" || entry.code === "variable-builtin-missing") options.onDiagnostic?.({code: entry.code, path: entry.path, message: entry.message, id: entry.id});
+    if (entry.code === "variable-example-used") options.onDiagnostic?.({code: "variable-example-used", path: entry.path, message: entry.message, id: entry.id});
   }
   return result.presentation;
 }
@@ -1560,10 +1555,11 @@ function resolvePresentationContext(presentation, options) {
   const dimensions = resolveDimensions(design.dimensions ?? theme?.dimensions);
   const variables = resolveVariableColors(presentation.variables);
   const background = resolveBackground(design.background ?? theme?.background, colorScheme, variables);
+  // One resolution for every color role (core resolveColorRoles), shared with the SVG preview and the audit.
+  const roles = opfCore.resolveColorRoles(colorScheme, {background: `#${background}`});
   const fonts = resolveFonts(fontScheme);
   for (const role of ["heading","body","code"]) fonts[role] = resolveTextStyle({fontFamily:fonts[role],fontWeight:role === "heading" ? 700 : 400},options.textMeasurement).fontFamily;
-  const textColor = readableTextColor(background, colorScheme);
-  const darkBackground = isDarkHex(background);
+  const textColor = normalizeHex(roles.text);
 
   return {
     seed: Number.isInteger(options.seed) ? options.seed : DEFAULT_SEED,
@@ -1577,12 +1573,15 @@ function resolvePresentationContext(presentation, options) {
     backgroundDefinition: design.background ?? theme?.background,
     fonts,
     unresolvedFontScheme,
+    // The color roles a ColorRef names (primary, secondary, accent, background, surface, text, textSecondary, hyperlink).
+    roles,
     colors: {
       background,
       text: textColor,
-      mutedText: normalizeHex(colorScheme.textSecondary ?? (darkBackground ? colorScheme.light2 : colorScheme.dark2) ?? "#475569"),
-      accent: normalizeHex(colorScheme.primary ?? colorScheme.accent1 ?? "#2874A6"),
-      surface: normalizeHex(colorScheme.surface ?? (darkBackground ? colorScheme.dark2 : colorScheme.light2) ?? "#F8FAFC"),
+      mutedText: normalizeHex(roles.textSecondary),
+      // The primary color, which the exporter draws accent fills (table headers, tag, media badge) in. The `accent` ColorRef role is roles.accent.
+      accent: normalizeHex(roles.primary),
+      surface: normalizeHex(roles.surface),
       border: normalizeHex(colorScheme.accent5 ?? "#CBD5E1")
     },
     variables
@@ -1626,6 +1625,14 @@ function contrastRatio(first, second) {
 function tagColor(context) {
   if (contrastRatio(context.colors.accent, context.colors.background) < TAG_MIN_CONTRAST) return context.textColor;
   return nativeColor('primary', context.colors.accent, context);
+}
+
+// A link run with no color of its own is written in the theme hyperlink color (a:schemeClr hlink where the deck theme
+// holds that exact color, else the literal), underlined by PowerPoint, as the preview draws it. A run color is kept.
+function linkColor(run, color, context) {
+  const link = typeof run?.link === 'string' && /^(https?:|mailto:)/i.test(run.link);
+  if (!link || !(run.color === undefined || run.color === null || run.color === '')) return color;
+  return nativeColor('hyperlink', normalizeHex(context.roles.hyperlink), context);
 }
 
 // FF-24c: two literals no document color uses stand in for hlink and folHlink
@@ -1768,7 +1775,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   // Core composition resolves one alignment per composed item for every engine
   // (FF-29); the design fallback keeps cores published before item.alignment working.
   const alignmentFor=item=>item.alignment??fieldAlignment(item.field);
-  const composeOptions = { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, darkBackground: isDarkHex(slideContext.colors.background), textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) };
+  const composeOptions = { width: widthInches * 96, height: heightInches * 96, layout, presentation, slideIndex, fonts: slideContext.fonts, contentAlignment, titleAlignment, textRasterPadding:options.textRasterPadding, contentBox:opfSlide.design?.contentBox??presentation.design?.contentBox, darkBackground: slideContext.roles.dark, textMeasurement: options.textMeasurement, date: options.date, socialPlatforms: socialPlatformRecords(presentation, options) };
   const geometry = composeSlide(opfSlide, composeOptions);
   // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
   if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
@@ -1788,7 +1795,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
       const frame=item.frameBox;
       context.cardTags.set(`OPF card ${item.path}`,item.path);
       const paint=value=>({color:normalizeHex(value),transparency:/^#[0-9a-f]{8}$/i.test(value)?(1-parseInt(value.slice(7),16)/255)*100:0});
-      const surface=itemContext.colorScheme[isDarkHex(itemContext.colors.background)?'dark2':'light2']??`#${itemContext.colors.surface}`;
+      const surface=itemContext.colorScheme.surface??itemContext.colorScheme[itemContext.roles.dark?'dark2':'light2']??`#${itemContext.colors.surface}`;
       slide.addShape('roundRect',{x:frame.x/96,y:frame.y/96,w:frame.width/96,h:frame.height/96,
         rectRadius:8*Math.min(widthInches,heightInches)/720,
         fill:paint(surface),line:{...paint(itemContext.colorScheme.accent5??`#${itemContext.colors.border}`),width:.75},objectName:`OPF card ${item.path}`});
@@ -1817,7 +1824,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
         const runs=line.fragments.map(fragment=>{
           const runColor=exportColor(fragment.run.color,itemContext,itemContext.colors.text);
           const color=nativeColor(fragment.run.color,runColor,itemContext,itemContext.textColor);
-          return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:|tel:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
+          return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color:linkColor(fragment.run,color,itemContext),underline:fragment.run.underline?{style:'sng',color:linkColor(fragment.run,color,itemContext)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
         });
         // Logical alignment (RR-05): a right-to-left paragraph starts at the right edge; every wrapped line shares its paragraph's direction.
         const placed=item.text.placement?.lines[index],alignment=placed?.alignment??physicalAlignment(logicalAlignment,item.text.directions?.[index]),factor=alignment==='right'?1:alignment==='center'?.5:0;
@@ -1869,7 +1876,7 @@ function resolveSlideContext(presentation, slide, baseContext, options, slideInd
     || Math.abs(resolved.dimensions.heightInches - baseContext.dimensions.heightInches) > 1e-6) {
     throw new OPFPptxError("mixed-slide-dimensions", "PowerPoint requires one canvas size per presentation. Set dimensions on the deck or export this slide separately.");
   }
-  const slideContext = { ...baseContext, backgroundDefinition: resolved.backgroundDefinition, colorScheme: resolved.colorScheme, fonts: resolved.fonts, colors: resolved.colors, variables: resolved.variables, imageFill: effective.design.imageFill ?? "fit" };
+  const slideContext = { ...baseContext, backgroundDefinition: resolved.backgroundDefinition, colorScheme: resolved.colorScheme, fonts: resolved.fonts, colors: resolved.colors, roles: resolved.roles, variables: resolved.variables, imageFill: effective.design.imageFill ?? "fit" };
   // A slide-level color scheme (directly or through a slide theme) pins every
   // named color on that slide to literal sRGB; see schemeColorValue().
   const slideScheme = themeSlotColors(resolved.colorScheme), deckScheme = baseContext.themeColors ?? {};
@@ -1951,7 +1958,7 @@ function richLineRuns(line,color,native,context) {
   const fallback=color.replace(/^#/,'');
   return line.fragments.map(fragment=>{
     const runColor=exportColor(fragment.run.color,context,fallback),color=nativeColor(fragment.run.color,runColor,context,native);
-    return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color,underline:fragment.run.underline?{style:'sng',color}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:|tel:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
+    return {text:fragment.text,options:{...nativeFontOptions(fragment.style),fontSize:(fragment.nominalSize??fragment.fontSize)*.75,color:linkColor(fragment.run,color,context),underline:fragment.run.underline?{style:'sng',color:linkColor(fragment.run,color,context)}:undefined,strike:fragment.run.strikethrough?'sngStrike':undefined,baseline:fragment.baselineShift?-fragment.baselineShift/(fragment.nominalSize??fragment.fontSize)*2000:undefined,hyperlink:fragment.run.link&&/^(https?:|mailto:)/i.test(fragment.run.link)?{url:fragment.run.link}:undefined}};
   });
 }
 // Every native line of a list, marker paragraph or not, is named for the list's
@@ -2081,8 +2088,12 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
   const watermark = local ? opfSlide.design.watermark : presentation.design?.watermark;
   if (watermark === undefined || watermark === null || watermark === false) return;
   const path = local ? `slides.${slideIndex}.design.watermark` : 'design.watermark';
-  // The schema requires an image source (a string, or an object with src), so there is no source-less watermark to report.
-  const asset = watermark;
+  const notExported = message => options.onDiagnostic?.({code: 'watermark-not-exported', path, message});
+  const asset = isPlainObject(watermark) || typeof watermark === 'string' ? watermark : null;
+  if (asset === null || (isPlainObject(asset) && typeof asset.src !== 'string')) {
+    notExported('The watermark needs an image source (a string, or an object with src); no watermark was exported for this slide.');
+    return;
+  }
   const {widthInches, heightInches} = slideContext.dimensions;
   const box = watermarkBox(widthInches, heightInches);
   const outcome = {box};
@@ -2203,7 +2214,7 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
 
   // Keep the resolved palette surface (including alpha) explicit in native
   // chart/plot areas, so inherited labels are assessed against their own panel.
-  const panelFill = context.colorScheme.surface ?? context.colorScheme[isDarkHex(context.colors.background) ? 'dark2' : 'light2'] ?? `#${context.colors.surface}`;
+  const panelFill = context.colorScheme.surface ?? context.colorScheme[context.roles.dark ? 'dark2' : 'light2'] ?? `#${context.colors.surface}`;
   const labelColor = normalizeHex(textColorForFill(panelFill, `#${context.colors.text}`));
   const transparency = /^#[0-9a-f]{8}$/i.test(panelFill) ? (1 - parseInt(panelFill.slice(7), 16) / 255) * 100 : 0;
   const fill = {color:normalizeHex(panelFill),transparency};
@@ -2218,8 +2229,6 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     options:chartOptions,kind:chartTargetFor(chart.type)?.kind,pointCount:chartData.pointCount,numberFormats});
   recordPayloadData(context, objectName, 'chart', presentation, path);
   context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
-  // FA-09: the chart's text alternative (the frame's descr; the empty string is PowerPoint's decorative marker), applied before the chartex frame copies the head.
-  if (typeof chart.alt === 'string') context.chartAlts.set(objectName, chart.alt);
   const preferredPalette = CHART_COLORS.map(color=>`#${color}`);
   const palette = (typeof opfComposition.chartPaletteForFill === "function" ? opfComposition.chartPaletteForFill(panelFill, preferredPalette) : preferredPalette.map(color=>chartColorForFill(panelFill,color))).map(color=>normalizeHex(color));
   context.chartPalettes.set(objectName,palette);
@@ -2333,9 +2342,9 @@ function addTablePayload(slide, authoredTable, region, context, options, path, p
       const color = nativeColor(run.color !== undefined && run.color !== '' ? run.color : cellStyle.color, rawColor, context, defaultText), transparency = rawColor.length === 8 ? (1 - parseInt(rawColor.slice(6), 16) / 255) * 100 : 0;
       const runOptions = {
         ...nativeFontOptions(runStyle),fontSize:fragment ? fragment.fontSize * .75 : fit.fontSize * .75,
-        underline:run.underline ? {style:'sng',color} : undefined,strike:run.strikethrough ? 'sngStrike' : undefined,
-        color,transparency,baseline:fragment?.baselineShift ? -fragment.baselineShift / fragment.fontSize * 2000 : undefined,
-        hyperlink:run.link && /^(https?:|mailto:|tel:)/i.test(run.link) ? {url:run.link} : undefined,
+        underline:run.underline ? {style:'sng',color:linkColor(run,color,context)} : undefined,strike:run.strikethrough ? 'sngStrike' : undefined,
+        color:linkColor(run,color,context),transparency,baseline:fragment?.baselineShift ? -fragment.baselineShift / fragment.fontSize * 2000 : undefined,
+        hyperlink:run.link && /^(https?:|mailto:)/i.test(run.link) ? {url:run.link} : undefined,
       };
       // PptxGenJS marks every part of a newline-containing run as a paragraph
       // break, including its final part. Split explicitly so the next styled
@@ -2829,14 +2838,14 @@ function textRuns(value, context, fallbackFontSize) {
       options: {
         bold: run?.bold,
         italic: run?.italic,
-        underline: run?.underline ? { style: "sng", color: nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context, context.textColor) } : undefined,
+        underline: run?.underline ? { style: "sng", color: linkColor(run, nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context, context.textColor), context) } : undefined,
         strike: run?.strikethrough ? "sngStrike" : undefined,
-        color: nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context, context.textColor),
+        color: linkColor(run, nativeColor(run?.color, exportColor(run?.color, context, context.colors.text), context, context.textColor), context),
         fontFace: run?.fontFamily ?? context.fonts.body,
         fontSize: run?.fontSize ?? fallbackFontSize,
         superscript: run?.superscript,
         subscript: !run?.superscript && run?.subscript,
-        hyperlink: run?.link && /^(https?:|mailto:|tel:)/i.test(run.link) ? { url: run.link } : undefined
+        hyperlink: run?.link && /^(https?:|mailto:)/i.test(run.link) ? { url: run.link } : undefined
       }
     };
   });
@@ -2863,7 +2872,7 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
     return unplottable("dataset-unknown", "The chart's dataset is missing, so it cannot be drawn here.", `The chart references dataset '${stringifyText(authored.dataset)}', which the document does not hold (or a field it names).`);
   }
   if (!authored || !Array.isArray(authored.columns) || !Array.isArray(authored.rows)) {
-    return unplottable("no-columns", "The chart has no inline data, so it cannot be drawn here.", "The chart data is not inline columns and rows. Supply inline columns and rows or a dataset.");
+    return unplottable("data-not-inline", "Chart data is not inline, so it cannot be drawn here.", "The chart data is not inline columns and rows (for example an external data source). Supply inline columns and rows.");
   }
   if (authored.rows.length === 0) return unplottable("no-rows", "The chart has no data rows.", "The chart data has no rows.");
   if (authored.columns.length === 0) return unplottable("no-columns", "The chart has no data columns.", "The chart data has no columns.");
@@ -3272,30 +3281,24 @@ function resolveBackground(value, colorScheme, variables = {}) {
   const reference = entry => normalizeHex(resolveBackgroundColorRef(entry, colorScheme, variables) ?? entry, fallback);
   if (typeof value === "string") {
     if (value.startsWith("#")) return normalizeHex(value, fallback);
-    return normalizeHex(colorScheme[value] ?? colorScheme.background ?? colorScheme.light1 ?? "#FFFFFF", fallback);
+    return normalizeHex(colorScheme[value] ?? opfCore.defaultSlideBackground(colorScheme), fallback);
   }
   if (isPlainObject(value)) {
     if (value.type === "solid" && value.color) return reference(value.color);
     if (value.type === "theme" && value.slot) {
-      return normalizeHex(colorScheme[value.slot] ?? colorScheme.light1 ?? "#FFFFFF", fallback);
+      return normalizeHex(colorScheme[value.slot] ?? opfCore.defaultSlideBackground(colorScheme), fallback);
     }
     // Like the SVG preview, text contrast follows a pattern's background color.
     if (value.type === "pattern") return reference(value.pattern?.backgroundColor ?? "#FFFFFF");
     if (value.backgroundColor) return normalizeHex(value.backgroundColor, fallback);
   }
-  return normalizeHex(colorScheme.background ?? colorScheme.light1 ?? "#FFFFFF", fallback);
+  return normalizeHex(opfCore.defaultSlideBackground(colorScheme), fallback);
 }
 
 function resolveFonts(fontScheme) {
   return {id:fontScheme.id,...resolveFontFamilies(fontScheme),scheme:{type:fontScheme.type,major:fontScheme.major,minor:fontScheme.minor}};
 }
 
-
-function readableTextColor(background, colorScheme) {
-  return isDarkHex(background)
-    ? normalizeHex(colorScheme.light1 ?? "#FFFFFF")
-    : normalizeHex(colorScheme.text ?? colorScheme.dark1 ?? "#0F172A");
-}
 
 function normalizeHex(value, fallback = "000000") {
   if (typeof value !== "string") return fallback.replace(/^#/, "").toUpperCase().slice(0, 6);
@@ -3307,15 +3310,6 @@ function normalizeHex(value, fallback = "000000") {
     return raw.slice(0, 6).toUpperCase();
   }
   return fallback.replace(/^#/, "").toUpperCase().slice(0, 6);
-}
-
-function isDarkHex(value) {
-  const hex = normalizeHex(value);
-  if (!/^[0-9A-F]{6}$/.test(hex)) return false;
-  const red = Number.parseInt(hex.slice(0, 2), 16);
-  const green = Number.parseInt(hex.slice(2, 4), 16);
-  const blue = Number.parseInt(hex.slice(4, 6), 16);
-  return (red * 299 + green * 587 + blue * 114) / 1000 < 128;
 }
 
 // The master, layout and notes master half of the native header/footer (RR-11): placeholders and p:hf on the finished parts.
@@ -3393,7 +3387,6 @@ async function normalizePptxZip(raw, context) {
     }
   }
   applyChartFonts(entries,context.chartFonts,parseRelationships);
-  if (context.chartAlts.size) for (const [part, bytes] of Object.entries(entries)) if (/^ppt\/slides\/slide\d+\.xml$/.test(part)) { const xml = decodeText(bytes), next = applyChartAlt(xml, context.chartAlts); if (next !== xml) entries[part] = encodeText(next); }
   // Chartex charts: the native cx:chartSpace part, its style parts and the mc:AlternateContent frame (the classic chart above is the fallback).
   try {
     attachChartexParts(entries, context.chartex, parseRelationships);
