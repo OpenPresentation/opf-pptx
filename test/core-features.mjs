@@ -31,7 +31,10 @@ const required = {
   '@openpresentation/opf': ['validate', 'resolveVariables', 'isTemplate', 'hasContentVariables', 'resolveSlideContext', 'toExcelNumberFormat', 'fromExcelNumberFormat',
     'chartNumber', 'resolveChartData', 'resolveTableData', 'inlineChartData', 'inlineTableData', 'isDatasetRef', 'tableCellDisplayValue', 'validateCatalogRecord', 'catalogs', 'schemas'],
   '@openpresentation/opf/composition': ['composeSlide', 'resolveScriptFonts', 'paragraphDirection', 'physicalAlignment', 'resolveSocialProfile', 'resolveColorRef', 'tokenizeCode',
-    'codeSyntaxPaletteForScheme', 'codeLineRuns', 'metricTrendMark', 'resolveChartOptions', 'chartOptionSupport', 'chartOptionTarget', 'textColorForFill', 'chartPaletteForFill'],
+    'codeSyntaxPaletteForScheme', 'codeLineRuns', 'metricTrendMark', 'resolveChartOptions', 'chartOptionSupport', 'chartOptionTarget', 'textColorForFill', 'chartPaletteForFill',
+    // FA (0.14): colour roles, text watermark, code highlight, timeline status and chart highlight.
+    'resolveColorRoles', 'defaultSlideBackground', 'layoutWatermark', 'codeHighlightLines', 'codeHighlightBands', 'codeHighlightColors', 'codeLineNumbers', 'timelineMarkerShapes',
+    'timelineTextColor', 'chartHighlightMarks', 'chartHighlightColors'],
 };
 for (const [specifier, names] of Object.entries(required)) {
   for (const name of names) {
@@ -41,7 +44,7 @@ for (const [specifier, names] of Object.entries(required)) {
 }
 
 // The engine names are on /composition only: a root import of one would be the silent switch-off this test exists to catch.
-for (const name of ['composeSlide', 'resolveScriptFonts', 'paragraphDirection', 'tokenizeCode', 'metricTrendMark', 'resolveChartOptions', 'resolveSocialProfile', 'resolveColorRef']) {
+for (const name of ['composeSlide', 'resolveScriptFonts', 'paragraphDirection', 'tokenizeCode', 'metricTrendMark', 'resolveChartOptions', 'resolveSocialProfile', 'resolveColorRef', 'resolveColorRoles', 'layoutWatermark', 'codeHighlightLines', 'timelineMarkerShapes', 'chartHighlightMarks']) {
   assert.equal(core[name], undefined, `${name} is not a root export of core 0.14`);
   assert.equal(typeof composition[name], 'function', `${name} is exported by /composition`);
 }
