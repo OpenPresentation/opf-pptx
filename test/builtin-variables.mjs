@@ -8,7 +8,7 @@ import {validate} from '@openpresentation/opf';
 const dec = new TextDecoder(), enc = new TextEncoder();
 const slideXml = (entries, index = 1) => dec.decode(entries[`ppt/slides/slide${index}.xml`]);
 const modify = (bytes, mutate) => { const entries = unzipSync(bytes); mutate(entries); return zipSync(entries); };
-const read = async (bytes) => { const issues = []; const deck = await fromPptx(bytes, {onDiagnostic: issue => issues.push(issue)}); assert.equal(validate(deck, {only: ['format']}).valid, true, JSON.stringify(validatePresentation(deck).errors)); return {deck, issues}; };
+const read = async (bytes) => { const issues = []; const deck = await fromPptx(bytes, {onDiagnostic: issue => issues.push(issue)}); assert.equal(validate(deck, {only: ['format']}).valid, true, JSON.stringify(validate(deck, {only: ['format']}).findings)); return {deck, issues}; };
 
 const source = {
   name: 'Q4 Review',

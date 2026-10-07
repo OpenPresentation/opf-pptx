@@ -47,7 +47,7 @@ import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attac
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import {
   chartPaletteForFill, codeHighlightBands, codeHighlightColors, codeHighlightLines, codeLineNumbers, codeLineRuns, codeSyntaxPaletteForScheme, composeSlide,
-  defaultSlideBackground, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
+  DEFAULT_FONT_SCHEME, defaultSlideBackground, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
   resolveTextStyle, textColorForFill, textWidthMeasurer, timelineMarkerShapes, timelineTextColor, tokenizeCode
 } from "@openpresentation/opf/composition";
 import { colorContext, resolveColorRefValue, resolveExportColor, resolveVariableColors } from "./color-ref.js";
@@ -637,7 +637,7 @@ function readCoreProperties(entries) {
 function importedCodeFamily(design) {
   const reference = design?.fontScheme;
   const id = referenceId(reference);
-  const base = (id && findById(defaultCatalog("fontSchemes"), id)) || findById(defaultCatalog("fontSchemes"), DEFAULTS.fontScheme);
+  const base = (id && findById(defaultCatalog("fontSchemes"), id)) || findById(defaultCatalog("fontSchemes"), DEFAULT_FONT_SCHEME);
   return resolveFontFamilies({...base, ...(isPlainObject(reference) ? reference : {})}).code;
 }
 
@@ -2210,10 +2210,8 @@ async function addWatermark(slide, presentation, opfSlide, slideIndex, slideCont
 // The stamp takes the slide's own resolved fonts and default text color (readable on that slide's background), as the preview does.
 function addTextWatermark(slide, watermark, slideIndex, size, slideContext, context, options, path) {
   const layout = layoutWatermark(watermark.text, size, {fontFamily: slideContext.fonts.heading, fontWeight: 700, textMeasurement: options.textMeasurement});
-  if (!layout) {
-    options.onDiagnostic?.({code: 'watermark-not-exported', path, message: 'The text watermark has no text; no watermark was exported for this slide.'});
-    return;
-  }
+  // The schema requires text, so this is null only for text that draws nothing (the preview draws nothing either).
+  if (!layout) return;
   const opacity = watermarkOpacity(watermark);
   const {box} = layout;
   slide.addText(layout.text, {
