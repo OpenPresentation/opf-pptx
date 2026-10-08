@@ -46,16 +46,15 @@ import { webpToPng, svgToPng, readLocalFile } from '#image-fallback';
 import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attachSvgPictures } from './svg-image.js';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import {
-  chartPaletteForFill, codeHighlightBands, codeHighlightColors, codeHighlightLines, codeLineNumbers, codeLineRuns, codeSyntaxPaletteForScheme, composeSlide,
-  DEFAULT_FONT_SCHEME, defaultSlideBackground, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
-  resolveTextStyle, textColorForFill, textWidthMeasurer, timelineMarkerShapes, timelineTextColor, tokenizeCode
+  catalogRecords, chartPaletteForFill, codeHighlightBands, codeHighlightColors, codeHighlightLines, codeLineNumbers, codeLineRuns, codeSyntaxPaletteForScheme, composeSlide,
+  ENGINE_DEFAULT_FONT_SCHEME, defaultSlideBackground, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
+  resolveReference, resolveTextStyle, textColorForFill, textWidthMeasurer, timelineMarkerShapes, timelineTextColor, tokenizeCode
 } from "@openpresentation/opf/composition";
 import { colorContext, resolveColorRefValue, resolveExportColor, resolveVariableColors } from "./color-ref.js";
 import PptxGenJS from "../vendor/pptxgenjs/pptxgen.es.js";
 import { unzipSync, zipSync } from "fflate";
 import { XMLParser } from "fast-xml-parser";
 import {
-  catalogs as bundledCatalogs,
   hasContentVariables,
   isTemplate,
   resolveSlideContext as resolveCoreSlideContext,
@@ -225,6 +224,13 @@ export async function toPptx(input, options = {}) {
   if (options.provenance !== undefined && !['full', 'references-only', false].includes(options.provenance)) {
     throw new OPFPptxError('invalid-provenance-option', "provenance must be 'full', 'references-only' or false.", {path: 'options.provenance'});
   }
+  // OPF 0.15 (FA-23): the host's registered catalogs (core `Catalog[]`, matched by `source`, never fetched) reach every core
+  // call that resolves a reference. Strict export (`strictReferences`, default `strictAssets`) fails on a reference that
+  // resolves nowhere instead of composing automatically or drawing with the engine default.
+  if (options.catalogs !== undefined && !Array.isArray(options.catalogs)) {
+    throw new OPFPptxError('invalid-catalogs', 'catalogs must be an array of registered catalogs ({source, layouts?, themes?, ...}).', {path: 'options.catalogs'});
+  }
+  options = {...options, strictReferences: options.strictReferences ?? options.strictAssets === true};
   const presentation = resolveTemplateInput(parseInput(input), options);
   assertValidBoundary(presentation);
   // `options.fonts` is the fonts handle (the renderer's loadFonts()); the exporter reads its measurement, wrapped so the package names the
@@ -284,15 +290,15 @@ export async function toPptx(input, options = {}) {
     throw new OPFPptxError('invalid-chartex-mode', 'chartex must be auto, native or fallback.', {path: 'options.chartex'});
   }
   context.chartexMode = options.chartex ?? 'auto';
-  Object.assign(context, exportTheme(presentation, context));
+  Object.assign(context, exportTheme(presentation, context, options));
   context.reportedReferences = new Set();
   // Document references and metadata tags (FF-32, docs/document-roundtrip.md).
   context.documentProvenance = options.provenance === false ? null : documentProvenance(presentation, {
     mode: options.provenance ?? "full",
-    isCatalogId: (kind, id) => !!(findById(normalizeRecords(presentation.catalogs?.[kind]), id) ?? findById(defaultCatalog(kind), id)),
+    catalogs: options.catalogs,
     report: diagnostic => options.onDiagnostic?.(diagnostic)
   });
-  context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic);
+  context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic, {catalogs: options.catalogs});
   // Slide section labels become PowerPoint's native section list (src/sections.js).
   // A label is an XML attribute: the characters text runs reject are rejected here too.
   context.sections = presentation.slides.map((slide, index) => {
@@ -310,9 +316,10 @@ export async function toPptx(input, options = {}) {
     await addSlide(pptx, presentation, presentation.slides[index], index, context, options);
   }
 
-  // FF-08: pitchFamily per exported family, from each slide's resolved scheme.
+  // FF-08: pitchFamily per exported family, from each slide's resolved scheme, then the font schemes the document embeds
+  // and the registered catalogs its groups name (core catalogRecords).
   context.fontPitch = fontPitchFamilies(presentation.slides.map((slide, index) => exportSlideContext(presentation, index, context, options).fonts),
-    [...normalizeRecords(presentation.catalogs?.fontSchemes), ...defaultCatalog("fontSchemes")]);
+    catalogRecords(presentation, "fontSchemes", {catalogs: options.catalogs}).map(entry => entry.record));
 
   let raw;
   try {
@@ -332,6 +339,11 @@ export async function toPptx(input, options = {}) {
 export async function fromPptx(input, options = {}) {
   // Opt-in raw shape signals (import-signals.js). Validated first so a bad option fails before any work.
   const signalLimits = normalizeSignalOptions(options.signals, (code, message, details) => new OPFPptxError(code, message, details));
+  // OPF 0.15 (FA-23): catalogs the host registered (core `Catalog[]`, never fetched). Theme and colour-scheme recovery and
+  // stored layout ids resolve against them; with none, a colour scheme imports inline and no theme id is recovered.
+  if (options.catalogs !== undefined && !Array.isArray(options.catalogs)) {
+    throw new OPFPptxError('invalid-catalogs', 'catalogs must be an array of registered catalogs ({source, layouts?, themes?, ...}).', {path: 'options.catalogs'});
+  }
   const entries = readPptxZip(input);
   const presentationDoc = parseRequiredXml(entries, "ppt/presentation.xml");
   const presentationRoot = presentationDoc["p:presentation"];
@@ -365,12 +377,12 @@ export async function fromPptx(input, options = {}) {
       const theme = relatedPart(relatedPart(relatedPart(path, 'slideLayout'), 'slideMaster'), 'theme');
       return theme ? {path: theme, xml: decodeText(entries[theme])} : null;
     }),
-    catalogs: bundledCatalogs
+    catalogs: options.catalogs
   });
   if (observedLanguage.language !== undefined) imported.language = observedLanguage.language;
   if (core.description) imported.description = core.description;
   if (core.author) imported.author = splitAuthors(core.author);
-  const themeDesign = importThemeDesign(entries, presentationRoot, presentationRels);
+  const themeDesign = importThemeDesign(entries, presentationRoot, presentationRels, options.catalogs);
   const design = {...themeDesign.design, ...(dimensions ? {dimensions} : {})};
   if (Object.keys(design).length) imported.design = design;
 
@@ -399,7 +411,7 @@ export async function fromPptx(input, options = {}) {
   const mediaRegistry = Object.create(null);
   for (let index = 0; index < slidePaths.length; index += 1) {
     furnitureContexts[index].mediaRegistry = mediaRegistry;
-    imported.slides.push(importSlide(entries, slidePaths[index], index, dimensions, {...options, rtlDeck: observedRtl(observedLanguage), deckLang: observedLanguage.lang, codeFamily: Object.keys(entries).some(path => /^ppt\/tags\/opf/i.test(path)) ? importedCodeFamily(imported.design) : undefined, dataProvenance: {datasets}}, furniture.slides[index], furnitureContexts[index]));
+    imported.slides.push(importSlide(entries, slidePaths[index], index, dimensions, {...options, rtlDeck: observedRtl(observedLanguage), deckLang: observedLanguage.lang, codeFamily: Object.keys(entries).some(path => /^ppt\/tags\/opf/i.test(path)) ? importedCodeFamily(imported, options.catalogs) : undefined, dataProvenance: {datasets}}, furniture.slides[index], furnitureContexts[index]));
   }
   if (datasets) imported.datasets = datasets;
   // Native sections (PowerPoint's own section list, `Default Section` = none)
@@ -430,8 +442,8 @@ export async function fromPptx(input, options = {}) {
   let restoredGroups = [];
   try {
     const restored = restoreDocumentProvenance(imported, {entries, presentationRoot, presentationRels, organizationConflict: furniture.organizationConflict === true, speakerConflict: furniture.speakerConflict === true,
-      // Host catalogs format stored socials exactly as export did (FF-34).
-      socialPlatformRecords: catalogs => socialPlatformRecords({catalogs}, options),
+      // Stored layout ids also resolve in the host's registered catalogs (FA-23).
+      catalogs: options.catalogs,
       nativeSections: slideSections,
       slides: slidePaths.map((path, index) => ({path, root: furnitureContexts[index].root, relationships: furnitureContexts[index].relationships, contentBounds: furnitureContexts[index].contentBounds}))}, report);
     // The stored language wins while the runs still carry its tag (FF-07).
@@ -632,13 +644,14 @@ function readCoreProperties(entries) {
 }
 
 // FA-13: the code family of the imported design's font scheme (a run in it is an inline code run). The scheme's own `code` role,
-// else the bundled record's, else the shared fallback; heading and body families are never code. Only a package the exporter
-// wrote (it carries OPF tag parts) is read this way; a deck from another tool keeps its runs' font families as they are.
-function importedCodeFamily(design) {
-  const reference = design?.fontScheme;
+// else that of the record the reference resolves to (in the imported document or the host's registered catalogs), else the
+// engine default's; heading and body families are never code. Only a package the exporter wrote (it carries OPF tag parts) is
+// read this way; a deck from another tool keeps its runs' font families as they are.
+function importedCodeFamily(imported, catalogs) {
+  const reference = imported.design?.fontScheme;
   const id = referenceId(reference);
-  const base = (id && findById(defaultCatalog("fontSchemes"), id)) || findById(defaultCatalog("fontSchemes"), DEFAULT_FONT_SCHEME);
-  return resolveFontFamilies({...base, ...(isPlainObject(reference) ? reference : {})}).code;
+  const found = id ? resolveReference(imported, "fontSchemes", id, {catalogs: catalogs ?? []}) : undefined;
+  return resolveFontFamilies({...(found ? found.record : ENGINE_DEFAULT_FONT_SCHEME), ...(isPlainObject(reference) ? reference : {})}).code;
 }
 
 function dimensionsFromPresentation(presentationRoot) {
@@ -1628,8 +1641,17 @@ function assertValidBoundary(presentation) {
 // RR-55: what a slide (or, for the deck level, an empty slide) resolves to in core, the one chain every engine shares: canvas,
 // layout, font families, alignment and content box as composeSlide's options, plus the theme, colour scheme and font scheme
 // records they came from. `diagnostics` names references that matched no record.
+// Core's slide context with the host's registered catalogs. Under strict export core throws OPFUnresolvedReferenceError for a
+// reference that resolves nowhere; the export fails with `unresolved-reference` naming the first one (its path and every diagnostic).
 function coreContext(presentation, index, options) {
-  return resolveCoreSlideContext(presentation, index, {fonts: options.textMeasurement ? {textMeasurement: options.textMeasurement} : undefined, date: options.date});
+  try {
+    return resolveCoreSlideContext(presentation, index, {fonts: options.textMeasurement ? {textMeasurement: options.textMeasurement} : undefined, date: options.date,
+      ...(options.catalogs !== undefined ? {catalogs: options.catalogs} : {}), strictReferences: options.strictReferences === true});
+  } catch (error) {
+    if (error?.name !== "OPFUnresolvedReferenceError" || !Array.isArray(error.diagnostics)) throw error;
+    const [first] = error.diagnostics;
+    throw new OPFPptxError("unresolved-reference", `Strict export: ${error.message}`, {path: first?.path, diagnostics: error.diagnostics});
+  }
 }
 
 // The families composition and the package use: core's, with the measurement provider's own resolution of the chosen family
@@ -1644,8 +1666,8 @@ function exportFonts(core, textMeasurement) {
 function resolvePresentationContext(presentation, options, core = coreContext({...presentation, slides: [{}]}, 0, {...options, textMeasurement: undefined})) {
   const design = presentation.design ?? {};
   // `core` defaults to the deck level: the resolution of a slide that sets nothing of its own.
-  // The theme and colour scheme records come from core, which falls back to the default records (reporting unresolved-theme and
-  // unresolved-color-scheme) for a reference that matches no record.
+  // The theme and colour scheme records come from core, which falls back to the engine defaults (reporting unresolved-reference)
+  // for a reference that resolves nowhere.
   const {theme, colorScheme} = core.resolved;
   const dimensions = {widthInches: core.options.width / 96, heightInches: core.options.height / 96};
   const variables = resolveVariableColors(presentation.variables);
@@ -1776,20 +1798,28 @@ function masterBackground(context) {
 }
 
 // The theme part carries the deck-level scheme (slide overrides stay literal)
-// and, for an explicit catalog theme, that theme's name.
-function exportTheme(presentation, context) {
+// and, for a theme reference that resolves (embedded or in a registered catalog), that theme's name, which import
+// recovery matches against the registered catalogs (FF-24).
+function exportTheme(presentation, context, options) {
   const reference = presentation.design?.theme;
-  const id = referenceId(reference);
-  const theme = id ? context.theme : null;
+  const theme = typeof reference === "string" ? resolveReference(presentation, "themes", reference, {catalogs: options.catalogs}) : undefined;
   const scheme = context.colorScheme;
   return {
     themeColors: themeSlotColors(scheme),
     schemeName: scheme.name ?? scheme.id ?? "OpenPresentation",
-    themeName: theme?.id === id ? theme.name ?? theme.id : undefined
+    themeName: theme ? theme.record.name ?? theme.id : undefined
   };
 }
 
-function importThemeDesign(entries, presentationRoot, presentationRels) {
+// FF-24 recovery against the host's registered catalogs (FA-23). Only the first registered catalog, the host default, can be
+// named by a bare id in a document that declares no catalogs, so only its records are matched: an exact match imports as
+// that bare id. Everything else (no catalog registered, a scheme from another registered catalog, no exact match) imports
+// as an inline colour scheme, and no theme id is recovered.
+function hostDefaultRecords(kind, catalogs) {
+  return catalogRecords({}, kind, {catalogs: catalogs ?? []}).filter(entry => entry.group === "default").map(entry => ({...entry.record, id: entry.id}));
+}
+
+function importThemeDesign(entries, presentationRoot, presentationRels, catalogs) {
   const diagnostics = [], design = {};
   const report = (code, path, message) => diagnostics.push({code, path, message});
   const themePath = presentationThemePath(presentationRoot, presentationRels, path => parseRelationships(entries, path), entries);
@@ -1801,16 +1831,22 @@ function importThemeDesign(entries, presentationRoot, presentationRels) {
     return {design, diagnostics};
   }
   const {colors, unreadable} = readThemeSlotColors(clrScheme);
-  const records = defaultCatalog("colorSchemes");
+  const records = hostDefaultRecords("colorSchemes", catalogs);
   if (Object.keys(colors).length) design.colorScheme = recoverColorScheme({colors, unreadable, name: scalarText(clrScheme.name)}, records).value;
   if (unreadable.length) report("unsupported-theme-colors", "design.colorScheme", `Theme color slot(s) ${unreadable.join(", ")} do not resolve to an opaque sRGB color and were not imported.`);
   const latin = font => scalarText(elements?.["a:fontScheme"]?.[font]?.["a:latin"]?.typeface);
+  // A theme's own colour and font scheme references resolve in the theme's group first (core resolveReference).
+  const themeReference = (kind, reference) => {
+    const id = referenceId(reference);
+    const found = id ? resolveReference({}, kind, id, {catalogs: catalogs ?? [], group: "default"}) : undefined;
+    return found ? {...found.record, ...(isPlainObject(reference) ? reference : {})} : null;
+  };
   const recoveredTheme = recoverTheme({themeName: scalarText(theme?.name), colors, majorFont: latin("a:majorFont"), minorFont: latin("a:minorFont")}, {
-    themes: defaultCatalog("themes"),
-    colorSchemes: records,
-    fontFamilies: id => {
-      const record = findById(defaultCatalog("fontSchemes"), id);
-      return record ? resolveFontFamilies(record) : null;
+    themes: hostDefaultRecords("themes", catalogs),
+    colorScheme: record => themeReference("colorSchemes", record.colorScheme),
+    fontFamilies: record => {
+      const scheme = themeReference("fontSchemes", record.fontScheme);
+      return scheme ? resolveFontFamilies(scheme) : null;
     }
   });
   if (recoveredTheme.unverified) report("theme-unverified", "design.theme", `The native theme has the name of OPF catalog theme '${recoveredTheme.unverified}', but neither its color scheme nor its heading/body fonts match that theme, so design.theme was not set.`);
@@ -1839,11 +1875,12 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   const slide = pptx.addSlide();
   const slideContext = exportSlideContext(presentation, slideIndex, context, options);
   const { widthInches, heightInches } = slideContext.dimensions;
-  // A slide with no layout, or one that names a layout no catalog defines, is composed with no layout record (automatic composition),
-  // as in the preview; core reports the unknown id as unresolved-layout.
+  // A slide with no layout, or one whose layout resolves nowhere, is composed with no layout record (automatic composition),
+  // as in the preview; core reports the reference as unresolved-reference.
   // Core's resolved options (canvas, layout, families, alignment, content box, darkBackground), with the exporter's own additions:
-  // the families after the measurement provider's resolution of the chosen family, the raster padding and the host's social platform records.
-  const composeOptions = { ...slideContext.core.options, fontFamilies: slideContext.composeFonts, textRasterPadding:options.textRasterPadding, socialPlatforms: socialPlatformRecords(presentation, options) };
+  // the families after the measurement provider's resolution of the chosen family and the raster padding. Core formats socials
+  // handles from its own SOCIAL_PLATFORMS vocabulary.
+  const composeOptions = { ...slideContext.core.options, fontFamilies: slideContext.composeFonts, textRasterPadding:options.textRasterPadding };
   // Core resolves every shared design key once (slide design, deck design, then the layout record's design): the text alignment of
   // each item (item.alignment), and the imageFill that backgrounds and picture placements use (SlideComposition.design).
   const geometry = composeSlide(opfSlide, composeOptions);
@@ -3479,39 +3516,6 @@ function referenceId(reference) {
   if (typeof reference === "string") return reference;
   if (isPlainObject(reference) && typeof reference.id === "string") return reference.id;
   return null;
-}
-
-const DEFAULT_SOURCE_PREFIX = "https://www.pptx.gallery/";
-
-// Same order as opf-render's socialPlatformRecords so preview and export format
-// socials identically. Core applies inline document records first; then the
-// document catalog source (host-supplied options.catalogSources, or the bundled
-// catalog for pptx.gallery/pkg sources), injected options.catalogs, and the
-// bundled catalog (the engine default source also resolves to it).
-function socialPlatformRecords(presentation, options) {
-  const kind = "socialPlatforms", declared = presentation.catalogs?.[kind]?.source;
-  // `source` is one source or an ordered search path (an array): records of each source in order, first match wins.
-  const sourceRecords = (Array.isArray(declared) ? declared : [declared]).filter(source => typeof source === "string").flatMap(source => {
-    const bySource = options.catalogSources?.[source];
-    return bySource ? normalizeRecords(bySource)
-      : source.startsWith(DEFAULT_SOURCE_PREFIX) || source.startsWith("pkg:@openpresentation/opf/") ? defaultCatalog(kind) : [];
-  });
-  return [...sourceRecords, ...normalizeRecords(options.catalogs?.[kind]), ...defaultCatalog(kind)];
-}
-
-function defaultCatalog(kind) {
-  return Array.isArray(bundledCatalogs[kind]) ? bundledCatalogs[kind] : [];
-}
-
-function normalizeRecords(catalog) {
-  if (!catalog) return [];
-  if (Array.isArray(catalog)) return catalog;
-  if (Array.isArray(catalog.records)) return catalog.records;
-  return [];
-}
-
-function findById(records, id) {
-  return records.find((record) => record?.id === id) ?? null;
 }
 
 // A solid color or pattern background color is a ColorRef (hex, `var:` variable, colour-scheme slot or role), resolved
