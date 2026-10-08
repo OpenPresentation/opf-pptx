@@ -4,6 +4,7 @@ import {strFromU8, unzipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import {readFile} from 'node:fs/promises';
 import {examples} from '@openpresentation/opf/examples';
+import {defaultCatalog} from '@openpresentation/opf/catalog';
 import {toPptx} from '../src/index.js';
 
 // FF-05 (font-fidelity-everywhere). PowerPoint reads a package whose notes master shares the slide master's theme part
@@ -12,7 +13,8 @@ import {toPptx} from '../src/index.js';
 // theme (Aptos). The exporter therefore gives the notes master its own theme part, a copy of the deck theme.
 const REL_THEME = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme';
 const THEME_TYPE = 'application/vnd.openxmlformats-officedocument.theme+xml';
-const options = {seed: 1, date: '2026-10-02', timestamp: '2026-10-02T00:00:00Z', zipDate: '2026-10-02T00:00:00Z'};
+// OPF 0.15 (FA-23): the decks and the example corpus name gallery ids, which resolve from the registered default catalog.
+const options = {seed: 1, date: '2026-10-02', timestamp: '2026-10-02T00:00:00Z', zipDate: '2026-10-02T00:00:00Z', catalogs: [defaultCatalog]};
 
 const relationships = (entries, part) => {
   const rels = part.replace(/([^/]+)$/, '_rels/$1.rels');

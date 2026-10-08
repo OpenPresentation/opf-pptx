@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import {strFromU8, unzipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
-import {resolveScriptFonts} from '@openpresentation/opf/composition';
-import {resolvePresentation} from '@openpresentation/opf-render';
-import {checkTypefaces, fromPptx, inventoryTypefaces, toPptx} from '../dist/index.js';
+import {resolvePresentation, resolveScriptFonts, fromPptx, toPptx} from './helpers/default-catalog.mjs';
+import {checkTypefaces, inventoryTypefaces} from '../dist/index.js';
 
 // opf-pptx#168 (FF-05). A slide may select its own script fonts (slides[].design.fontScheme, a slide theme, or an
 // inline fontScheme with eastAsian/complexScript), and core resolves them per slide. Slide runs name no East Asian /

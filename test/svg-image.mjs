@@ -13,8 +13,8 @@ import {fileURLToPath} from 'node:url';
 import {XMLValidator} from 'fast-xml-parser';
 import {strFromU8, unzipSync, zipSync} from 'fflate';
 import sharp from 'sharp';
-import { renderSlideSvg, resolvePresentation, svgToPng } from '@openpresentation/opf-render';
-import {fromPptx, toPptx} from '../dist/index.js';
+import {svgToPng} from '@openpresentation/opf-render';
+import {renderSlideSvg, resolvePresentation, fromPptx, toPptx} from './helpers/default-catalog.mjs';
 import {prepareSvg, svgDataUriBytes, svgIntrinsicSize, svgRasterScale} from '../dist/svg-image.js';
 
 const NS = 'xmlns="http://www.w3.org/2000/svg"';
