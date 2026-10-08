@@ -30,7 +30,7 @@ const canonical = value => JSON.stringify(value, (_key, item) => item && typeof 
 /** An image block's own fields (everything but its type, asset, id, caption and extensions). */
 export const IMAGE_TREATMENT_KEYS = Object.freeze(['fit', 'focus', 'shape', 'cornerRadius', 'border', 'opacity', 'recolor', 'overlay', 'aspectRatio', 'placement']);
 /** An image background's own fields besides its source. */
-export const BACKGROUND_IMAGE_KEYS = Object.freeze(['alt', 'fit', 'focus', 'opacity', 'overlay']);
+export const BACKGROUND_IMAGE_KEYS = Object.freeze(['alt', 'fit', 'focus', 'opacity', 'recolor', 'overlay']);
 
 export const imageName = number => `OPF image ${number}`;
 export const imageOverlayName = pictureName => `${pictureName} overlay`;

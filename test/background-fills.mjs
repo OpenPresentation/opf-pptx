@@ -279,7 +279,7 @@ const wide = png(480, 270), square = png(100, 100), tall = png(90, 160);
   // An off-center crop is a focus; an uncropped fill of another aspect is a stretch: both are exact, so nothing is reported.
   assert.deepEqual(await approximate(xml => xml.replace('t="21875" b="21875"', 't="0" b="43750"')), {background: {type: 'image', src: square, focus: {x: 0.5, y: 0.2813}}, codes: []});
   assert.deepEqual(await approximate(xml => xml.replace('<a:srcRect t="21875" b="21875"/>', '<a:srcRect/>')), {background: {type: 'image', src: square, fit: 'stretch'}, codes: []});
-  const effect = await approximate(xml => xml.replace('</a:blip>', '<a:grayscl/></a:blip>'));
+  const effect = await approximate(xml => xml.replace('</a:blip>', '<a:biLevel thresh="50000"/></a:blip>'));
   assert.deepEqual(effect.codes, ['approximate-background-image']);
   const linked = await approximate(xml => xml.replace(/r:embed="[^"]+"/, 'r:embed="rIdMissing"'));
   assert.equal(linked.background, undefined);

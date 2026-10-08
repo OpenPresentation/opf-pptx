@@ -74,6 +74,24 @@ for (const fit of ['cover', 'contain', 'stretch', 'tile']) {
   }
 }
 
+// Recolor (FA-22 draft 3): a:grayscl or a:duotone, then a:alphaModFix, on the background's blip, in the native fill or the
+// alt picture; both import back.
+{
+  const scheme = {name: 'Recolor', dark1: '#101820', light1: '#F4F1EA', dark2: '#2A3440', light2: '#E8E4DC', accent1: '#1F5AA6', accent2: '#4A7A3A', accent3: '#B05A2A', accent4: '#7A4A9A', accent5: '#C0C8D0', accent6: '#5A8A9A', hyperlink: '#1F5AA6', followedHyperlink: '#7A4A9A'};
+  for (const alt of [undefined, 'Harbour']) {
+    const duotone = {type: 'image', src: wide, ...(alt ? {alt} : {}), recolor: {dark: 'accent1', light: 'light1'}, opacity: 0.5};
+    const deck = {design: {colorScheme: scheme}, slides: [{title: 'Duotone', design: {background: duotone}}]};
+    const {xml, background} = await exported(deck);
+    assert.match(alt ? xml : background, /<a:blip r:embed="[^"]+"><a:duotone><a:srgbClr val="1F5AA6"><\/a:srgbClr><a:srgbClr val="F4F1EA"><\/a:srgbClr><\/a:duotone><a:alphaModFix amt="50000"\/>/, `${alt ? 'picture' : 'fill'}: duotone then alpha`);
+    const plain = await fromPptx(await toPptx(deck, {imageFormat: 'preserve', provenance: false}), {onDiagnostic: () => {}});
+    assert.deepEqual(plain.slides[0].design.background.recolor, alt ? duotone.recolor : {dark: '#1F5AA6', light: '#F4F1EA'}, 'the tag keeps the authored colours; the native fill reads the literal ones');
+    const gray = await exported({slides: [{title: 'Gray', design: {background: {type: 'image', src: wide, recolor: 'grayscale'}}}]});
+    assert.match(gray.background, /<a:blip r:embed="[^"]+"><a:grayscl\/><\/a:blip>/);
+    assert.equal((await fromPptx(gray.bytes, {onDiagnostic: () => {}})).slides[0].design.background.recolor, 'grayscale');
+  }
+  checked++;
+}
+
 // A deck background (or a theme's) applies to every slide that sets none; a slide background replaces it.
 {
   const deck = {design: {background: {type: 'image', src: wide, alt: 'Deck photo'}}, slides: [{title: 'A'}, {title: 'B', design: {background: '#112233'}}]};

@@ -2287,14 +2287,14 @@ async function addBackgroundImage(slide, presentation, background, slideIndex, s
   const slidePath = `slides.${slideIndex}`, part = `ppt/slides/slide${slideIndex + 1}.xml`;
   const box = { x: 0, y: 0, w: slideContext.dimensions.widthInches, h: slideContext.dimensions.heightInches };
   const authored = authoredAt(presentation, background.path, slideContext);
-  const effects = imageEffects({ opacity: background.opacity }, slideContext);
+  const effects = imageEffects({ opacity: background.opacity, recolor: background.recolor }, slideContext);
   let owner = 'background', overlayName = backgroundOverlayName(slidePath);
-  // The background's own alt text overrides a referenced asset's.
-  const alt = background.alt ?? assetAlt(background.src, presentation);
+  // Only the background's own alt text makes it meaningful (FA-22): a referenced asset's alt does not count.
+  const alt = background.alt;
   if (typeof alt === 'string' && alt) {
     const treatment = isPlainObject(authored) ? Object.fromEntries(BACKGROUND_IMAGE_KEYS.filter(key => key !== 'overlay' && authored[key] !== undefined).map(key => [key, structuredClone(authored[key])])) : {};
     const name = await addImagePicture(slide, presentation, background.src, box, background.path, { ...slideContext, slidePath }, options, {
-      fit: background.fit, focus: background.focus, effects: background.opacity === undefined ? null : effects, shrink: false,
+      fit: background.fit, focus: background.focus, effects: background.opacity === undefined && !background.recolor ? null : effects, shrink: false,
       treatment, alt, role: 'background', objectName: backgroundImageName(slidePath)
     });
     if (!name) {
@@ -2314,7 +2314,7 @@ async function addBackgroundImage(slide, presentation, background, slideIndex, s
     // PptxGenJS embeds the raster and its relationship; packaging replaces its stretched fill with the fitted native fill.
     slide.background = { ...resolved };
     context.backgroundFills.set(part, { image: {
-      fit: background.fit, focus: background.focus, opacity: background.opacity ?? 1, path: background.path,
+      fit: background.fit, focus: background.focus, opacity: background.opacity ?? 1, recolor: effects.recolor, path: background.path,
       width: box.w * 96, height: box.h * 96, report: options.onDiagnostic
     } });
   }

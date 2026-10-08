@@ -97,7 +97,7 @@ export function importBackground(slidePath, dimensions, archive, report) {
   return readNativeBackground(drawingObject([style]), dimensions, report, context);
 }
 
-const imageEffects = new Set(['r:embed', 'r:link', 'cstate', 'a:alphaModFix', 'a:lum', 'a:extLst']);
+const imageEffects = new Set(['r:embed', 'r:link', 'cstate', 'a:alphaModFix', 'a:grayscl', 'a:duotone', 'a:lum', 'a:extLst']);
 const inset = (rect, key) => Number(rect?.[key] ?? 0) / 100000;
 const near = (a, b) => Math.abs(a - b) <= .005;
 const focusValue = value => Math.round(Math.max(0, Math.min(1, value)) * 10000) / 10000;
@@ -119,7 +119,18 @@ function readImageBackground(fill, partPath, {relationships, bytes}, dimensions,
   }
   const approximate = reason => report({code: 'approximate-background-image', message: `The native background picture ${reason}; it was imported as the closest OPF image background.`});
   const lum = blip['a:lum'];
-  if (Object.keys(blip).some(key => !imageEffects.has(key)) || (lum && Object.keys(lum).length)) approximate('uses picture effects outside OPF opacity');
+  if (Object.keys(blip).some(key => !imageEffects.has(key)) || (lum && Object.keys(lum).length)) approximate('uses picture effects outside OPF opacity and recolor');
+  // a:grayscl and an a:duotone of two literal colours are the OPF recolor (FA-22 draft 3).
+  let recolor;
+  if (blip['a:grayscl'] !== undefined) recolor = 'grayscale';
+  const duotone = blip['a:duotone'], literal = node => /^[\da-f]{6}$/i.test(node?.val ?? '') && Object.keys(node).every(key => key === 'val' || typeof key === 'symbol') ? `#${node.val.toUpperCase()}` : undefined;
+  if (duotone) {
+    const colors = Array.isArray(duotone['a:srgbClr']) ? duotone['a:srgbClr'] : [];
+    const [dark, light] = colors.map(literal);
+    if (colors.length === 2 && dark && light && Object.keys(duotone).every(key => key === 'a:srgbClr' || typeof key === 'symbol')) recolor = {dark, light};
+    else approximate('uses a duotone recolor that is not two literal colours');
+  }
+  if (recolor && blip['a:grayscl'] !== undefined && duotone) approximate('uses both a grayscale and a duotone recolor');
   const amount = blip['a:alphaModFix'] ? Number(blip['a:alphaModFix'].amt ?? 100000) / 100000 : 1;
   const opacity = Number.isFinite(amount) ? Math.max(0, Math.min(1, amount)) : 1;
   let fit = 'cover', focus;
@@ -151,5 +162,5 @@ function readImageBackground(fill, partPath, {relationships, bytes}, dimensions,
     else approximate('is cropped with padding, distorted or offset');
   }
   const binary = typeof Buffer !== 'undefined' ? Buffer.from(data).toString('base64') : btoa(Array.from(data, byte => String.fromCharCode(byte)).join(''));
-  return {type: 'image', src: `data:${metadata.mediaType};base64,${binary}`, ...(fit === 'cover' ? {} : {fit}), ...(focus ? {focus} : {}), ...(opacity === 1 ? {} : {opacity})};
+  return {type: 'image', src: `data:${metadata.mediaType};base64,${binary}`, ...(fit === 'cover' ? {} : {fit}), ...(focus ? {focus} : {}), ...(opacity === 1 ? {} : {opacity}), ...(recolor ? {recolor} : {})};
 }

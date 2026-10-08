@@ -82,14 +82,17 @@ const percent = value => Math.round(value * 100000) || 0;
 // - tile repeats the picture at its intrinsic size (1 picture px = 1 reference px, 1/96 in) from the top-left corner.
 //   With dpi="0", DrawingML sizes a tile from the raster's own resolution (PNG pHYs, JPEG JFIF or EXIF; 96 dpi when
 //   absent), so the tile scale is the raster's dpi / 96 on each axis.
-// Opacity is a:alphaModFix on the blip (picture pixels only).
+// A recolor (core backgroundImage.recolor, resolved: {type: 'grayscale'} or {type: 'duotone', dark: {hex}, light: {hex}})
+// is a:grayscl or a:duotone on the blip, then opacity is a:alphaModFix (picture pixels only), as for image blocks.
 export const nativeTileAlignment = {tx: '0', ty: '0', flip: 'none', algn: 'tl'};
 export function nativeTileScale(image) {
   return {sx: percent((image.dpiX ?? 96) / 96), sy: percent((image.dpiY ?? 96) / 96)};
 }
-export function nativeImageBackgroundFill(relationshipId, image, {fit = 'cover', focus, opacity = 1, width, height, fitImage}) {
+export function nativeImageBackgroundFill(relationshipId, image, {fit = 'cover', focus, opacity = 1, recolor, width, height, fitImage}) {
   const alpha = clamp(opacity);
-  const blip = `<a:blip r:embed="${relationshipId}">${alpha === 1 ? '' : `<a:alphaModFix amt="${percent(alpha)}"/>`}</a:blip>`;
+  const recolorXml = recolor?.type === 'grayscale' ? '<a:grayscl/>'
+    : recolor?.type === 'duotone' ? `<a:duotone><a:srgbClr val="${recolor.dark.hex}"></a:srgbClr><a:srgbClr val="${recolor.light.hex}"></a:srgbClr></a:duotone>` : '';
+  const blip = `<a:blip r:embed="${relationshipId}">${recolorXml}${alpha === 1 ? '' : `<a:alphaModFix amt="${percent(alpha)}"/>`}</a:blip>`;
   if (fit === 'tile') {
     const {sx, sy} = nativeTileScale(image), {tx, ty, flip, algn} = nativeTileAlignment;
     return `<a:blipFill dpi="0" rotWithShape="1">${blip}<a:tile tx="${tx}" ty="${ty}" sx="${sx}" sy="${sy}" flip="${flip}" algn="${algn}"/></a:blipFill>`;

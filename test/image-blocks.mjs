@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { unzipSync, zipSync } from 'fflate';
 import { XMLParser } from 'fast-xml-parser';
 import { composeSlide, fitImage } from '@openpresentation/opf/composition';
+import { resolveSlideContext } from '@openpresentation/opf';
 import { toPptx, fromPptx } from '../dist/index.js';
 
 const parser = new XMLParser({ignoreAttributes:false, attributeNamePrefix:'', parseTagValue:false});
@@ -26,7 +27,8 @@ async function exported(deck, options = {}) {
   return { bytes, entries, slide, pictures: array(slide['p:pic']), diagnostics };
 }
 const emu = value => Math.round(value / 96 * 914400);
-const imageItem = (deck, index = 0) => composeSlide(deck.slides[index], { width: 1280, height: 720, presentation: deck }).items.find(item => item.field === 'image');
+// The slide's composition as the exporter composes it (core resolves the layout record and the design hints).
+const imageItem = (deck, index = 0) => composeSlide(deck.slides[index], resolveSlideContext(deck, index, {}).options).items.find(item => item.field === 'image');
 const deckFor = (block, extra = {}) => ({ assets: { hero: { src: uri(wide), alt: 'Harbor at dusk' } }, design: { ...(extra.design ?? {}) },
   slides: [{ title: 'Image block', blocks: [{ type: 'image', image: 'asset:hero', ...block }, { type: 'text', text: 'Body copy beside the image.' }], ...(extra.slide ?? {}) }] });
 
