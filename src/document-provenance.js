@@ -307,9 +307,15 @@ function nativeSlide(entries, path) {
   const root = parser.parse(dec.decode(entries[path]))?.['p:sld'];
   const cSld = root?.['p:cSld'], tree = cSld?.['p:spTree'];
   const rels = relationships(entries, path);
+  // FA-23: an image background with alt text is a back picture and its overlay is a shape (src/image-provenance.js); both
+  // are evidence of design.background with the native slide background, so moving or recolouring them is a background edit.
+  const named = (nodes, key) => array(nodes).filter(node => /^OPF background /.test(String(node?.[key]?.['p:cNvPr']?.name ?? '')));
+  const backgroundObjects = [...named(tree?.['p:pic'], 'p:nvPicPr').map(node => ({spPr: node['p:spPr'], blipFill: node['p:blipFill']})),
+    ...named(tree?.['p:sp'], 'p:nvSpPr').map(node => ({spPr: node['p:spPr']}))];
+  const background = backgroundObjects.length ? {bg: cSld?.['p:bg'] ?? null, objects: backgroundObjects} : cSld?.['p:bg'] ?? null;
   return {
     structure: hash(structure(tree)),
-    background: hash(canonical(withResolvedRelationships(withoutExtensions(cSld?.['p:bg'] ?? null), rels, entries))),
+    background: hash(canonical(withResolvedRelationships(withoutExtensions(background), rels, entries))),
     style: hash(styleSignature(withoutExtensions(tree ?? null)))
   };
 }
@@ -322,7 +328,8 @@ const sizeOf = value => enc.encode(JSON.stringify(value)).byteLength;
 // The tag value is the UTF-8 JSON as uppercase hex: two characters per byte.
 const tagChars = value => sizeOf(value) * 2;
 const SOURCE_KEYS = new Set(['src', 'image', 'logo', 'photo']);
-const SOURCE_PREFIX = /^(asset:|data:|https?:|file:)/i;
+// An image source: an asset id, a URL, a data URI or a path relative to the document (the 0.15 image source forms).
+const SOURCE_PREFIX = /^(asset:|data:|https?:|file:|\.\.?\/)/i;
 // Metadata fields that hold content references (OPF 0.15: `id` or `name:id`; for audience and purpose a string that is not
 // a reference is free text). `language` is an engine vocabulary (a BCP-47 tag), not a catalog reference.
 const METADATA_REFERENCES = Object.freeze(['narrative', 'tone', 'purpose', 'audience']);
@@ -1222,7 +1229,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
  *   imported document then references without embedding it.
  * A slide whose own record disagrees with the chosen one keeps its content
  * without the layout reference (`layout-reference-changed`), and a reference
- * that resolves nowhere is not restored (`unresolved-layout-reference`), so
+ * that resolves nowhere is not restored (`unresolved-reference`), so
  * the imported document always renders.
  */
 export function layoutIntent(storedCatalogs, slideRecords, entries, group, report, hostCatalogs) {
@@ -1274,7 +1281,7 @@ export function layoutIntent(storedCatalogs, slideRecords, entries, group, repor
     if (structureMatch && layout !== undefined) {
       if (!target) {
         restoreLayout = false;
-        report({code: 'unresolved-layout-reference', path: `slides.${index}.layout`, message: `Layout '${layout}' resolves neither in the catalogs the PPTX stores nor in a registered catalog, so slides.${index}.layout was not restored; the imported slide keeps its observed arrangement.`});
+        report({code: 'unresolved-reference', path: `slides.${index}.layout`, message: `Layout '${layout}' resolves neither in the catalogs the PPTX stores nor in a registered catalog, so slides.${index}.layout was not restored; the imported slide keeps its observed arrangement.`});
       } else if (own && !same(own.record, target.record)) {
         restoreLayout = false;
         report({code: 'layout-reference-changed', path: `slides.${index}.layout`, message: `This slide stores a different record for layout '${layout}' than ${against[target.source]}, so slides.${index}.layout was not restored; the imported slide keeps its observed arrangement.`});

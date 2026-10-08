@@ -114,7 +114,7 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
   const issues = [];
   const deck = await importPptx(exported, {onDiagnostic: issue => issues.push(issue)});
   assert.deepEqual(deck.slides.map(slide => slide.layout), ['hero-title', undefined, undefined]);
-  assert.deepEqual(issues.filter(issue => issue.code === 'unresolved-layout-reference').map(issue => issue.path), ['slides.1.layout', 'slides.2.layout']);
+  assert.deepEqual(issues.filter(issue => issue.code === 'unresolved-reference').map(issue => issue.path), ['slides.1.layout', 'slides.2.layout']);
 }
 
 // Benign rewrites an editor performs on save do not count as edits.

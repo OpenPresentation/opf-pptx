@@ -157,7 +157,7 @@ let cases = 0;
   // reference cannot resolve, so it is not restored.
   for (const tamper of [value => { value.layoutRecord.id = 'other'; }, value => { value.layoutRecord.group = 'acme'; }]) {
     const mismatched = await read(modify(exportedA, entries => { stripDocument(entries); retag(entries, tamper); }));
-    assert.deepEqual(mismatched.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-layout-reference', 'slides.0.layout']]);
+    assert.deepEqual(mismatched.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-reference', 'slides.0.layout']]);
     assert.deepEqual(mismatched.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
     assert.equal(mismatched.deck.catalogs, undefined);
     assert.equal(mismatched.deck.slides[0].composition?.mode, 'column', 'The rest of the intent still returns.');
@@ -200,7 +200,7 @@ let cases = 0;
     const corruptSlide = entries => retag(entries, 'ppt/tags/opfSlide1.xml', value => { value.layoutRecord.record = record; });
     const corruptDocument = entries => retag(entries, 'ppt/tags/opfDocument.xml', value => { value.catalogs.custom.layouts['gallery-hero'] = record; });
     const standalone = await read(modify(exportedA, entries => { stripDocument(entries); corruptSlide(entries); }));
-    assert.deepEqual(standalone.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-layout-reference', 'slides.0.layout']]);
+    assert.deepEqual(standalone.provenance, [['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-reference', 'slides.0.layout']]);
     assert.equal(standalone.deck.slides[0].layout, undefined);
     assert.equal(standalone.deck.slides[0].title, 'Hello');
     assert.equal(standalone.deck.slides[0].subtitle, 'World');
@@ -219,7 +219,7 @@ let cases = 0;
     // Neither invalid copy is retained; native content and other slides survive.
     const both = await read(modify(exportedA, entries => { corruptDocument(entries); corruptSlide(entries); }));
     assert.deepEqual(both.provenance, [['invalid-document-provenance', 'catalogs.custom.layouts.gallery-hero'],
-      ['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-layout-reference', 'slides.0.layout']]);
+      ['invalid-document-provenance', 'slides.0.layoutRecord'], ['unresolved-reference', 'slides.0.layout']]);
     assert.deepEqual(both.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
     assert.equal(both.deck.slides[0].title, 'Hello');
     assert.equal(both.deck.slides[0].subtitle, 'World');
@@ -242,12 +242,12 @@ let cases = 0;
   // Without the document tag the embedded-only reference has no record anywhere: it is reported, not restored; a reference
   // that resolves in a registered catalog still returns, and only where the importer registers that catalog.
   const stripped = await read(modify(exportedA, entries => { legacy(entries); stripDocument(entries); }));
-  assert.deepEqual(stripped.provenance, [['unresolved-layout-reference', 'slides.0.layout']]);
+  assert.deepEqual(stripped.provenance, [['unresolved-reference', 'slides.0.layout']]);
   assert.deepEqual(stripped.deck.slides.map(slide => slide.layout), [undefined, 'title-subtitle']);
   assert.equal(stripped.deck.catalogs, undefined);
   assert.equal(stripped.deck.slides[0].composition?.mode, 'column');
   const unregistered = await read(modify(exportedA, entries => { legacy(entries); stripDocument(entries); }), {catalogs: []});
-  assert.deepEqual(unregistered.provenance, [['unresolved-layout-reference', 'slides.0.layout'], ['unresolved-layout-reference', 'slides.1.layout']]);
+  assert.deepEqual(unregistered.provenance, [['unresolved-reference', 'slides.0.layout'], ['unresolved-reference', 'slides.1.layout']]);
   assert.deepEqual(unregistered.deck.slides.map(slide => slide.layout), [undefined, undefined]);
   cases++;
 }

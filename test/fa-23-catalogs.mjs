@@ -52,10 +52,10 @@ const hostDeck = {name: 'Catalogs', catalogs: {acme: {source: ACME}}, slides};
   const withHost = await fromPptx(hosted.bytes, {catalogs: [acmeCatalog], onDiagnostic: diagnostic => restored.push(diagnostic.code)});
   assert.equal(withHost.slides[0].layout, 'acme:hero');
   assert.deepEqual(withHost.catalogs, {acme: {source: ACME}}, 'the group declaration returns; no record is embedded');
-  assert.ok(!restored.includes('unresolved-layout-reference'));
+  assert.ok(!restored.includes('unresolved-reference'));
   const withoutHost = await fromPptx(hosted.bytes, {onDiagnostic: diagnostic => missing.push(diagnostic)});
   assert.equal(withoutHost.slides[0].layout, undefined);
-  assert.deepEqual(missing.filter(diagnostic => diagnostic.code === 'unresolved-layout-reference').map(diagnostic => diagnostic.path), ['slides.0.layout']);
+  assert.deepEqual(missing.filter(diagnostic => diagnostic.code === 'unresolved-reference').map(diagnostic => diagnostic.path), ['slides.0.layout']);
   // The embedded record travels in the package and restores with no host catalog at all.
   const own = await fromPptx(embedded.bytes);
   assert.equal(own.slides[0].layout, 'acme:hero');

@@ -104,14 +104,15 @@ for (const fit of ['cover', 'contain', 'stretch', 'tile']) {
   checked++;
 }
 
-// An edited background picture stays an ordinary picture with a diagnostic.
-{
-  const {entries} = await exported({slides: [{title: 'Edited', design: {background: {type: 'image', src: wide, alt: 'Harbour'}}}]}, {provenance: false});
+// An edited background picture stays an ordinary picture with a diagnostic; the document tag does not restore the
+// background either, because the picture is part of its native evidence.
+for (const provenance of [false, 'full']) {
+  const {entries} = await exported({slides: [{title: 'Edited', design: {background: {type: 'image', src: wide, alt: 'Harbour'}}}]}, {provenance});
   const path = 'ppt/slides/slide1.xml';
   entries[path] = new TextEncoder().encode(decode(entries[path]).replace(/(<p:pic>[\s\S]*?<a:off x=")(\d+)/, (_, head, x) => `${head}${Number(x) + 9525}`));
   const diagnostics = [];
   const imported = await fromPptx(zipSync(entries), {onDiagnostic: d => diagnostics.push(d)});
-  assert.notEqual(imported.slides[0].design?.background?.type, 'image');
+  assert.notEqual(imported.slides[0].design?.background?.type, 'image', `provenance ${provenance}`);
   assert.ok(diagnostics.some(d => d.code === 'invalid-image-provenance' && d.path === 'slides.0.design.background'));
   assert.ok(JSON.stringify(imported.slides[0].blocks).includes('"type":"image"'));
   checked++;

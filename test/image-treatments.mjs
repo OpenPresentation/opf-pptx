@@ -1,5 +1,5 @@
 // FA-23: image block treatments export as native DrawingML from core's composed geometry (ComposedItem.image) and
-// import back while the native objects are unchanged: the 0.14 slide-image mapping, applied to image blocks.
+// import back while the native objects are unchanged: the 0.14 slide-level image mapping, applied to image blocks.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { unzipSync, zipSync } from 'fflate';

@@ -168,7 +168,7 @@ export interface ToPptxOptions {
 }
 
 export interface FromPptxOptions {
-  /** Reports native details that import cannot preserve, including code provenance fallback/reflow and grouped text transforms. Table paths identify native frame and row/cell indexes (including headers). Stored catalog references that no longer match the package report `design-reference-changed` / `layout-reference-changed` at the reference path; a stored slide layout reference that resolves neither in the stored document catalogs, nor in the slide's own stored record, nor in `catalogs` reports `unresolved-layout-reference`; a slide whose imported blocks no longer fit the stored content structure reports `content-structure-changed` at `slides.N`, a block id repeated by a duplicated slide `duplicate-block-id`, and a footer section text that disagrees with PowerPoint's section list `section-reference-changed` (docs/document-roundtrip.md). */
+  /** Reports native details that import cannot preserve, including code provenance fallback/reflow and grouped text transforms. Table paths identify native frame and row/cell indexes (including headers). Stored catalog references that no longer match the package report `design-reference-changed` / `layout-reference-changed` at the reference path; a stored slide layout reference that resolves neither in the stored document catalogs, nor in the slide's own stored record, nor in `catalogs` reports `unresolved-reference`; a slide whose imported blocks no longer fit the stored content structure reports `content-structure-changed` at `slides.N`, a block id repeated by a duplicated slide `duplicate-block-id`, and a footer section text that disagrees with PowerPoint's section list `section-reference-changed` (docs/document-roundtrip.md). */
   onDiagnostic?: (diagnostic: {code: string; path: string; message: string}) => void;
   fallbackName?: string;
   schema?: string;
@@ -504,7 +504,7 @@ export type ThemeScriptSelection = Partial<Record<"major" | "minor", Partial<Rec
 export type TypefaceViolationReason =
   | "foreign-typeface"
   | "foreign-theme-reference"
-  | "unresolved-theme-reference"
+  | "theme-reference-unresolved"
   | "empty-theme-reference"
   | "empty-typeface"
   | "foreign-script-supplement"

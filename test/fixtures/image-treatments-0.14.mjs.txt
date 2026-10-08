@@ -1,7 +1,9 @@
 // How test/fixtures/image-treatments-0.14.json was made (FA-23, 2026-10-07): opf-pptx 0.14.0 with core 0.14.0 exported
-// core's docs/fixtures/image-treatments.opf.json (0.14 design.slideImage shape) with provenance off; this records each
+// core's docs/fixtures/image-treatments.opf.json (its 0.14 slide-level image shape) with provenance off; this records each
 // slide's native object order and picture/overlay geometry. Run from an opf-pptx 0.14.0 checkout next to a core 0.14.0 one:
 //   node capture.mjs test/fixtures/image-treatments-0.14.json
+// History: this records 0.14 output; OPF 0.15 replaced that shape (core docs/programs/format-audit/0.15-design.md).
+// fa-stale-refs: history
 import {readFileSync, writeFileSync} from 'node:fs';
 import {unzipSync} from 'fflate';
 import {XMLParser} from 'fast-xml-parser';

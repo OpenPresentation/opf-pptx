@@ -1,5 +1,5 @@
 // FA-23: the 15 pptx.gallery image treatments (core docs/image-treatments.md) as OPF 0.15 image blocks and image
-// backgrounds keep the native frames and paint order 0.14 exported for them as design.slideImage
+// backgrounds keep the native frames and paint order 0.14 exported for them as its slide-level image
 // (test/fixtures/image-treatments-0.14.json, recorded from opf-pptx 0.14.0). Four treatments need a 0.14 frame that 0.15
 // has no form for (a slide-wide frame inside the padding, or a centered band); they are listed in CHANGED with what 0.15
 // draws instead.
@@ -16,7 +16,7 @@ const block = fields => ({type: 'image', image: 'asset:hero', ...fields});
 const background = fields => ({type: 'image', src: 'asset:hero', ...fields});
 const heading = id => ({title: id.split('-').map(word => word[0].toUpperCase() + word.slice(1)).join('-'), subtitle: `pptx.gallery image-treatments/${id}`});
 // The 0.15 form of each reference slide: core's docs/fixtures/image-treatments.opf.json at FA-22 (codex/fa-22-backgrounds-images
-// 94535d4b), with the 0.14 design.slideImage it replaces on the right.
+// 94535d4b), with the 0.14 slide-level image it replaces on the right.
 const SLIDES = {
   'full-bleed': {design: {background: background({overlay: {color: 'dark1', opacity: 0.2}})}},                      // background, crop, overlay
   'text-overlay': {design: {background: background({overlay: {color: 'dark1', opacity: 0.55}})}},
