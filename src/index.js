@@ -33,7 +33,7 @@ import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType}
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, writeNativeMasters} from './native-furniture.js';
 import {importImageOrientation} from './image-import.js';
 import {extractSignals, normalizeSignalOptions, themeFactsFor} from './import-signals.js';
-import {placeSlideImages, importSlideImage, slideImageName, slideImageOverlayName} from './slide-image-provenance.js';
+import {placeImages, importImages, imageName, imageOverlayName, backgroundImageName, backgroundOverlayName, IMAGE_TREATMENT_KEYS, BACKGROUND_IMAGE_KEYS} from './image-provenance.js';
 import {dedupeMedia} from './media-dedupe.js';
 import {placeWatermarks, importWatermark, importTextWatermark, tagTextWatermarks, watermarkName, watermarkTextName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
 import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from './logo-provenance.js';
@@ -47,7 +47,7 @@ import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attac
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import {
   chartPaletteForFill, codeHighlightBands, codeHighlightColors, codeHighlightLines, codeLineNumbers, codeLineRuns, codeSyntaxPaletteForScheme, composeSlide,
-  DEFAULT_FONT_SCHEME, defaultSlideBackground, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
+  DEFAULT_FONT_SCHEME, defaultSlideBackground, fitImage, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
   resolveTextStyle, textColorForFill, textWidthMeasurer, timelineMarkerShapes, timelineTextColor, tokenizeCode
 } from "@openpresentation/opf/composition";
 import { colorContext, resolveColorRefValue, resolveExportColor, resolveVariableColors } from "./color-ref.js";
@@ -236,10 +236,12 @@ export async function toPptx(input, options = {}) {
   context.imagePlaceholders = new Map();
   context.tableHeaders = new Map();
   context.tableCells = new Map();
-  context.imagePlacements = new Map();
+  // FA-23: every exported image picture (image blocks, the alt-text form of an image background, timeline pictures) and
+  // every image overlay shape, by object name (src/image-provenance.js).
+  context.images = new Map();
+  context.imageOverlays = new Map();
   context.svgPictures = new Map();
   context.pictureText = new Map();
-  context.slideImages = new Map();
   context.watermarks = new Map();
   context.textWatermarks = new Map();
   context.logos = new Map();
@@ -662,20 +664,28 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
   const background = importBackground(slidePath, resolveCanvasDimensions(dimensions), {
     part: (path, parser) => parseRequiredXml(entries, path, parser), relationships: path => parseRelationships(entries, path), bytes: path => entries[path]
   }, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.design.background`}));
-  if (background) slide.design = {background};
+  // FA-23: tagged image pictures and overlays (OPF_IMAGE_V1, OPF_IMAGE_OVERLAY_V1). An unchanged full-slide back picture is
+  // the slide's image background (its native fill is then only the canvas colour); an unchanged overlay of a native image
+  // background fill joins that background; an unchanged image block picture returns its treatment and placement.
+  const images = importImages({pictures: nativeContext.pictures, shapes: nativeContext.shapes, relationships, entries, slideIndex,
+    readPicture: picture => importPicture(entries, picture, slidePath, relationships, diagnostic => {
+      // The recorded crop, fit and focus are re-derived from the restored background.
+      if (diagnostic.code !== 'unsupported-image-crop') options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.design.background`});
+    }),
+    valid: (kind, value) => isValidFormat({slides: [kind === 'background' ? {design: {background: value}} : {blocks: [value]}]}),
+    report: diagnostic => options.onDiagnostic?.(diagnostic)});
+  const imageBackground = images.background ?? (background?.type === 'image' && images.backgroundOverlay ? {...background, overlay: images.backgroundOverlay} : background);
+  if (images.backgroundOverlay && imageBackground === background) {
+    images.consumedShapes.delete(images.backgroundOverlayShape);
+    options.onDiagnostic?.({code: 'invalid-image-provenance', path: `slides.${slideIndex}.design.background.overlay`, message: 'The tagged OPF background overlay no longer sits on an image background; it was imported as an ordinary shape.'});
+  }
+  if (imageBackground) slide.design = {background: imageBackground};
   if (Object.keys(furniture.design).length) slide.design = {...slide.design, ...furniture.design};
   if (furniture.section !== undefined) slide.section = furniture.section;
-  const slideImagePath = `slides.${slideIndex}.design.slideImage`;
-  const slideImage = importSlideImage(nativeContext.pictures, nativeContext.shapes, relationships, entries, slideIndex,
-    picture => importPicture(entries, picture, slidePath, relationships, diagnostic => {
-      // The recorded crop/fit is re-derived from design.slideImage.
-      if (diagnostic.code !== 'unsupported-image-crop') options.onDiagnostic?.({...diagnostic, path: slideImagePath});
-    }),
-    diagnostic => options.onDiagnostic?.({...diagnostic, path: slideImagePath}));
-  if (slideImage.design) slide.design = {...slide.design, ...slideImage.design};
-  if (slideImage.image) slide.image = slideImage.image;
-  nativeContext.slideImagePictures = slideImage.consumed;
-  nativeContext.slideImageShapes = slideImage.consumedShapes;
+  nativeContext.imageBlocks = images.blocks;
+  nativeContext.imagePictures = images.consumed;
+  // An overlay of a background that was not recovered stays an ordinary shape.
+  nativeContext.imageShapes = images.consumedShapes;
   const watermarkPath = `slides.${slideIndex}.design.watermark`;
   // FA-13: a text watermark is a tagged native text box; it is not content and never imports as a text block.
   const textWatermark = importTextWatermark(nativeContext.shapes, nativeContext.paragraphs.map(shapeParagraphs => shapeParagraphs.map(paragraph => ({text: paragraph.text}))), relationships, entries, slideIndex,
@@ -833,10 +843,10 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   for (const item of metric.items) items.push({kind:'metric',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload,sources:sourcesOf([item.shape])});
   for (const item of media.items) items.push({kind:'media',sourceText:item.payload.type==='text',bounds:shapeBounds(item.shape['p:spPr']?.['a:xfrm']),payload:item.payload,sources:sourcesOf([item.shape])});
   for (const [index,shape] of shapes.entries()) {
-    const role = furniture.text.has(index) ? 'furniture' : nativeContext.slideImageShapes?.has(index) ? 'slide-image' : nativeContext.watermarkShapes?.has(index) ? 'watermark' : nativeContext.logoPlaceholderShapes?.has(index) ? 'logo' : cards.has(shape) ? 'card-frame'
+    const role = furniture.text.has(index) ? 'furniture' : nativeContext.imageShapes?.has(index) ? 'image-overlay' : nativeContext.watermarkShapes?.has(index) ? 'watermark' : nativeContext.logoPlaceholderShapes?.has(index) ? 'logo' : cards.has(shape) ? 'card-frame'
       : code.consumed.has(shape) ? 'code' : metric.consumed.has(shape) ? 'metric' : media.consumed.has(shape) ? 'media' : timelines.consumed.has(shape) ? 'timeline' : quotes.consumed.has(shape) ? 'quote' : undefined;
     if (role) roles.set(shapeKeys.get(shape), role);
-    if (furniture.text.has(index) || nativeContext.slideImageShapes?.has(index) || nativeContext.watermarkShapes?.has(index) || nativeContext.logoPlaceholderShapes?.has(index)) continue;
+    if (furniture.text.has(index) || nativeContext.imageShapes?.has(index) || nativeContext.watermarkShapes?.has(index) || nativeContext.logoPlaceholderShapes?.has(index)) continue;
     if (annotations.consumed.has(shape)) { roles.set(shapeKeys.get(shape), 'annotation'); continue; }
     if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)||quotes.consumed.has(shape)) continue;
     const ordinaryBody = Object.hasOwn(shape, 'p:txBody') && !shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst']?.['p:tags'];
@@ -872,10 +882,13 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
   }
 
   for (const [index, picture] of nativeContext.pictures.entries()) {
-    const pictureRole = furniture.pictures.has(index) ? 'furniture' : nativeContext.slideImagePictures?.has(index) ? 'slide-image' : nativeContext.watermarkPictures?.has(index) ? 'watermark' : nativeContext.logoPictures?.has(index) ? 'logo' : quotes.consumedPictures.has(picture) ? 'quote' : undefined;
+    const pictureRole = furniture.pictures.has(index) ? 'furniture' : nativeContext.imagePictures?.has(index) ? 'background' : nativeContext.watermarkPictures?.has(index) ? 'watermark' : nativeContext.logoPictures?.has(index) ? 'logo' : quotes.consumedPictures.has(picture) ? 'quote' : undefined;
     if (pictureRole) { roles.set(`pic:${index}`, pictureRole); continue; }
-    const report = diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.pictures.${index}`});
+    // A tagged, unchanged image block brings back its own fields (fit, focus, treatment, placement); its crop is theirs.
+    const treatment = nativeContext.imageBlocks?.get(index);
+    const report = diagnostic => { if (!(treatment && diagnostic.code === 'unsupported-image-crop')) options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}.pictures.${index}`}); };
     const item = importPicture(entries, picture, slidePath, relationships, report);
+    if (item?.payload && treatment) item.payload = {...item.payload, ...structuredClone(treatment)};
     if (item) items.push({...item, sources: [`pic:${index}`]});
   }
 
@@ -1845,37 +1858,21 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   // the families after the measurement provider's resolution of the chosen family, the raster padding and the host's social platform records.
   const composeOptions = { ...slideContext.core.options, fontFamilies: slideContext.composeFonts, textRasterPadding:options.textRasterPadding, socialPlatforms: socialPlatformRecords(presentation, options) };
   // Core resolves every shared design key once (slide design, deck design, then the layout record's design): the text alignment of
-  // each item (item.alignment), and the imageFill that backgrounds and picture placements use (SlideComposition.design).
+  // each item (item.alignment), and each image item's own fit and treatment (item.image).
   const geometry = composeSlide(opfSlide, composeOptions);
-  slideContext.imageFill = geometry.design.imageFill ?? "fit";
   // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
   if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
   slide.background = { color: slideContext.colors.background };
-  const backgroundDefinition = slideContext.backgroundDefinition;
+  // An image background is core's geometry.backgroundImage (slide, deck, then theme background); every other kind is the
+  // effective design or theme background definition.
+  const backgroundDefinition = geometry.backgroundImage ? undefined : slideContext.backgroundDefinition;
   const backgroundPath = `${opfSlide.design?.background !== undefined ? `slides.${slideIndex}.` : ''}design.background`;
-  const backgroundFill = schemeBackgroundFill(backgroundDefinition, slideContext) ?? nativeBackgroundFill(backgroundDefinition, {
+  const backgroundFill = backgroundDefinition === undefined ? null : schemeBackgroundFill(backgroundDefinition, slideContext) ?? nativeBackgroundFill(backgroundDefinition, {
     width: slideContext.dimensions.widthInches, height: slideContext.dimensions.heightInches
   }, slideContext.colors.background, slideContext.colors.text, (reference, hex) => schemeColorValue(reference, hex, slideContext), reference => resolveBackgroundColorRef(reference, slideContext.colorScheme, slideContext.variables));
   if (backgroundFill) context.backgroundFills.set(`ppt/slides/slide${slideIndex + 1}.xml`, backgroundFill);
   if (backgroundDefinition?.type === 'pattern' && !nativePatternPreset(backgroundDefinition.pattern?.preset)) {
     options.onDiagnostic?.({code: 'unsupported-pattern', path: `${backgroundPath}.pattern.preset`, message: `Pattern ${backgroundDefinition.pattern?.preset} has no DrawingML preset; only its background color was exported.`});
-  }
-  if (backgroundDefinition?.type === 'image') {
-    const imagePath = `${backgroundPath}.image`;
-    // An SVG background is its PNG raster at the slide's size: a slide background picture fill carries no SVG.
-    const outcome = { box: { w: slideContext.dimensions.widthInches, h: slideContext.dimensions.heightInches }, cover: (backgroundDefinition.image?.fit ?? 'cover') !== 'contain' };
-    const resolved = await resolveImage(backgroundDefinition.image, presentation, options, imagePath, outcome);
-    if (resolved) {
-      // PptxGenJS embeds the raster and its relationship; packaging replaces
-      // its stretched fill with the fitted native picture fill.
-      slide.background = { ...resolved };
-      context.backgroundFills.set(`ppt/slides/slide${slideIndex + 1}.xml`, { image: {
-        fit: backgroundDefinition.image?.fit ?? 'cover', opacity: backgroundDefinition.opacity ?? 1, imageFill: slideContext.imageFill, path: imagePath,
-        width: slideContext.dimensions.widthInches * 96, height: slideContext.dimensions.heightInches * 96, report: options.onDiagnostic
-      } });
-    } else if (!outcome.reported) {
-      options.onDiagnostic?.({code: 'unresolved-asset', path: imagePath, message: 'The background image needs an embedded raster, a declared asset or a host imageResolver; the slide background color was exported instead.'});
-    }
   }
   slide.color = slideContext.textColor;
   if (opfSlide.hidden === true) slide.hidden = true;
@@ -1883,12 +1880,21 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   // The content topology (groups, regions, root form, block ids) with the leaf boxes this geometry draws.
   recordContentTopology(context.documentProvenance, opfSlide, slideIndex, geometry.items);
-  // The preview paints background, slide image (and its overlay), then design.watermark, then content.
-  if (geometry.slideImage) await addSlideImage(slide, presentation, geometry.slideImage, slideIndex, slideContext, options);
+  // Paint order, as in the preview: canvas colour, the background picture and its overlay, the placed image blocks (each
+  // with its overlay; the edge-to-edge images 0.14 drew beneath everything as the slide image), design.watermark, the logo,
+  // then content in item order.
+  if (geometry.backgroundImage) await addBackgroundImage(slide, presentation, geometry.backgroundImage, slideIndex, slideContext, context, options);
+  // RR-34: a captioned image's caption band follows its picture as tagged text boxes linked to the picture by name.
+  const drawImage = async (item, itemContext) => {
+    const name = await addImageItem(slide, presentation, item, slideIndex, itemContext, context, options);
+    if (item.caption) addCaption(slide, item, name, itemContext, exportHelpers, (code, message) => new OPFPptxError(code, message, {path: item.caption.path}));
+  };
+  for (const item of geometry.items) if (item.image?.placement) await drawImage(item, slideContext);
   await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);
   // Cover and section slides: the deck logo core composed at the top-left of the free area, after the watermark and before content.
   if (geometry.logo) await addLogo(slide, presentation, geometry.logo, slideIndex, slideContext, context, options);
   for (const item of geometry.items) {
+    if (item.image?.placement) continue;
     // Card text sits on a literal card fill, not the slide background: keep it literal.
     const itemContext = item.frameBox ? {...slideContext, textColor: slideContext.colors.text, mutedColor: slideContext.colors.mutedText} : slideContext;
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };
@@ -1932,12 +1938,14 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
       });
     } else if (item.field === "text" && typeof item.value === "string") {
       slide.addText(item.text.lines.join("\n"), {...textBoxOptions(region, itemContext, item.text.fontSize * 0.75),...nativeFontOptions(item.textStyle),align:physicalAlignment(item.alignment, item.text.directions?.[0])});
+    } else if (item.field === "image" && item.image) {
+      await drawImage(item, itemContext);
     } else {
       // RR-34: a captioned item draws its media in item.box; the caption band follows as tagged text boxes linked to the media shape by name.
-      const mediaNames = item.caption ? new Set([...context.imagePlacements.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()]) : undefined;
+      const mediaNames = item.caption ? new Set([...context.images.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()]) : undefined;
       await addPayload(slide, presentation, item.payload, region, item.path, { ...itemContext, composition: item.composition, contentAlignment: item.alignment ?? "left", direction: geometry.direction }, options, item.quoteLayout, item.codeLayout,item.metricLayout,item.timelineLayout);
       if (item.caption) {
-        const mediaName = item.field === 'video' ? `OPF media ${item.path} frame` : [...context.imagePlacements.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()].find(name => !mediaNames.has(name));
+        const mediaName = item.field === 'video' ? `OPF media ${item.path} frame` : [...context.images.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()].find(name => !mediaNames.has(name));
         addCaption(slide, item, mediaName, itemContext, exportHelpers, (code, message) => new OPFPptxError(code, message, {path: item.caption.path}));
       }
     }
@@ -2153,27 +2161,129 @@ function addListPayload(slide, items, region, context) {
   slide.addText(runs, textBoxOptions(region, context, 15));
 }
 
+// A content picture outside an image block (a timeline event image): one native picture contained in its region.
 async function addImagePayload(slide, presentation, asset, region, path, context, options) {
-  const outcome = { box: region, cover: context.imageFill === 'crop' };
+  const name = await addImagePicture(slide, presentation, asset, region, path, context, options, {fit: 'contain'});
+  if (!name) addImagePlaceholder(slide, presentation, asset, region, path, context, options);
+  return name;
+}
+
+// One native image picture at `box` (inches), fitted at packaging (src/image-provenance.js placeImages). `treatment` is
+// what OPF_IMAGE_V1 stores (the authored block fields); without it the picture is untagged. Returns the picture's object
+// name, or undefined when the source could not be embedded (the caller draws the unavailable-image panel).
+async function addImagePicture(slide, presentation, asset, box, path, context, options, {fit, focus, effects = null, shrink = true, treatment, alt, role = 'block', objectName} = {}) {
+  const outcome = { box, cover: fit === 'cover' };
   const resolved = await resolveImage(asset, presentation, options, path, outcome);
-  if (!resolved) {
-    addImagePlaceholder(slide, presentation, asset, region, path, context, options);
-    return;
+  if (!resolved) return undefined;
+  const name = objectName ?? imageName(1 + [...context.images.keys()].filter(key => /^OPF image \d+$/.test(key)).length);
+  // PowerPoint applies opacity (a:alphaModFix), grayscale (a:grayscl) and the border (a:ln) to an SVG picture (native check
+  // 2026-10-01). A duotone recolor and a non-rectangular mask are not confirmed on an SVG picture, and a tiled picture fill
+  // cannot carry an SVG: with any of them the SVG stays its PNG raster, so the effect applies as in the preview.
+  if (outcome.svg) {
+    const treated = [effects?.recolor?.type === 'duotone' && 'duotone recolor', effects?.shape && effects.shape.preset !== 'rect' && 'shape', fit === 'tile' && 'tile fit'].filter(Boolean);
+    if (treated.length) options.onDiagnostic?.({ code: 'svg-image-rasterized', path, message: `An SVG image with ${treated.join(', ')} exports as its PNG raster, so the effect applies as in the preview; PowerPoint has not been confirmed to apply it to an SVG picture.` });
+    else context.svgPictures.set(name, outcome.svg);
   }
-  const objectName = `OPF image ${context.imagePlacements.size + 1}`;
-  context.imagePlacements.set(objectName, { region, mode: context.imageFill, path });
-  if (outcome.svg) context.svgPictures.set(objectName, outcome.svg);
-  context.pictureText.set(objectName, pictureText(assetAlt(asset, presentation), asset, presentation));
-  slide.addImage({
-    ...resolved,
-    objectName,
-    x: region.x,
-    y: region.y,
-    w: region.w,
-    h: region.h,
-    altText: assetAlt(asset, presentation)
+  const text = alt !== undefined ? alt : assetAlt(asset, presentation);
+  context.images.set(name, { slide: context.slidePath, role, path, box, fit, focus, shrink, effects, ...(treatment !== undefined ? {treatment} : {}) });
+  context.pictureText.set(name, pictureText(text, asset, presentation));
+  slide.addImage({ ...resolved, objectName: name, x: box.x, y: box.y, w: box.w, h: box.h, altText: text });
+  return name;
+}
+
+// The native effects of an image treatment, resolved in the slide's colour context: core's mask (item.image.shape), the
+// border line, opacity and recolor.
+function imageEffects(image, context) {
+  const paint = (entry, fallback) => {
+    const raw = exportColor(entry, context, fallback).replace(/^#/, '');
+    return { hex: normalizeHex(raw, fallback), alpha: /^[0-9a-f]{8}$/i.test(raw) ? parseInt(raw.slice(6), 16) / 255 : 1 };
+  };
+  return {
+    shape: image.shape ?? null,
+    border: image.border ? { ...paint(image.border.color, context.colors.border), width: image.border.width } : null,
+    opacity: image.opacity ?? null,
+    recolor: image.recolor?.type === 'grayscale' ? { type: 'grayscale' }
+      : image.recolor?.type === 'duotone' ? { type: 'duotone', dark: paint(image.recolor.dark, '000000'), light: paint(image.recolor.light, 'FFFFFF') } : null,
+    paint
+  };
+}
+
+// An overlay (core ComposedOverlay) as one native shape directly above its picture: the frame's shape, or an edge band.
+function addImageOverlay(slide, overlay, authored, name, owner, context, effects) {
+  const {hex, alpha} = effects.paint(overlay.color, context.colors.text);
+  context.imageOverlays.set(name, { slide: context.slidePath, owner, box: overlay.box, shape: overlay.shape, hex, alpha, opacity: overlay.opacity, overlay: authored });
+  slide.addShape('rect', { x: overlay.box.x / 96, y: overlay.box.y / 96, w: overlay.box.width / 96, h: overlay.box.height / 96, objectName: name, fill: { color: hex } });
+}
+
+// The authored value at an OPF path the composition names (`slides.N.blocks.I`, `slides.N.design.background`,
+// `design.background`); `theme` is the resolved theme record's background.
+function authoredAt(presentation, path, slideContext) {
+  if (path === 'theme') return slideContext.core?.resolved?.theme?.background;
+  let value = presentation;
+  for (const key of path.split('.')) value = value?.[/^\d+$/.test(key) ? Number(key) : key];
+  return value;
+}
+
+// An image block (core ComposedItem.image): the picture at core's frame with its fit, focus and treatment, then its
+// overlay directly above. An unchanged picture and overlay import back as the same block (OPF_IMAGE_V1).
+async function addImageItem(slide, presentation, item, slideIndex, context, options) {
+  const image = item.image;
+  const box = { x: image.box.x / 96, y: image.box.y / 96, w: image.box.width / 96, h: image.box.height / 96 };
+  const block = isPlainObject(item.payload) ? item.payload : {};
+  const treatment = Object.fromEntries(IMAGE_TREATMENT_KEYS.filter(key => key !== 'overlay' && block[key] !== undefined).map(key => [key, structuredClone(block[key])]));
+  const effects = imageEffects(image, context);
+  const treated = Boolean(effects.border || effects.opacity !== null || effects.recolor || image.overlay || (effects.shape && effects.shape.preset !== 'rect'));
+  const tagged = Object.keys(treatment).length > 0 || block.overlay !== undefined;
+  // A plain contained picture in the flow is framed by the picture itself (0.14 content images); a treated or placed one
+  // keeps core's frame (0.14 slide images), so its mask, line and overlay apply to that frame.
+  const name = await addImagePicture(slide, presentation, item.value, box, item.path, { ...context, slidePath: `slides.${slideIndex}` }, options, {
+    fit: image.fit, focus: image.focus, effects: treated ? effects : null, shrink: !treated && !image.placement, treatment: tagged ? treatment : undefined
   });
-  return objectName;
+  if (!name) {
+    addImagePlaceholder(slide, presentation, item.value, box, item.path, context, options);
+    return `OPF image placeholder ${context.imagePlaceholders.size}`;
+  }
+  if (image.overlay) addImageOverlay(slide, image.overlay, structuredClone(block.overlay), imageOverlayName(name), name, { ...context, slidePath: `slides.${slideIndex}` }, effects);
+  return name;
+}
+
+// An image background (core SlideComposition.backgroundImage). With alt text it is a full-slide picture at the back of
+// the slide over the canvas colour, carrying the alt text as its descr; without alt it is the native slide background
+// fill (written at packaging). Its overlay is one shape directly above the picture.
+async function addBackgroundImage(slide, presentation, background, slideIndex, slideContext, context, options) {
+  const slidePath = `slides.${slideIndex}`, part = `ppt/slides/slide${slideIndex + 1}.xml`;
+  const box = { x: 0, y: 0, w: slideContext.dimensions.widthInches, h: slideContext.dimensions.heightInches };
+  const authored = authoredAt(presentation, background.path, slideContext);
+  const effects = imageEffects({ opacity: background.opacity }, slideContext);
+  let owner = 'background', overlayName = backgroundOverlayName(slidePath);
+  if (typeof background.alt === 'string' && background.alt) {
+    const treatment = isPlainObject(authored) ? Object.fromEntries(BACKGROUND_IMAGE_KEYS.filter(key => key !== 'overlay' && authored[key] !== undefined).map(key => [key, structuredClone(authored[key])])) : {};
+    const name = await addImagePicture(slide, presentation, background.src, box, background.path, { ...slideContext, slidePath }, options, {
+      fit: background.fit, focus: background.focus, effects: background.opacity === undefined ? null : effects, shrink: false,
+      treatment, alt: background.alt, role: 'background', objectName: backgroundImageName(slidePath)
+    });
+    if (!name) {
+      options.onDiagnostic?.({code: 'unresolved-asset', path: background.path, message: 'The background image needs an embedded raster, a declared asset or a host imageResolver; the slide background color was exported instead.'});
+      return;
+    }
+    owner = name;
+    overlayName = imageOverlayName(name);
+  } else {
+    // An SVG background is its PNG raster at the slide's size: a slide background picture fill carries no SVG.
+    const outcome = { box, cover: background.fit === 'cover' };
+    const resolved = await resolveImage(background.src, presentation, options, background.path, outcome);
+    if (!resolved) {
+      if (!outcome.reported) options.onDiagnostic?.({code: 'unresolved-asset', path: background.path, message: 'The background image needs an embedded raster, a declared asset or a host imageResolver; the slide background color was exported instead.'});
+      return;
+    }
+    // PptxGenJS embeds the raster and its relationship; packaging replaces its stretched fill with the fitted native fill.
+    slide.background = { ...resolved };
+    context.backgroundFills.set(part, { image: {
+      fit: background.fit, focus: background.focus, opacity: background.opacity ?? 1, path: background.path,
+      width: box.w * 96, height: box.h * 96, report: options.onDiagnostic
+    } });
+  }
+  if (background.overlay) addImageOverlay(slide, background.overlay, structuredClone(isPlainObject(authored) ? authored.overlay : undefined) ?? {color: background.overlay.color, opacity: background.overlay.opacity}, overlayName, owner, { ...slideContext, slidePath }, effects);
 }
 
 // design.watermark: one native picture per slide, added after the slide image
@@ -2241,54 +2351,6 @@ async function addLogo(slide, presentation, logo, slideIndex, slideContext, cont
   context.logos.set(`ppt/slides/slide${slideIndex + 1}.xml`, {slide: `slides.${slideIndex}`, box: region, path: logo.path, variant: logo.variant, anchor: logo.anchor ?? 'left'});
   if (outcome.svg) context.svgPictures.set(`ppt/slides/slide${slideIndex + 1}.xml|${logoName()}`, outcome.svg);
   slide.addImage({...resolved, objectName: logoName(), ...region, altText: assetAlt(logo.source, presentation) ?? 'Logo'});
-}
-
-// design.slideImage: one native picture at the shared frame, beneath content.
-// Crop/fit and treatments are written after PptxGenJS embeds the bytes.
-async function addSlideImage(slide, presentation, image, slideIndex, context, options) {
-  const box = { x: image.box.x / 96, y: image.box.y / 96, w: image.box.width / 96, h: image.box.height / 96 };
-  const outcome = { box, cover: image.fill === 'crop' };
-  const resolved = await resolveImage(image.value, presentation, options, image.sourcePath, outcome);
-  if (!resolved) {
-    addImagePlaceholder(slide, presentation, image.value, box, image.sourcePath, context, options);
-    return;
-  }
-  const objectName = slideImageName(`slides.${slideIndex}`);
-  const configured = image.path === 'design.slideImage' ? presentation.design?.slideImage : presentation.slides[slideIndex].design?.slideImage;
-  const { src: _source, ...treatment } = isPlainObject(configured) && 'position' in configured ? configured : {};
-  const paint = (entry, fallback) => {
-    const hex = normalizeHex(exportColor(entry, context, fallback), fallback);
-    const raw = exportColor(entry, context, fallback).replace(/^#/, '');
-    return { hex, alpha: /^[0-9a-f]{8}$/i.test(raw) ? parseInt(raw.slice(6), 16) / 255 : 1 };
-  };
-  // Native effects are resolved here, in the slide's color context.
-  const effects = {
-    shape: image.shape ?? null,
-    border: image.border ? { ...paint(image.border.color, context.colors.border), width: image.border.width } : null,
-    opacity: image.opacity ?? null,
-    recolor: image.recolor?.type === 'grayscale' ? { type: 'grayscale' }
-      : image.recolor?.type === 'duotone' ? { type: 'duotone', dark: paint(image.recolor.dark, '000000'), light: paint(image.recolor.light, 'FFFFFF') } : null,
-    overlay: image.overlay ? { ...paint(image.overlay.color, context.colors.text), opacity: image.overlay.opacity, box: image.overlay.box, shape: image.overlay.shape } : null,
-  };
-  // FF-53: a root `image` with the slide image's source is the slide image (core `replacesContent`); the
-  // manifest records that so an unchanged picture imports back as both design.slideImage and slide.image.
-  context.slideImages.set(objectName, { slide: `slides.${slideIndex}`, box, fill: image.fill, path: image.sourcePath, treatment: { ...treatment, position: image.position }, effects, content: image.replacesContent === true });
-  // PowerPoint applies opacity (a:alphaModFix), grayscale (a:grayscl) and the border (a:ln) to an SVG picture (native check
-  // 2026-10-01). A duotone recolor and a non-rectangular mask are not confirmed on an SVG picture: with either the SVG stays its
-  // PNG raster, so the effect applies as in the preview.
-  if (outcome.svg) {
-    const treated = [effects.recolor?.type === 'duotone' && 'duotone recolor', effects.shape && effects.shape.preset !== 'rect' && 'shape'].filter(Boolean);
-    if (treated.length) options.onDiagnostic?.({ code: 'svg-image-rasterized', path: image.sourcePath, message: `An SVG slide image with ${treated.join(', ')} exports as its PNG raster, so the effect applies as in the preview; PowerPoint has not been confirmed to apply it to an SVG picture.` });
-    else context.svgPictures.set(objectName, outcome.svg);
-  }
-  const slideImageAlt = image.alt ?? assetAlt(image.value, presentation);
-  context.pictureText.set(objectName, pictureText(slideImageAlt, image.value, presentation));
-  slide.addImage({ ...resolved, objectName, ...box, altText: slideImageAlt });
-  // The overlay scrim is a separate native shape directly above the picture.
-  if (effects.overlay) {
-    const overlay = effects.overlay.box;
-    slide.addShape('rect', { x: overlay.x / 96, y: overlay.y / 96, w: overlay.width / 96, h: overlay.height / 96, objectName: slideImageOverlayName(`slides.${slideIndex}`), fill: { color: effects.overlay.hex } });
-  }
 }
 
 // FF-62: chart text is one size. The preview draws every chart label (axis, legend, data label) at
@@ -2669,7 +2731,7 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
   for(const [index,part]of layout.parts.entries()){
     if(part.type==='image'){
       const region={x:part.box.x/96,y:part.box.y/96,w:part.box.width/96,h:part.box.height/96};
-      const objectName = await addImagePayload(slide,presentation,part.image,region,part.path,{...context,imageFill:'fit'},options);
+      const objectName = await addImagePayload(slide,presentation,part.image,region,part.path,context,options);
       // A generated deck logo is listed beside the manifest topology (see furnitureManifest) and tagged as a logo.
       if (objectName && part.field === 'logo') context.furnitureLogoTags.set(objectName, {v:1, role:'furniture', group:String(slideIndex), furniture:part.kind, zone:part.zone});
       else if (objectName) context.furnitureTags.set(objectName, {v:1, role:'image', group:String(slideIndex), part:manifestPartIndex(layout.parts, index)});
@@ -3650,7 +3712,7 @@ async function normalizePptxZip(raw, context) {
     const relationships = parseRelationships(entries, part);
     for (const [picture] of decodeText(bytes).matchAll(/<p:pic>[\s\S]*?<\/p:pic>/g)) {
       const name = picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1];
-      const placement = context.imagePlacements.get(name) ?? context.quotePhotos.get(name) ?? context.slideImages.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : name === logoName() ? context.logos.get(part) : undefined);
+      const placement = context.images.get(name) ?? context.quotePhotos.get(name) ?? (name === watermarkName() ? context.watermarks.get(part) : name === logoName() ? context.logos.get(part) : undefined);
       const id = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
       if (placement) imageSources.set(relationships.get(id)?.path, placement.path);
     }
@@ -3679,11 +3741,17 @@ async function normalizePptxZip(raw, context) {
     }
     imageMetadata.set(part, metadata);
   }
-  // Slide images need the embedded dimensions; document provenance (FF-32)
+  // Image pictures need the embedded dimensions (core's fitImage crops and pads them); document provenance (FF-32)
   // later records the placed frames as slide geometry evidence.
-  placeSlideImages(entries, context.slideImages, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
-    throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
-  });
+  try {
+    placeImages(entries, context.images, context.imageOverlays, {
+      metadataFor: (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), fitImage,
+      fail: path => { throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path }); }
+    });
+  } catch (error) {
+    if (error instanceof OPFPptxError) throw error;
+    throw new OPFPptxError("packaging-failed", `Image pictures could not be placed: ${errorMessage(error)}`);
+  }
   tagTextWatermarks(entries, context.textWatermarks);
   placeWatermarks(entries, context.watermarks, (part, id) => imageMetadata.get(parseRelationships(entries, part).get(id)?.path), path => {
     throw new OPFPptxError("unsupported-image-dimensions", "Image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path });
@@ -3842,7 +3910,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
           const metadata = imageMetadata.get(backgroundRelationships.get(id)?.path);
           if (!id || !metadata) throw new OPFPptxError("unsupported-image-dimensions", "Background image fitting requires readable PNG, JPEG, GIF or WebP dimensions. Supply a supported raster image through imageResolver.", { path: fill.image.path });
           if ((metadata.orientation ?? 1) !== 1) fill.image.report?.({code: 'unsupported-background-image-orientation', path: fill.image.path, message: 'A slide background picture fill cannot rotate or mirror its image; the JPEG EXIF orientation is not applied in the native background.'});
-          return `<p:bg><p:bgPr>${nativeImageBackgroundFill(id, metadata, fill.image)}<a:effectLst/></p:bgPr></p:bg>`;
+          return `<p:bg><p:bgPr>${nativeImageBackgroundFill(id, metadata, {...fill.image, fitImage})}<a:effectLst/></p:bgPr></p:bg>`;
         });
       }
       // PptxGenJS table IDs can collide with other objects on the same slide.
@@ -3928,7 +3996,8 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
         }
         const text = context.pictureText.get(picture.match(/<p:cNvPr\b[^>]*\bname="([^"]+)"/)?.[1]);
         if (text) picture = writePictureText(picture, text);
-        const placement = context.imagePlacements.get(picture.match(/name="(OPF image \d+)"/)?.[1]) ?? context.quotePhotos.get(picture.match(/name="(OPF quote photo \d+)"/)?.[1]);
+        // Image pictures were placed with the slide's other pictures (placeImages); quote photos are fitted here.
+        const placement = context.quotePhotos.get(picture.match(/name="(OPF quote photo \d+)"/)?.[1]);
         if (!placement) return picture;
         const id = picture.match(/<a:blip\b[^>]*r:embed="([^"]+)"/)?.[1];
         const dimensions = imageMetadata.get(relationships.get(id)?.path);
