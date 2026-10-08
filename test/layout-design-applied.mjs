@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {unzipSync} from 'fflate';
-import {renderSlideSvg} from '@openpresentation/opf-render';
-import {resolvePresentation} from '@openpresentation/opf-render/svg';
-import {toPptx, fromPptx} from '../dist/index.js';
+import {renderSlideSvg as renderSvg} from '@openpresentation/opf-render';
+import {resolvePresentation as resolveForPreview} from '@openpresentation/opf-render/svg';
+import {toPptx as exportPptx, fromPptx as importPptx} from '../dist/index.js';
+import {defaultCatalog} from '@openpresentation/opf/catalog';
+
+// OPF 0.15: the deck's font scheme (roboto) is the gallery snapshot's, which the host registers for preview, export and
+// import alike; the layout under test is embedded in catalogs.custom.
+const catalogs = [defaultCatalog];
+const renderSlideSvg = (deck, index, options = {}) => renderSvg(deck, index, {catalogs, ...options});
+const resolvePresentation = (deck, options = {}) => resolveForPreview(deck, {catalogs, ...options});
+const toPptx = (deck, options = {}) => exportPptx(deck, {catalogs, ...options});
+const fromPptx = (bytes, options = {}) => importPptx(bytes, {catalogs, ...options});
+const embedLayout = record => ({custom: {layouts: {'design-layout': record}}});
 
 // FA-17: a layout record's `design` is the lowest-precedence default of one merge (slide design, deck design,
 // layout design, engine default) that core resolves once (SlideComposition.design). The preview and the export
@@ -12,8 +22,8 @@ import {toPptx, fromPptx} from '../dist/index.js';
 const decoder = new TextDecoder();
 const native = {left: 'l', center: 'ctr', right: 'r'}, anchor = {start: 'l', middle: 'ctr', end: 'r'};
 const attr = (tag, name) => tag.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
-const layout = design => ({$schema: 'https://openpresentation.org/schema/opf-layout/v1', id: 'design-layout', name: 'Design layout', design, placeholders: [{type: 'title'}, {type: 'subtitle'}, {type: 'text'}]});
-const deckOf = (design, slide, deckDesign = {}) => ({design: {fontScheme: 'roboto', ...deckDesign}, catalogs: {layouts: {records: [layout(design)]}}, slides: [{layout: 'design-layout', title: 'Layout title', subtitle: 'Layout subtitle', text: 'Layout body text', ...slide}]});
+const layout = design => ({name: 'Design layout', design, placeholders: [{type: 'title'}, {type: 'subtitle'}, {type: 'text'}]});
+const deckOf = (design, slide, deckDesign = {}) => ({design: {fontScheme: 'roboto', ...deckDesign}, catalogs: embedLayout(layout(design)), slides: [{layout: 'design-layout', title: 'Layout title', subtitle: 'Layout subtitle', text: 'Layout body text', ...slide}]});
 const slideXml = async deck => decoder.decode(unzipSync(await toPptx(deck, {seed: 1, timestamp: '2026-01-01T00:00:00Z', zipDate: '2026-01-01T00:00:00Z'}))['ppt/slides/slide1.xml']);
 
 // The effective alignment per field, stated independently of core.
@@ -60,7 +70,7 @@ const fill = async deck => {
   const output = unzipSync(await toPptx(deck, {imageFormat: 'preserve', strictAssets: true}));
   return {preview: attr(preview, 'preserveAspectRatio'), cropped: /<a:srcRect\b/.test(decoder.decode(output['ppt/slides/slide1.xml']))};
 };
-const imageDeck = (design, slide = {}, deckDesign = {}) => ({design: {fontScheme: 'roboto', ...deckDesign}, catalogs: {layouts: {records: [{...layout(design), placeholders: [{type: 'title'}, {type: 'image'}]}]}}, slides: [{layout: 'design-layout', title: 'Image', image, ...slide}]});
+const imageDeck = (design, slide = {}, deckDesign = {}) => ({design: {fontScheme: 'roboto', ...deckDesign}, catalogs: embedLayout({...layout(design), placeholders: [{type: 'title'}, {type: 'image'}]}), slides: [{layout: 'design-layout', title: 'Image', image, ...slide}]});
 assert.deepEqual(await fill(imageDeck({imageFill: 'crop'})), {preview: 'xMidYMid slice', cropped: true}, 'layout crop');
 assert.deepEqual(await fill(imageDeck({imageFill: 'crop'}, {}, {imageFill: 'fit'})), {preview: 'xMidYMid meet', cropped: false}, 'deck fit over layout crop');
 assert.deepEqual(await fill(imageDeck({imageFill: 'fit'}, {design: {imageFill: 'crop'}})), {preview: 'xMidYMid slice', cropped: true}, 'slide crop over layout fit');
@@ -71,7 +81,7 @@ const reimported = await fromPptx(await toPptx(deckOf({titleAlignment: 'right', 
 assert.equal(reimported.slides[0].layout, 'design-layout');
 assert.equal(reimported.slides[0].design?.titleAlignment, undefined, 're-import does not copy the layout design into the slide');
 assert.equal(reimported.design?.titleAlignment, undefined);
-assert.deepEqual(reimported.catalogs?.layouts?.records?.[0]?.design, {titleAlignment: 'right', contentAlignment: 'center'});
+assert.deepEqual(reimported.catalogs?.custom?.layouts?.['design-layout']?.design, {titleAlignment: 'right', contentAlignment: 'center'});
 assert.equal(resolvePresentation(reimported, {}).slides[0].geometry.items.find(item => item.field === 'title').alignment, 'right', 'the re-imported layout still aligns the title');
 
 console.log(`Layout design applied: ${compared} text lines agree between preview and export for layout-only, deck-over-layout and slide-over-deck alignment; contentBox and imageFill follow the same merge; re-import keeps the layout record.`);

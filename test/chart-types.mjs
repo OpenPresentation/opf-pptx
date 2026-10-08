@@ -3,9 +3,14 @@
 // same id; other ids keep the legacy construct.
 import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
-import {catalogs} from '@openpresentation/opf';
+import {CHART_TYPES as CORE_CHART_TYPES} from '@openpresentation/opf/composition';
+import {catalogDisplay} from '@openpresentation/opf/catalog';
 import {toPptx, fromPptx} from '../dist/index.js';
 import {CHART_TYPES, CHARTEX_FALLBACK, resolveChartType} from '../dist/chart-types.js';
+
+// OPF 0.15: chart types are an engine vocabulary (core CHART_TYPES); their catalog records (Open XML and renderer mappings)
+// are gallery display metadata in the opt-in snapshot's catalogDisplay.chartTypes.
+const chartTypeRecords = Array.isArray(catalogDisplay.chartTypes) ? catalogDisplay.chartTypes : Object.entries(catalogDisplay.chartTypes).map(([id, record]) => ({id, ...record}));
 
 const decoder = new TextDecoder();
 const categoryData = {columns: ['Quarter', 'North', 'South', 'West'], rows: [['Q1', 4, 3, 2], ['Q2', 5, 2, 3], ['Q3', 6, 4, 1]]};
@@ -98,11 +103,12 @@ for (const [id, element, barDir] of [['custom-kpi', 'barChart', 'col'], ['my-bar
   checked++;
 }
 
-// The table agrees with the core catalog (@openpresentation/opf catalogs.chartTypes): the same ids and the catalog's Open XML construct for every classic kept id, both in the table and in the exported part.
-const records = new Map(catalogs.chartTypes.map((record) => [record.id, record]));
-const keptRecords = catalogs.chartTypes;
-assert.deepEqual(catalogs.chartTypes.filter((record) => record.deprecation), [], 'the bundled catalog holds no deprecated record');
+// The table agrees with the core catalog (@openpresentation/opf chartTypeRecords): the same ids and the catalog's Open XML construct for every classic kept id, both in the table and in the exported part.
+const records = new Map(chartTypeRecords.map((record) => [record.id, record]));
+const keptRecords = chartTypeRecords;
+assert.deepEqual(chartTypeRecords.filter((record) => record.deprecation), [], 'the bundled catalog holds no deprecated record');
 assert.deepEqual(Object.keys(CHART_TYPES).sort(), keptRecords.map((record) => record.id).sort(), 'ids match the catalog');
+assert.deepEqual(Object.keys(CHART_TYPES).sort(), [...CORE_CHART_TYPES].sort(), 'ids match core\'s chart.type vocabulary');
 const nativeElement = {bar: 'barChart', line: 'lineChart', area: 'areaChart', pie: 'pieChart', doughnut: 'doughnutChart', scatter: 'scatterChart', radar: 'radarChart'};
 for (const record of keptRecords) {
   const spec = CHART_TYPES[record.id];

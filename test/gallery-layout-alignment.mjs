@@ -13,6 +13,13 @@ import {resolvePresentation} from '@openpresentation/opf-render/svg';
 import {toPptx, fromPptx} from '../dist/index.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/gallery-alignment-layouts.json', import.meta.url), 'utf8'));
+// OPF 0.15 (FA-23): the fixture holds the 0.14 snippet shape (catalogs.layouts.records). The 0.15 gallery embeds the same
+// records under catalogs.default (source pptx.gallery), keyed by id, without $schema, id or x-* display metadata.
+for (const entry of fixture.layouts) {
+  const records = entry.document.catalogs?.layouts?.records ?? [];
+  const embedded = Object.fromEntries(records.map(({$schema: _schema, id, ...record}) => [id, Object.fromEntries(Object.entries(record).filter(([key]) => !key.startsWith('x-')))]));
+  entry.document.catalogs = {default: {source: 'https://www.pptx.gallery', layouts: embedded}};
+}
 assert.equal(fixture.layouts.length, 57, 'the 50 partial and 7 gallery-only layouts audit A flagged');
 assert.equal(fixture.layouts.filter(layout => layout.status === 'partial').length, 50);
 

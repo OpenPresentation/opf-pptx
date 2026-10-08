@@ -66,7 +66,7 @@ function checkNotesTheme(entries, label) {
 const slide = {id: 'one', title: 'Notes', text: 'Body', notes: 'Speaker notes'};
 const decks = [
   {name: 'Plain', slides: [slide]},
-  {name: 'Georgia', language: 'english', design: {fontScheme: 'georgia'}, slides: [slide, {id: 'chart', title: 'Chart', chart: {type: 'column', data: {columns: ['Quarter', 'Sales'], rows: [['Q1', 12], ['Q2', 15]]}}}]},
+  {name: 'Georgia', language: 'en', design: {fontScheme: 'georgia'}, slides: [slide, {id: 'chart', title: 'Chart', chart: {type: 'column', data: {columns: ['Quarter', 'Sales'], rows: [['Q1', 12], ['Q2', 15]]}}}]},
   {name: 'Meiryo', language: 'ja', design: {fontScheme: 'meiryo'}, slides: [{id: 'a', title: '日本語', text: 'こんにちは、世界。', notes: 'ノート'}]},
 ];
 for (const deck of decks) {
