@@ -1880,21 +1880,18 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   // The content topology (groups, regions, root form, block ids) with the leaf boxes this geometry draws.
   recordContentTopology(context.documentProvenance, opfSlide, slideIndex, geometry.items);
-  // Paint order, as in the preview: canvas colour, the background picture and its overlay, the placed image blocks (each
-  // with its overlay; the edge-to-edge images 0.14 drew beneath everything as the slide image), design.watermark, the logo,
-  // then content in item order.
+  // Paint order, as in the preview (FA-22 contract): canvas colour, the background picture and its overlay, design.watermark,
+  // the logo, then the items in core's order: the headings, the placed image blocks at their bands, then the flowed body.
   if (geometry.backgroundImage) await addBackgroundImage(slide, presentation, geometry.backgroundImage, slideIndex, slideContext, context, options);
   // RR-34: a captioned image's caption band follows its picture as tagged text boxes linked to the picture by name.
   const drawImage = async (item, itemContext) => {
     const name = await addImageItem(slide, presentation, item, slideIndex, itemContext, context, options);
     if (item.caption) addCaption(slide, item, name, itemContext, exportHelpers, (code, message) => new OPFPptxError(code, message, {path: item.caption.path}));
   };
-  for (const item of geometry.items) if (item.image?.placement) await drawImage(item, slideContext);
   await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);
   // Cover and section slides: the deck logo core composed at the top-left of the free area, after the watermark and before content.
   if (geometry.logo) await addLogo(slide, presentation, geometry.logo, slideIndex, slideContext, context, options);
   for (const item of geometry.items) {
-    if (item.image?.placement) continue;
     // Card text sits on a literal card fill, not the slide background: keep it literal.
     const itemContext = item.frameBox ? {...slideContext, textColor: slideContext.colors.text, mutedColor: slideContext.colors.mutedText} : slideContext;
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };

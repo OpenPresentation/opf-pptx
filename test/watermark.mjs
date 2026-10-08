@@ -106,7 +106,8 @@ for (const [label, [width, height]] of Object.entries(dimensions)) {
 }
 
 // 3. Paint order against an image background and a placed image block (0.14's slide image) is the traced preview's order,
-// not an assumption: the preview paints the picture, its overlay, then the watermark, then content.
+// not an assumption: the preview paints the background picture and its overlay, then the watermark, then the items in
+// core's order (the headings, the placed blocks, the body).
 {
   const cases = [['background', 'OPF background slides.0', 'slides.0.design.background', overlay => ({ design: { background: { type: 'image', src: square, alt: 'Square', ...overlay } } })],
     ...['left', 'right', 'top', 'bottom'].map(edge => [edge, 'OPF image 1', 'slides.0.blocks.0', overlay => ({ blocks: [{ type: 'image', image: square, placement: { edge }, ...overlay }, { type: 'text', text: 'Body' }] })])];
@@ -116,13 +117,14 @@ for (const [label, [width, height]] of Object.entries(dimensions)) {
     const at = path => svg.indexOf(`data-opf-path="${path}"`);
     const previewOrder = [[pictureName, picturePath], ['OPF watermark', 'design.watermark'], ['OPF heading slides.0.title line 0', 'slides.0.title']]
       .map(([name, path]) => ({ name, at: at(path) })).sort((x, y) => x.at - y.at).map(entry => entry.name);
-    assert.ok(previewOrder.indexOf(pictureName) < previewOrder.indexOf('OPF watermark') && previewOrder.indexOf('OPF watermark') < previewOrder.indexOf('OPF heading slides.0.title line 0'), `${position}: the traced preview paints the picture, watermark, then content`);
+    const watermarkFirst = previewOrder.indexOf('OPF watermark') < previewOrder.indexOf('OPF heading slides.0.title line 0');
+    assert.ok(watermarkFirst && (position === 'background') === (previewOrder.indexOf(pictureName) < previewOrder.indexOf('OPF watermark')), `${position}: the traced preview paints a background beneath the watermark and a placed block above it`);
     const { xml } = await exported(deck);
     const names = shapeNames(xml[0]).filter(name => previewOrder.includes(name));
     assert.deepEqual(names, previewOrder, `${position}${overlay ? ' with overlay' : ''}: native order equals the preview's`);
     if (overlay) {
       const all = shapeNames(xml[0]);
-      assert.ok(all.indexOf(`${pictureName} overlay`) < all.indexOf('OPF watermark'), 'The watermark also lies above the picture overlay');
+      assert.equal(all.indexOf(`${pictureName} overlay`), all.indexOf(pictureName) + 1, 'The overlay lies directly above its picture');
     }
     checked++;
   }

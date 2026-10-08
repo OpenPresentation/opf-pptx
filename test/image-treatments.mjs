@@ -81,7 +81,10 @@ for (const [shape, extra] of [['rounded', { cornerRadius: 0.12 }], ['circle', {}
   assert.equal(Number(overlay['p:spPr']['a:solidFill']['a:srgbClr']['a:alpha'].val), Math.round(0x80 / 255 * 0.5 * 100000));
   assert.deepEqual(overlay['p:spPr']['a:ln'], { 'a:noFill': '' });
   const xml = decode(entries['ppt/slides/slide1.xml']);
-  assert.ok(xml.indexOf('</p:pic>') < xml.indexOf(' overlay"') && xml.indexOf(' overlay"') < xml.indexOf('OPF heading'), 'picture, overlay, then content');
+  const names = [...xml.matchAll(/<p:cNvPr\b[^>]*\bname="([^"]*)"/g)].map(match => match[1]).filter(Boolean);
+  const picture = names.findIndex(name => /^OPF image \d+$/.test(name));
+  assert.equal(names[picture + 1], `${names[picture]} overlay`, 'the overlay lies directly above its picture');
+  assert.ok(names.slice(picture + 2).some(name => /^OPF text /.test(name)) || xml.lastIndexOf('<p:sp>') > xml.indexOf(' overlay"'), 'the body follows');
   const bandDeck = deckFor({ placement: { edge: 'top', inset: true }, overlay: { color: 'dark1', opacity: 0.75, edge: 'bottom', size: 0.25 } });
   const band = (await exported(bandDeck)).overlay;
   const bandGeometry = geometryOf(bandDeck).overlay;

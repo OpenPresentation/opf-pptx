@@ -51,7 +51,8 @@ for (const edge of ['left', 'right', 'top', 'bottom']) {
     if (fit === 'stretch') assert.equal(crop, undefined);
     // The picture is beneath the slide's text, and content avoids the band.
     const xml = decode(entries['ppt/slides/slide1.xml']);
-    assert.ok(xml.indexOf('<p:pic>') < xml.indexOf('<p:sp>'), `${edge}: picture first (0.14 paint order)`);
+    // Core's item order: the headings, then the placed block, then the body.
+    assert.ok(xml.indexOf('OPF heading slides.0.title') < xml.indexOf('<p:pic>') && xml.indexOf('<p:pic>') < xml.lastIndexOf('<p:sp>'), `${edge}: headings, picture, body`);
     for (const shape of array(slide['p:sp'])) {
       const off = shape['p:spPr']?.['a:xfrm']?.['a:off'], ext = shape['p:spPr']?.['a:xfrm']?.['a:ext'];
       if (!off) continue;
