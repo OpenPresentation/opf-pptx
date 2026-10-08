@@ -126,7 +126,9 @@ const repro = {name: 'Per-slide script font', language: 'th', design: {theme: 'c
 }
 
 // 2. Three profiles: East Asian Meiryo, complex-script Traditional Arabic, complex-script Nirmala UI.
-const threeProfiles = {name: 'Three script profiles', slides: [
+// The deck names its colour scheme: an engine-default one has no catalog id, and the import (with the default catalog
+// registered) recovers the equal gallery record, so the re-export would name the theme's colour scheme differently.
+const threeProfiles = {name: 'Three script profiles', design: {colorScheme: 'cool-horizon'}, slides: [
   {title: '日本語', design: {fontScheme: inline('eastAsian', 'Meiryo')}, text: 'ひらがな'},
   {title: 'مرحبا', design: {fontScheme: inline('complexScript', 'Traditional Arabic')}, text: 'مرحبا بالعالم', notes: 'مرحبا'},
   {title: 'नमस्ते', design: {fontScheme: inline('complexScript', 'Nirmala UI')}, text: 'नमस्ते दुनिया'},
@@ -146,7 +148,7 @@ const threeProfiles = {name: 'Three script profiles', slides: [
 }
 
 // 3. A per-slide override mixed with the deck default: slides 1 and 3 (Japanese, Meiryo through the language) share master 1.
-const mixed = {name: 'Mixed', language: 'ja', slides: [
+const mixed = {name: 'Mixed', language: 'ja', design: {colorScheme: 'cool-horizon'}, slides: [
   {title: '日本語の見出し', text: 'ひらがなとカタカナ', notes: 'メモ'},
   {title: '日本語の見出し', design: {fontScheme: 'ms-mincho'}, text: 'ひらがなとカタカナ'},
   {title: '日本語の見出し', text: 'ひらがなとカタカナ', notes: 'メモ'},
