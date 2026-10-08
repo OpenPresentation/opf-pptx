@@ -289,7 +289,7 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
 // Asset-backed backgrounds: the tag references the exported media part instead
 // of copying the bytes, and the restored asset re-exports the same picture.
 {
-  const deck = {name: 'Asset background', assets: {bg: {src: pngUri, alt: 'Backdrop'}}, design: {fontScheme: 'arial', background: {type: 'image', image: {src: 'asset:bg'}}},
+  const deck = {name: 'Asset background', assets: {bg: {src: pngUri, alt: 'Backdrop'}}, design: {fontScheme: 'arial', background: {type: 'image', src: 'asset:bg'}},
     slides: [{layout: 'title-subtitle', title: 'One', subtitle: 'Two'}, {layout: 'title-subtitle', title: 'Three', subtitle: 'Four'}]};
   const bytes = await toPptx(deck);
   const entries = unzipSync(bytes);
@@ -377,7 +377,7 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
   const slide = tagValue(dec.decode(refs['ppt/tags/opfSlide1.xml']));
   assert.deepEqual({id: slide.id, beat: slide.beat, layout: slide.layout}, {id: undefined, beat: 'problem', layout: 'hero-title'});
   for (const secret of ['Alice', 'Acme', 'Ship it', 'Series B']) assert.ok(!JSON.stringify([document, slide]).includes(secret), secret);
-  const imageOnly = unzipSync(await toPptx({slides: [{title: 'One', layout: 'title', design: {background: {type: 'image', image: {src: pngUri}}}}]}, {provenance: 'references-only'}));
+  const imageOnly = unzipSync(await toPptx({slides: [{title: 'One', layout: 'title', design: {background: {type: 'image', src: pngUri}}}]}, {provenance: 'references-only'}));
   assert.equal(tagValue(dec.decode(imageOnly['ppt/tags/opfSlide1.xml'])).design, undefined, 'references-only stores no image sources');
   await assert.rejects(toPptx(structuredClone(source), {provenance: 'everything'}), {code: 'invalid-provenance-option'});
 }

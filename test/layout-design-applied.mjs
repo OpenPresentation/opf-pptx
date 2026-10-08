@@ -17,7 +17,7 @@ const embedLayout = record => ({custom: {layouts: {'design-layout': record}}});
 
 // FA-17: a layout record's `design` is the lowest-precedence default of one merge (slide design, deck design,
 // layout design, engine default) that core resolves once (SlideComposition.design). The preview and the export
-// read that result, so a layout that sets titleAlignment, contentAlignment, contentBox or imageFill is drawn the
+// read that result, so a layout that sets titleAlignment, contentAlignment, contentBox or imageFit is drawn the
 // same way in both, with no copy of the layout design in the deck or the slide.
 const decoder = new TextDecoder();
 const native = {left: 'l', center: 'ctr', right: 'r'}, anchor = {start: 'l', middle: 'ctr', end: 'r'};
@@ -61,7 +61,7 @@ assert.deepEqual(await cards(deckOf({contentBox: true}, {})), {svg: 1, native: t
 assert.deepEqual(await cards(deckOf({contentBox: true}, {}, {contentBox: false})), {svg: 0, native: false}, 'deck contentBox false removes it');
 assert.deepEqual(await cards(deckOf({contentBox: false}, {design: {contentBox: true}})), {svg: 1, native: true}, 'slide contentBox true adds it');
 
-// imageFill: crop covers the region (a slice in the preview, a srcRect in the export); fit shows the whole image.
+// imageFit: cover covers the region (a slice in the preview, a srcRect in the export); contain shows the whole image.
 const wide = await readFile(new URL('fixtures/images/wide.png', import.meta.url));
 const image = {src: `data:image/png;base64,${wide.toString('base64')}`, alt: 'Wide image'};
 const fill = async deck => {
@@ -71,10 +71,11 @@ const fill = async deck => {
   return {preview: attr(preview, 'preserveAspectRatio'), cropped: /<a:srcRect\b/.test(decoder.decode(output['ppt/slides/slide1.xml']))};
 };
 const imageDeck = (design, slide = {}, deckDesign = {}) => ({design: {fontScheme: 'roboto', ...deckDesign}, catalogs: embedLayout({...layout(design), placeholders: [{type: 'title'}, {type: 'image'}]}), slides: [{layout: 'design-layout', title: 'Image', image, ...slide}]});
-assert.deepEqual(await fill(imageDeck({imageFill: 'crop'})), {preview: 'xMidYMid slice', cropped: true}, 'layout crop');
-assert.deepEqual(await fill(imageDeck({imageFill: 'crop'}, {}, {imageFill: 'fit'})), {preview: 'xMidYMid meet', cropped: false}, 'deck fit over layout crop');
-assert.deepEqual(await fill(imageDeck({imageFill: 'fit'}, {design: {imageFill: 'crop'}})), {preview: 'xMidYMid slice', cropped: true}, 'slide crop over layout fit');
-assert.deepEqual(await fill(imageDeck({})), {preview: 'xMidYMid meet', cropped: false}, 'engine default fit');
+assert.deepEqual(await fill(imageDeck({imageFit: 'cover'})), {preview: 'xMidYMid slice', cropped: true}, 'layout cover');
+assert.deepEqual(await fill(imageDeck({imageFit: 'cover'}, {}, {imageFit: 'contain'})), {preview: 'xMidYMid meet', cropped: false}, 'deck contain over layout cover');
+assert.deepEqual(await fill(imageDeck({imageFit: 'contain'}, {design: {imageFit: 'cover'}})), {preview: 'xMidYMid slice', cropped: true}, 'slide cover over layout contain');
+// 0.15: cover is the engine default fit.
+assert.deepEqual(await fill(imageDeck({})), {preview: 'xMidYMid slice', cropped: true}, 'engine default cover');
 
 // Re-import keeps the layout record and writes no design the deck never had: the layout default still applies.
 const reimported = await fromPptx(await toPptx(deckOf({titleAlignment: 'right', contentAlignment: 'center'}, {}), {seed: 1, timestamp: '2026-01-01T00:00:00Z', zipDate: '2026-01-01T00:00:00Z'}));
@@ -84,4 +85,4 @@ assert.equal(reimported.design?.titleAlignment, undefined);
 assert.deepEqual(reimported.catalogs?.custom?.layouts?.['design-layout']?.design, {titleAlignment: 'right', contentAlignment: 'center'});
 assert.equal(resolvePresentation(reimported, {}).slides[0].geometry.items.find(item => item.field === 'title').alignment, 'right', 'the re-imported layout still aligns the title');
 
-console.log(`Layout design applied: ${compared} text lines agree between preview and export for layout-only, deck-over-layout and slide-over-deck alignment; contentBox and imageFill follow the same merge; re-import keeps the layout record.`);
+console.log(`Layout design applied: ${compared} text lines agree between preview and export for layout-only, deck-over-layout and slide-over-deck alignment; contentBox and imageFit follow the same merge; re-import keeps the layout record.`);
