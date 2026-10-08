@@ -12,9 +12,9 @@ const sourceImage=doc=>(doc.slides[0].image ?? doc.slides[0].blocks?.find(block=
 const imageBytes=doc=>Buffer.from(sourceImage(doc).src.split(',')[1],'base64');
 const raw=bytes=>sharp(bytes).autoOrient().ensureAlpha().raw().toBuffer({resolveWithObject:true});
 let cases=0;
-for(const imageFill of ['fit','crop'])for(let orientation=1;orientation<=8;orientation++) {
+for(const imageFit of ['contain','cover'])for(let orientation=1;orientation<=8;orientation++) {
  const source=await readFile(new URL(`fixtures/images/orientation-${orientation}.jpg`,import.meta.url));
- const deck={design:{imageFill},slides:[{image:{src:'data:image/jpeg;base64,'+source.toString('base64'),alt:'Orientation specimen'}}]};
+ const deck={design:{imageFit},slides:[{image:{src:'data:image/jpeg;base64,'+source.toString('base64'),alt:'Orientation specimen'}}]};
  const native=await toPptx(deck),before=Buffer.from(native),reports=[];
  const imported=await fromPptx(native,{onDiagnostic:d=>reports.push(d)}),bytes=imageBytes(imported);
  assert.deepEqual(bytes,source,'Restore exact source JPEG metadata without recompressing pixels');
@@ -23,7 +23,7 @@ for(const imageFill of ['fit','crop'])for(let orientation=1;orientation<=8;orien
  assert.deepEqual(await raw(bytes),await raw(source),'Decoded pixels retain source orientation');
  assert.equal(validate(imported, {only: ['format']}).valid,true);assert.deepEqual(Buffer.from(native),before,'Input PPTX is unchanged');
  assert.deepEqual(imageBytes(await fromPptx(await toPptx(imported))),source,'Repeated image round-trip stays stable');
- assert.equal(reports.length,imageFill==='crop'?1:0);
+ assert.equal(reports.length,imageFit==='cover'?1:0);
  if(reports.length){assert.equal(reports[0].code,'unsupported-image-crop');assert.equal(reports[0].path,'slides.0.pictures.0');}
  cases++;
 }

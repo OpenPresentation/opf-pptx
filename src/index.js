@@ -2256,11 +2256,13 @@ async function addBackgroundImage(slide, presentation, background, slideIndex, s
   const authored = authoredAt(presentation, background.path, slideContext);
   const effects = imageEffects({ opacity: background.opacity }, slideContext);
   let owner = 'background', overlayName = backgroundOverlayName(slidePath);
-  if (typeof background.alt === 'string' && background.alt) {
+  // The background's own alt text overrides a referenced asset's.
+  const alt = background.alt ?? assetAlt(background.src, presentation);
+  if (typeof alt === 'string' && alt) {
     const treatment = isPlainObject(authored) ? Object.fromEntries(BACKGROUND_IMAGE_KEYS.filter(key => key !== 'overlay' && authored[key] !== undefined).map(key => [key, structuredClone(authored[key])])) : {};
     const name = await addImagePicture(slide, presentation, background.src, box, background.path, { ...slideContext, slidePath }, options, {
       fit: background.fit, focus: background.focus, effects: background.opacity === undefined ? null : effects, shrink: false,
-      treatment, alt: background.alt, role: 'background', objectName: backgroundImageName(slidePath)
+      treatment, alt, role: 'background', objectName: backgroundImageName(slidePath)
     });
     if (!name) {
       options.onDiagnostic?.({code: 'unresolved-asset', path: background.path, message: 'The background image needs an embedded raster, a declared asset or a host imageResolver; the slide background color was exported instead.'});
