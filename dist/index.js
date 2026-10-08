@@ -57,6 +57,7 @@ import { XMLParser } from "fast-xml-parser";
 import {
   hasContentVariables,
   isTemplate,
+  OPFCatalogsOptionError,
   resolveSlideContext as resolveCoreSlideContext,
   resolveVariables,
   validate
@@ -217,6 +218,12 @@ const CHART_COLORS = [
   "64748B"
 ];
 
+// The `catalogs` option is core's registered catalogs (`Catalog[]`). A value that is no array is core's
+// OPFCatalogsOptionError (code `invalid-catalogs`) up front; core checks each entry where it resolves a reference.
+function checkCatalogs(entry, catalogs) {
+  if (catalogs !== undefined && !Array.isArray(catalogs)) throw new OPFCatalogsOptionError(entry, `got ${catalogs === null ? 'null' : typeof catalogs}`);
+}
+
 export async function toPptx(input, options = {}) {
   if (options.imageFormat !== undefined && !['compatible', 'preserve'].includes(options.imageFormat)) {
     throw new OPFPptxError('invalid-image-format', 'imageFormat must be compatible or preserve.', {path: 'options.imageFormat'});
@@ -227,9 +234,7 @@ export async function toPptx(input, options = {}) {
   // OPF 0.15 (FA-23): the host's registered catalogs (core `Catalog[]`, matched by `source`, never fetched) reach every core
   // call that resolves a reference. Strict export (`strictReferences`, default `strictAssets`) fails on a reference that
   // resolves nowhere instead of composing automatically or drawing with the engine default.
-  if (options.catalogs !== undefined && !Array.isArray(options.catalogs)) {
-    throw new OPFPptxError('invalid-catalogs', 'catalogs must be an array of registered catalogs ({source, layouts?, themes?, ...}).', {path: 'options.catalogs'});
-  }
+  checkCatalogs('toPptx', options.catalogs);
   options = {...options, strictReferences: options.strictReferences ?? options.strictAssets === true};
   const presentation = resolveTemplateInput(parseInput(input), options);
   assertValidBoundary(presentation);
@@ -297,6 +302,11 @@ export async function toPptx(input, options = {}) {
   // Document references and metadata tags (FF-32, docs/document-roundtrip.md).
   context.documentProvenance = options.provenance === false ? null : documentProvenance(presentation, {
     mode: options.provenance ?? "full",
+    // Core's provenance of each slide's resolved layout (resolveSlideContext().resolved.provenance.layout) with its record.
+    layoutOf: index => {
+      const {resolved} = coreContext(presentation, index, options);
+      return resolved.provenance?.layout && resolved.layout ? {...resolved.provenance.layout, record: resolved.layout} : undefined;
+    },
     report: diagnostic => options.onDiagnostic?.(diagnostic)
   });
   context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic, {catalogs: options.catalogs});
@@ -342,9 +352,7 @@ export async function fromPptx(input, options = {}) {
   const signalLimits = normalizeSignalOptions(options.signals, (code, message, details) => new OPFPptxError(code, message, details));
   // OPF 0.15 (FA-23): catalogs the host registered (core `Catalog[]`, never fetched). Theme and colour-scheme recovery and
   // stored layout ids resolve against them; with none, a colour scheme imports inline and no theme id is recovered.
-  if (options.catalogs !== undefined && !Array.isArray(options.catalogs)) {
-    throw new OPFPptxError('invalid-catalogs', 'catalogs must be an array of registered catalogs ({source, layouts?, themes?, ...}).', {path: 'options.catalogs'});
-  }
+  checkCatalogs('fromPptx', options.catalogs);
   const entries = readPptxZip(input);
   const presentationDoc = parseRequiredXml(entries, "ppt/presentation.xml");
   const presentationRoot = presentationDoc["p:presentation"];

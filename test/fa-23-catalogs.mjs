@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readdirSync, readFileSync} from 'node:fs';
 import {strFromU8, unzipSync} from 'fflate';
-import {resolveSlideContext} from '@openpresentation/opf';
+import {OPFCatalogsOptionError, resolveSlideContext} from '@openpresentation/opf';
 import {defaultCatalog} from '@openpresentation/opf/catalog';
 import {fromPptx, toPptx} from '../dist/index.js';
 
@@ -145,8 +145,18 @@ const hostDeck = {name: 'Catalogs', catalogs: {acme: {source: ACME}}, slides};
   assert.equal(typeof elsewhere.design.colorScheme, 'object');
 }
 
-// 7. The removed 0.14 option shapes are refused, not reinterpreted.
-await assert.rejects(toPptx({name: 'Old', slides: [{title: 'One'}]}, {catalogs: {layouts: []}}), error => error.code === 'invalid-catalogs' && error.path === 'options.catalogs');
-await assert.rejects(fromPptx(await toPptx({name: 'Old', slides: [{title: 'One'}]}), {catalogs: {layouts: {records: []}}}), error => error.code === 'invalid-catalogs');
+// 7. The removed 0.14 option shapes are refused, not reinterpreted: core's OPFCatalogsOptionError (code invalid-catalogs),
+// for a value that is no array and for an entry that is no registered catalog.
+const catalogsError = error => error instanceof OPFCatalogsOptionError && error.code === 'invalid-catalogs';
+await assert.rejects(toPptx({name: 'Old', slides: [{title: 'One'}]}, {catalogs: {layouts: []}}), catalogsError);
+await assert.rejects(fromPptx(await toPptx({name: 'Old', slides: [{title: 'One'}]}), {catalogs: {layouts: {records: []}}}), catalogsError);
+await assert.rejects(toPptx({name: 'Old', slides: [{title: 'One', layout: 'two-column'}]}, {catalogs: [{layouts: [{id: 'two-column'}]}]}), catalogsError);
 
-console.log('FA-23 catalogs passed: no exporter-side catalog lookup, host-only layouts export like embedded ones, unresolved references warn and fail strict export, default:false, in-group nested references, import recovery against registered catalogs and BCP-47 language import.');
+// 8. A reference with an undeclared catalog prefix (foo:hero with no catalogs.foo) is a format error (opf/undeclared-catalog):
+// export refuses the document at the boundary, before any composition, whatever the strict policy.
+for (const strictReferences of [false, true]) {
+  await assert.rejects(toPptx({name: 'Undeclared', slides: [{title: 'One', layout: 'foo:hero'}]}, {catalogs: [defaultCatalog], strictReferences}),
+    error => error.code === 'invalid-opf' && error.findings.some(finding => finding.ruleId === 'opf/undeclared-catalog' && finding.path === '/slides/0/layout'));
+}
+
+console.log('FA-23 catalogs passed: no exporter-side catalog lookup, host-only layouts export like embedded ones, unresolved references warn and fail strict export, default:false, in-group nested references, import recovery against registered catalogs, BCP-47 language import, OPFCatalogsOptionError and undeclared catalogs refused.');

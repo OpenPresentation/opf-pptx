@@ -456,7 +456,7 @@ const assetReferences = value => [...collectStrings(value)].filter(item => item.
  * catalog records those ids need. It stores no organization, speaker,
  * free-text metadata, slide ids or assets.
  */
-export function documentProvenance(presentation, {mode = 'full', report = () => {}} = {}) {
+export function documentProvenance(presentation, {mode = 'full', layoutOf = () => undefined, report = () => {}} = {}) {
   const referencesOnly = mode === 'references-only';
   const design = {}, metadata = {};
   for (const key of DESIGN_FIELDS) {
@@ -478,8 +478,9 @@ export function documentProvenance(presentation, {mode = 'full', report = () => 
   const slides = presentation.slides.map((slide, index) => {
     const record = {v: 1, slide: index};
     for (const key of [...(referencesOnly ? [] : ['id', ...SLIDE_METADATA]), 'beat', ...SLIDE_STRUCTURE]) if (own(slide, key)) record[key] = clone(slide[key]);
-    // The record the document embeds for the slide's layout reference, with the group it resolved in.
-    const found = typeof slide.layout === 'string' ? resolveReference(presentation, 'layouts', slide.layout, {catalogs: []}) : undefined;
+    // The record the document embeds for the slide's layout reference, with the group it resolved in: core's provenance of
+    // the slide's resolved layout (resolveSlideContext().resolved.provenance.layout), passed in by the exporter.
+    const found = typeof slide.layout === 'string' ? layoutOf(index) : undefined;
     // The layout record is a catalog record. 'references-only' stores it only
     // when it names no image, file or URL; neither mode stores the assets it
     // references (as before FF-29, catalog records never pulled in assets).
