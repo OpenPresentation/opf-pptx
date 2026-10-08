@@ -374,7 +374,7 @@ function documentReferences(doc) {
 // The embedded catalogs a set of references needs: each referenced record once, in the group it resolves in, plus the
 // records it references (a theme's colour and font schemes, resolved in the theme's group first), and every group
 // declaration (its `source`, or `default: false`). Only embedded records are kept; nothing resolves in a host catalog here.
-function referencedCatalogs(catalogs, references) {
+export function referencedCatalogs(catalogs, references) {
   if (!object(catalogs)) return undefined;
   const document = {catalogs};
   const result = {};
@@ -406,7 +406,8 @@ function referencedCatalogs(catalogs, references) {
 // An embedded record carries no `$schema` or `id` (its key is the id): both are
 // supplied for validation only; the authored record is never changed.
 function validLayoutRecord(value, id) {
-  try { return object(value) && validateCatalogRecord('layouts', {...value, $schema: LAYOUT_SCHEMA, id}).valid; }
+  // An authored `$schema` or `id` is validated as it is (a foreign `$schema` fails).
+  try { return object(value) && validateCatalogRecord('layouts', {$schema: LAYOUT_SCHEMA, id, ...value}).valid; }
   catch { return false; }
 }
 
@@ -1212,9 +1213,11 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
  * is unchanged. Each layout reference resolves to exactly one record, in the
  * order core resolves references (embedded records before registered ones):
  * - the record the stored document catalogs embed (OPF_DOCUMENT_V1);
- * - the first restored slide's own `layoutRecord`, embedded under its group by
- *   `finalize` (a slide whose group the stored document declares with another
- *   source cannot carry its record there);
+ * - a slide's own `layoutRecord`, embedded under its group by `finalize` (a
+ *   slide whose group the stored document declares with another source cannot
+ *   carry its record there). When the reference also resolves in a registered
+ *   catalog, a slide's record is used only when every restored slide with that
+ *   reference carries the same one, so it never changes another slide's layout;
  * - a record of the host's registered catalogs (`hostCatalogs`), which the
  *   imported document then references without embedding it.
  * A slide whose own record disagrees with the chosen one keeps its content
@@ -1222,7 +1225,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
  * that resolves nowhere is not restored (`unresolved-layout-reference`), so
  * the imported document always renders.
  */
-function layoutIntent(storedCatalogs, slideRecords, entries, group, report, hostCatalogs) {
+export function layoutIntent(storedCatalogs, slideRecords, entries, group, report, hostCatalogs) {
   const stored = {catalogs: object(storedCatalogs) ? storedCatalogs : {}};
   const declared = name => Object.hasOwn(stored.catalogs, name) ? stored.catalogs[name] : undefined;
   const owns = slideRecords.map(entry => {
@@ -1251,9 +1254,10 @@ function layoutIntent(storedCatalogs, slideRecords, entries, group, report, host
     const members = owns.filter(item => item?.structureMatch && item.layout === layout);
     const fromDocument = resolveReference(stored, 'layouts', layout, {catalogs: []});
     const first = members.find(item => item.own);
-    const fromHost = fromDocument || first ? undefined : resolveReference(stored, 'layouts', layout, {catalogs: Array.isArray(hostCatalogs) ? hostCatalogs : []});
+    const fromHost = fromDocument ? undefined : resolveReference(stored, 'layouts', layout, {catalogs: Array.isArray(hostCatalogs) ? hostCatalogs : []});
+    const agreed = first && members.every(item => item.own && same(item.own.record, first.own.record));
     if (fromDocument) resolved.set(layout, {record: fromDocument.record, source: 'document'});
-    else if (first) resolved.set(layout, {record: first.own.record, source: 'slides', add: first.own});
+    else if (first && (!fromHost || agreed)) resolved.set(layout, {record: first.own.record, source: 'slides', add: first.own});
     else if (fromHost) resolved.set(layout, {record: fromHost.record, source: 'host'});
   }
   const against = {document: 'the document', host: 'the registered catalog', slides: 'another slide'};
