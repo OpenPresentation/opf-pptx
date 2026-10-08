@@ -39,8 +39,9 @@ for (const fit of ['cover', 'contain', 'stretch', 'tile']) {
   assert.deepEqual([xfrm['a:off'].x, xfrm['a:off'].y, xfrm['a:ext'].cx, xfrm['a:ext'].cy].map(Number), [0, 0, emu(1280), emu(720)], `${fit}: full slide`);
   const fill = picture['p:blipFill'];
   if (fit === 'tile') assert.deepEqual(fill['a:tile'], {tx: '0', ty: '0', sx: '100000', sy: '100000', flip: 'none', algn: 'tl'});
-  if (fit === 'contain') assert.ok(Number(fill['a:srcRect'].l) < 0 && fill['a:srcRect'].t === '0', 'contain pads the picture over the canvas colour');
-  if (fit === 'cover') assert.ok(Number(fill['a:srcRect'].t) > 0 && fill['a:srcRect'].l === '0');
+  // A 2:1 picture on a 16:9 slide: contain pads above and below, cover crops the sides.
+  if (fit === 'contain') assert.ok(Number(fill['a:srcRect'].t) < 0 && fill['a:srcRect'].l === '0', 'contain pads the picture over the canvas colour');
+  if (fit === 'cover') assert.ok(Number(fill['a:srcRect'].l) > 0 && fill['a:srcRect'].t === '0');
   if (fit === 'stretch') assert.equal(fill['a:srcRect'], undefined);
   const diagnostics = [];
   const imported = await fromPptx(await toPptx(deck, {imageFormat: 'preserve', provenance: false}), {onDiagnostic: d => diagnostics.push(d)});

@@ -48,7 +48,8 @@ for (const [name,width,height] of fixtures) {
 // an image whose aspect ratio differs from the resource's original content.
 const png=await readFile(new URL('fixtures/images/tall.png',import.meta.url));
 let resolved=0;
-const hostDeck={assets:{photo:{src:'https://example.invalid/photo.jpg',mediaType:'image/png'}},slides:[{image:'asset:photo'}]};
+// Contained (0.15's default fit is cover), so the frame takes the aspect of the bytes the host returns.
+const hostDeck={design:{imageFit:'contain'},assets:{photo:{src:'https://example.invalid/photo.jpg',mediaType:'image/png'}},slides:[{image:'asset:photo'}]};
 const hostBytes=await toPptx(hostDeck,{imageFormat:"preserve",strictAssets:true,imageResolver:()=>{resolved++;return png;}});
 assert.equal(resolved,1);
 const hostXml=parser.parse(new TextDecoder().decode(unzipSync(hostBytes)['ppt/slides/slide1.xml']));
@@ -58,7 +59,7 @@ assert.ok(Math.abs(Number(hostFrame['@_cx'])/Number(hostFrame['@_cy'])-.5)<.0000
 for (const source of ['local','host-path','host-data']) {
  const local=fileURLToPath(new URL('fixtures/images/tall.png',import.meta.url));
  let calls=0;
- const result=await toPptx({slides:[{image:source==='local'?local:'https://example.invalid/image'}]},{imageFormat:"preserve",strictAssets:true,...(source==='local'?{}:{imageResolver:()=>{calls++;return source==='host-path'?{path:local}:{data:png,mediaType:'image/png'};}})});
+ const result=await toPptx({design:{imageFit:'contain'},slides:[{image:source==='local'?local:'https://example.invalid/image'}]},{imageFormat:"preserve",strictAssets:true,...(source==='local'?{}:{imageResolver:()=>{calls++;return source==='host-path'?{path:local}:{data:png,mediaType:'image/png'};}})});
  assert.equal(calls,source==='local'?0:1);
  const pic=find(parser.parse(new TextDecoder().decode(unzipSync(result)['ppt/slides/slide1.xml'])),'p:pic')[0];
  const ext=pic['p:spPr']['a:xfrm']['a:ext'];

@@ -110,7 +110,7 @@ for (const [label, [width, height]] of Object.entries(dimensions)) {
 // core's order (the headings, the placed blocks, the body).
 {
   const cases = [['background', 'OPF background slides.0', 'slides.0.design.background', overlay => ({ design: { background: { type: 'image', src: square, alt: 'Square', ...overlay } } })],
-    ...['left', 'right', 'top', 'bottom'].map(edge => [edge, 'OPF image 1', 'slides.0.blocks.0', overlay => ({ blocks: [{ type: 'image', image: square, placement: { edge }, ...overlay }, { type: 'text', text: 'Body' }] })])];
+    ...['left', 'right', 'top', 'bottom'].map(edge => [edge, 'OPF image 1', 'slides.0.blocks.0.image', overlay => ({ blocks: [{ type: 'image', image: square, placement: { edge }, ...overlay }, { type: 'text', text: 'Body' }] })])];
   for (const [position, pictureName, picturePath, slideOf] of cases) for (const overlay of [false, true]) {
     const deck = { design: { watermark: { src: wide, opacity: 0.2 } }, slides: [{ title: 'Layered', ...slideOf(overlay ? { overlay: { color: '#000000', opacity: 0.3 } } : {}) }] };
     const svg = renderSvg(deck, { trace: true })[0];

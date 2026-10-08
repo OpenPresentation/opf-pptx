@@ -32,7 +32,8 @@ const originalBuffer=Buffer.from(source);
 const direct=importImageOrientation(source,{rot:'5400000'});
 assert.deepEqual(source,originalBuffer,'Buffer input must not be mutated by metadata changes');
 assert.equal(rasterMetadata(direct).orientation,6);
-const base=await toPptx({slides:[{image:'data:image/jpeg;base64,'+source.toString('base64')}]});
+// 0.15's default fit is cover; contain keeps the picture uncropped, so the only report below is the orientation one.
+const base=await toPptx({design:{imageFit:'contain'},slides:[{image:'data:image/jpeg;base64,'+source.toString('base64')}]});
 // Edit actual native transforms. Pixel permutation is independent of EXIF
 // matrix lookup: mirror integer source pixels, then place a quarter-turn.
 const pixels=await raw(source);

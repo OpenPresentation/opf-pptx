@@ -1885,7 +1885,7 @@ async function addSlide(pptx, presentation, opfSlide, slideIndex, context, optio
   if (geometry.backgroundImage) await addBackgroundImage(slide, presentation, geometry.backgroundImage, slideIndex, slideContext, context, options);
   // RR-34: a captioned image's caption band follows its picture as tagged text boxes linked to the picture by name.
   const drawImage = async (item, itemContext) => {
-    const name = await addImageItem(slide, presentation, item, slideIndex, itemContext, context, options);
+    const name = await addImageItem(slide, presentation, item, slideIndex, itemContext, options);
     if (item.caption) addCaption(slide, item, name, itemContext, exportHelpers, (code, message) => new OPFPptxError(code, message, {path: item.caption.path}));
   };
   await addWatermark(slide, presentation, opfSlide, slideIndex, slideContext, context, options);

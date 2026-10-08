@@ -115,7 +115,7 @@ for (const [name, svg, raster, aspect] of [['wide', wide, widePng, 2], ['tall', 
 
 // ---- 3. Every place an image appears.
 {
-  const logoDeck = {design: {logo: wide, background: light, watermark: {src: square, opacity: 1}, footer: {left: {logo: true}}},
+  const logoDeck = {design: {logo: wide, imageFit: 'contain', background: light, watermark: {src: square, opacity: 1}, footer: {left: {logo: true}}},
     slides: [{title: 'Cover', layout: 'title'}, {title: 'Body', blocks: [{type: 'text', text: 'Copy'}, {type: 'image', image: {src: wide, alt: 'Wide'}}, {type: 'image', image: tall, placement: {edge: 'right'}}]}]};
   const {entries, diagnostics, bytes} = await open(logoDeck);
   assert.deepEqual(diagnostics.filter(item => item.code === 'unresolved-asset'), []);
@@ -162,7 +162,7 @@ for (const [name, svg, raster, aspect] of [['wide', wide, widePng, 2], ['tall', 
   const {entries, diagnostics, bytes} = await open(deck);
   const xml = slideXml(entries);
   assert.deepEqual(diagnostics.filter(item => item.code === 'svg-image-rasterized'), []);
-  const [image, watermark] = pictures(xml);
+  const watermark = pictures(xml).find(item => item.name === 'OPF watermark'), image = pictures(xml).find(item => /^OPF image \d+$/.test(item.name));
   assert.ok(watermark.svgEmbed && image.svgEmbed, 'both stay native SVG pictures');
   assert.match(watermark.xml, /<a:blip r:embed="rId\d+"><a:alphaModFix amt="30000"\/><a:extLst>/);
   assert.match(image.xml, /<a:blip r:embed="rId\d+"><a:grayscl\/><a:alphaModFix amt="50000"\/><a:extLst>/);
@@ -179,7 +179,7 @@ for (const [name, svg, raster, aspect] of [['wide', wide, widePng, 2], ['tall', 
   for (const treatment of [{recolor: {dark: '#102030', light: '#f0e0d0'}}, {shape: 'circle'}]) {
     const result = await open({design: {background: light}, slides: [{title: 'T', blocks: [{type: 'image', image: square, placement: {edge: 'left'}, ...treatment}]}]});
     assert.ok(!/svgBlip/.test(slideXml(result.entries)), `${Object.keys(treatment)}: raster`);
-    assert.deepEqual(result.diagnostics.filter(item => item.code === 'svg-image-rasterized').map(item => item.path), ['slides.0.blocks.0']);
+    assert.deepEqual(result.diagnostics.filter(item => item.code === 'svg-image-rasterized').map(item => item.path), ['slides.0.blocks.0.image']);
   }
   checked++;
 }

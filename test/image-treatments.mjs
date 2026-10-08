@@ -127,13 +127,14 @@ const full = { placement: { edge: 'right', size: 0.46, inset: true }, aspectRati
   const edited = { ...entries, [path]: new TextEncoder().encode(xml.replace(/( overlay"[\s\S]*?<a:alpha val=")\d+/, '$150000')) };
   const diagnostics = [];
   const imported = await fromPptx(zipSync(edited), { onDiagnostic: d => diagnostics.push(d) });
-  assert.equal(imported.slides[0].blocks[0].overlay, undefined);
-  assert.equal(imported.slides[0].blocks[0].shape, 'rounded');
+  const block = imported.slides[0].blocks.find(entry => entry.type === 'image');
+  assert.equal(block.overlay, undefined);
+  assert.equal(block.shape, 'rounded');
   assert.ok(diagnostics.some(d => d.code === 'invalid-image-provenance'));
   const recolored = { ...entries, [path]: new TextEncoder().encode(xml.replace('<a:alphaModFix amt="80000"/>', '<a:alphaModFix amt="60000"/>')) };
   const plain = await fromPptx(zipSync(recolored), { onDiagnostic: () => {} });
-  assert.equal(plain.slides[0].blocks[0].shape, undefined);
-  assert.equal(plain.slides[0].blocks[0].type, 'image');
+  const ordinary = plain.slides[0].blocks.find(entry => entry.type === 'image');
+  assert.equal(ordinary.shape, undefined);
   checked += 2;
 }
 
