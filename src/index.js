@@ -295,7 +295,6 @@ export async function toPptx(input, options = {}) {
   // Document references and metadata tags (FF-32, docs/document-roundtrip.md).
   context.documentProvenance = options.provenance === false ? null : documentProvenance(presentation, {
     mode: options.provenance ?? "full",
-    catalogs: options.catalogs,
     report: diagnostic => options.onDiagnostic?.(diagnostic)
   });
   context.scriptFonts = planScriptFonts(presentation, options.onDiagnostic, {catalogs: options.catalogs});
