@@ -107,19 +107,39 @@ export function parseDate(text, pattern) {
   return formatDate(iso, pattern) === text ? iso : null;
 }
 
-export function formatSlideNumber(format, current, total) {
-  if (typeof format !== 'string' || !format.includes('{current}') || (format.includes('{total}') && !Number.isSafeInteger(total))) return null;
-  return format.split(/(\{current\}|\{total\})/).map(piece => piece === '{current}' ? String(current) : piece === '{total}' ? String(total) : piece).join('');
-}
-
 /**
- * Live field ranges for one accepted furniture text part. Core >= FF-27 supplies
- * `part.fields`; earlier cores only supply a bare generated number, which is
- * still a whole slide-number field.
+ * Live field ranges for one accepted furniture text part: core's `part.fields` (one `slideNumber` per substituted
+ * `{{slide.number}}`, one `date` for a current date), as half-open UTF-16 offsets into `part.text`.
  */
 export function furniturePartFields(part) {
-  if (Array.isArray(part.fields)) return part.fields;
-  return part.field === 'slideNumber' && /^\d+$/.test(part.text) ? [{type: 'slideNumber', start: 0, end: part.text.length}] : [];
+  return Array.isArray(part.fields) ? part.fields : [];
+}
+
+/** True when a core text part carries at least one slide-number field. */
+export const hasSlideNumberField = part => furniturePartFields(part).some(field => field.type === 'slideNumber');
+
+export const SLIDE_NUMBER_TOKEN = '{{slide.number}}';
+// The slide-scoped tokens core substitutes per slide (core SLIDE_TOKEN_BODY): typed text that spells one must be
+// escaped, or the next export would turn it into a live value.
+const literalSlideToken = /\{\{(?=\s*(?:slide(?:\.[A-Za-z0-9_-]+){1,2}|deck\.slideCount)\s*(?:\|[^{}]*)?\}\})/g;
+const slideTokenUsed = /\{\{\s*(?:slide\.|deck\.slideCount)/;
+/** True when a string mentions a slide-scoped token (escaped or not). */
+export const mentionsSlideToken = text => typeof text === 'string' && slideTokenUsed.test(text);
+export const escapeSlideTokens = text => text.replace(literalSlideToken, '\\{{');
+
+/**
+ * The zone `text` a native footer or header line stands for: every native slide-number field (`{type, text, start}`,
+ * `start` an offset into `text`) becomes `{{slide.number}}`, and typed words that spell a slide-scoped token stay
+ * literal. A field whose words are not at its recorded offset is left as the words it shows.
+ */
+export function slideNumberTemplate(text, nativeFields) {
+  let cursor = 0, out = '';
+  for (const field of [...nativeFields].filter(field => field.type === 'slidenum').sort((a, b) => a.start - b.start)) {
+    if (!(field.start >= cursor) || text.slice(field.start, field.start + field.text.length) !== field.text) continue;
+    out += escapeSlideTokens(text.slice(cursor, field.start)) + SLIDE_NUMBER_TOKEN;
+    cursor = field.start + field.text.length;
+  }
+  return out + escapeSlideTokens(text.slice(cursor));
 }
 
 /** Native <a:fld> type for a core field, or null when the value must stay fixed text. */
