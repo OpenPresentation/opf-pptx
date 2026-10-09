@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {strFromU8, unzipSync, zipSync} from 'fflate';
-import {composeSlide} from '@openpresentation/opf/composition';
+import {crc32, deflateSync} from 'node:zlib';
+import {FURNITURE_GAP, FURNITURE_IMAGE_SHARE, composeSlide} from '@openpresentation/opf/composition';
 import {resolveSlideContext} from '@openpresentation/opf';
 import {fromPptx, toPptx} from './helpers/default-catalog.mjs';
 
@@ -15,6 +16,18 @@ const image = async name => new Uint8Array(await readFile(new URL(`./fixtures/im
 const uri = (bytes, type = 'image/png') => `data:${type};base64,${Buffer.from(bytes).toString('base64')}`;
 const bytes = {wide: await image('wide.png'), tall: await image('tall.png'), square: await image('square.png'), jpg: await image('wide.jpg')};
 const wide = uri(bytes.wide), tall = uri(bytes.tall), square = uri(bytes.square), jpg = uri(bytes.jpg, 'image/jpeg');
+// A valid flat RGB PNG of the given pixel size.
+const flatPng = (width, height) => {
+  const chunk = (type, data) => {
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0); out.write(type, 4, 'latin1'); data.copy(out, 8);
+    out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'latin1'), data])), 8 + data.length);
+    return out;
+  };
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x33)]);
+  return uri(Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(Array.from({length: height}, () => row)))), chunk('IEND', Buffer.alloc(0))]));
+};
 const light = {type: 'solid', color: '#FFFFFF'}, dark = {type: 'solid', color: '#0B1220'};
 const FIXED = {seed: 1, timestamp: '2026-01-01T00:00:00Z'};
 
@@ -194,6 +207,33 @@ const organization = {id: 'acme', name: 'Acme', role: 'primary', logo: {full: {o
   checked++;
 }
 
+// ---- A wide logo beside text is capped at FURNITURE_IMAGE_SHARE of the zone (core); the picture is fitted inside that box
+// with its proportions, and the slide's footer placeholder starts after it at the text's natural width.
+{
+  const wordmark = flatPng(400, 50);
+  const deck = {organization: {id: 'acme', name: 'Acme', logo: {full: wide, wordmark}}, design: {background: light, footer: {left: {image: 'var:organization.logo.wordmark', text: 'Confidential'}, right: {text: '{{slide.number}}'}}}, slides: [{title: 'One', text: 'Body.'}]};
+  const {entries, bytes: output, diagnostics} = await exportDeck(deck);
+  assert.deepEqual(codes(diagnostics, 'text-overflow', 'unresolved-content', ...PROBLEMS), []);
+  const parts = geometry(deck, 0).furniture.parts, zone = resolveSlideContext(deck, 0).options.width * .26;
+  const logo = parts.find(part => part.type === 'image'), text = parts.find(part => part.field === 'text' && part.zone === 'left');
+  near(logo.box.width, zone * FURNITURE_IMAGE_SHARE, 'the 8:1 logo is capped at its share of the zone', .01);
+  near(text.box.x, logo.box.x + logo.box.width + FURNITURE_GAP, 'the text follows the capped logo', .01);
+  const [picture] = pictures(slideXml(entries, 0)).filter(entry => entry.name.startsWith('OPF image'));
+  assert.ok(picture, 'the logo is drawn');
+  assert.ok(picture.x >= logo.box.x - .75 && picture.x + picture.w <= logo.box.x + logo.box.width + .75, `the picture stays inside the capped box: ${picture.x}+${picture.w}`);
+  assert.ok(picture.y >= logo.box.y - .75 && picture.y + picture.h <= logo.box.y + logo.box.height + .75, 'and inside its height');
+  near(picture.w / picture.h, 8, 'with its proportions (fitted, not stretched)', .05);
+  const placeholder = [...slideXml(entries, 0).matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map(match => match[0]).find(shape => /<p:ph type="ftr"/.test(shape));
+  const box = placeholder.match(/<a:off x="(-?\d+)" y="(-?\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"\/>/).slice(1).map(Number);
+  near(box[0] / 9525, text.box.x, 'placeholder x after the capped logo'); near(box[2] / 9525, text.box.width, 'placeholder width');
+  assert.ok(box[0] / 9525 >= picture.x + picture.w, 'the placeholder does not overlap the picture');
+  const reports = [];
+  const imported = await fromPptx(output, {onDiagnostic: item => reports.push(item)});
+  assert.deepEqual(imported.design.footer, deck.design.footer, 'the wordmark reference, text and slide number return');
+  assert.deepEqual(codes(reports, ...PROBLEMS), []);
+  checked++;
+}
+
 // ---- A changed or foreign picture is an ordinary image; so is every logo when the organization is not stored.
 {
   const deck = {organization, design: {background: light, footer: {left: {image: 'var:organization.logo.icon'}}}, slides: [{title: 'One', text: 'Body.'}, {title: 'Two', text: 'Body.'}]};
@@ -237,4 +277,4 @@ const organization = {id: 'acme', name: 'Acme', role: 'primary', logo: {full: {o
   checked++;
 }
 
-console.log(`Organization logos passed: ${checked} groups (onLight/onDark footer logo per slide, partner logo, design.logo false, the cover's full logo, row layout and native placeholders, changed and foreign pictures, an undrawn logo).`);
+console.log(`Organization logos passed: ${checked} groups (onLight/onDark footer logo per slide, partner logo, design.logo false, the cover's full logo, row layout and native placeholders, a wide logo capped beside text, changed and foreign pictures, an undrawn logo).`);
