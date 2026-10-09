@@ -929,16 +929,17 @@ export function slideListBreaks(entries, path, root, rels) {
 }
 
 /**
- * The organizations the stored document record (OPF_DOCUMENT_V1) names, as {id, name}. Furniture import reads it before the
- * slides: a socials part belongs to an organization by id, and no furniture text shows the organization's name any more.
- * An unreadable or missing record names none.
+ * The authoring metadata the stored document record (OPF_DOCUMENT_V1) holds (organization, speaker, ...), or {} when it is missing
+ * or unreadable. Furniture import reads it before the slides: a socials part belongs to an organization by id, and a stored
+ * header or footer text with built-in variables ({{organization.name}}) is drawn from it. Read only; nothing is restored here.
  */
-export function storedOrganizations(entries, presentationRoot, presentationRels) {
+export function storedMetadata(entries, presentationRoot, presentationRels) {
   try {
     const found = readTag(entries, presentationRoot?.['p:custDataLst'], presentationRels, DOCUMENT_TAG);
-    if (found.missing) return [];
-    return array(validateDocument(found.value).metadata?.organization).filter(item => object(item) && typeof item.id === 'string' && typeof item.name === 'string').map(item => ({id: item.id, name: item.name}));
-  } catch { return []; }
+    if (found.missing) return {};
+    const metadata = validateDocument(found.value).metadata;
+    return object(metadata) ? metadata : {};
+  } catch { return {}; }
 }
 
 /**

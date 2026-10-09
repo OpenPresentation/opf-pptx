@@ -139,7 +139,7 @@ Each stored reference records the native values it produced. Those values are re
 
 Authoring metadata (`filename` and `extensions` included), `design.logo`, slide `id`, `beat` and `extensions` have no native counterpart and are restored from the stored value; `design.logo` after its media and asset references resolve.
 
-- The organization's linked socials that current furniture shows win over the stored ones. No furniture text names the organization or the speaker any more (`{{organization.name}}` and `{{speaker.name}}` resolve to words before export), so both come entirely from the stored record.
+- The organization's linked socials that current furniture shows win over the stored ones. A header or footer text such as `{{organization.name}}` is stored as authored and returns as the token while the stored metadata draws the words now on the slide; no furniture part shows the organization or the speaker any more (`{{organization.name}}` and `{{speaker.name}}` resolve to words before export), so both come entirely from the stored record.
 - If slides disagree on the linked social profiles, the footer falls back to its current text with `invalid-furniture-provenance` and the stored organization is restored as stored.
 - A metadata property whose `asset:` reference no longer resolves is left out, with `unresolved-asset-reference` at that path (for example `organization.logo`).
 - A design reference that needs an unavailable asset or media part is not restored, with `unresolved-asset-reference`.

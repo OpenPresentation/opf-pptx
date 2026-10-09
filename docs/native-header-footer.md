@@ -113,16 +113,23 @@ The footer manifest marks such a part with `ph` (`dt`, `ftr` or `sldNum`). A sli
 9. (FA-31) A footer `text` with a slide number is the whole `sldNum` placeholder, words included (`Page 3 of 12`): the dialog's
    Slide number checkbox then adds or removes the whole text, and the dialog never rewrites its words. A zone `text` with two
    numbers is still one `sldNum` placeholder with two fields.
-10. (FA-31) Furniture provenance stores the authored `text` of a zone that mentions a slide-scoped token (`templates` in the
-    slide manifest, beside `formats`; older importers ignore the key). Import restores it only while that text, drawn for this
-    slide's number, the deck's slide count and its section in PowerPoint's section list, equals the words now on the slide. If the
-    words were edited or the slide moved, the current words import with each native slide-number field as `{{slide.number}}`
-    (typed words that spell a token are escaped), so a moved slide keeps a live number and an edit is never overwritten.
+10. (FA-31) Furniture provenance stores the authored `text` of a zone whose `{{ }}` tokens are all built-in variables
+    (`deck.*`, `speaker.*`, `speakers`, `organization.*`, `slide.*`, `deck.slideCount`), taken from the document as given to
+    `toPptx`, before the deck-wide pass resolves them (`templates` in the slide manifest, beside `formats`; older importers
+    ignore the key). Import restores it only while that text, drawn for this slide, equals the words now on the slide: the
+    deck-wide built-ins are resolved with core's `resolveVariables` from the stored organization and speakers and the observed
+    name, description and author, then the slide's number, the deck's slide count and its section in PowerPoint's section list. If
+    the words were edited, the metadata changed or the slide moved, the current words import with each native slide-number
+    field as `{{slide.number}}` (typed words that spell a token are escaped), so a moved slide keeps a live number and an edit is
+    never overwritten. Without the stored document record (`provenance: false`, another tool) there is no metadata to draw from,
+    so a `{{organization.name}}` zone imports as its words.
 11. (FA-31) Social profiles belong to the organization the manifest names by id, and no furniture text shows an organization's
     name any more, so only the stored document record can supply it; without the record the profile lines import as ordinary
     text with `invalid-furniture-provenance`.
 12. (FA-31) The authoring flags (`organization`, `speaker`, `section`, `slideNumber`, `slideNumberFormat`) are gone with no alias:
-    `{{organization.name}}`, `{{speaker.name}}` and `{{customer}}` resolve before export like any string and import as the words.
+    `{{organization.name}}`, `{{speaker.name}}` and `{{customer}}` resolve before export like any string. A text that also uses
+    a user variable (`{{customer}}`) is not stored: the filled deck is what round-trips, so its words import (a slide-scoped token in
+    it still returns as a token, from the filled text).
 
 ## Not covered
 

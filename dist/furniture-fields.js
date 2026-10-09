@@ -125,6 +125,18 @@ const literalSlideToken = /\{\{(?=\s*(?:slide(?:\.[A-Za-z0-9_-]+){1,2}|deck\.sli
 const slideTokenUsed = /\{\{\s*(?:slide\.|deck\.slideCount)/;
 /** True when a string mentions a slide-scoped token (escaped or not). */
 export const mentionsSlideToken = text => typeof text === 'string' && slideTokenUsed.test(text);
+const anyToken = /(\\)?\{\{\s*([^{}|]*?)\s*(?:\|[^{}]*)?\}\}/g;
+const builtinName = /^(?:speakers|(?:deck|speaker|organization|slide)(?:\.[A-Za-z0-9_-]+){1,2})$/;
+/**
+ * True when a zone text uses {{ }} and every unescaped token in it is a built-in variable (core's pattern: deck.*, speaker.*,
+ * speakers, organization.*, slide.*, deck.slideCount). Such an authored text is stored in the furniture manifest because the deck-wide
+ * pass resolves its built-ins before export; a text with a user variable ({{customer}}) is not: the filled deck is what round-trips.
+ */
+export function isBuiltinTemplate(text) {
+  if (typeof text !== 'string' || !text.includes('{{')) return false;
+  for (const match of text.matchAll(anyToken)) if (!match[1] && !builtinName.test(match[2])) return false;
+  return true;
+}
 export const escapeSlideTokens = text => text.replace(literalSlideToken, '\\{{');
 
 /**

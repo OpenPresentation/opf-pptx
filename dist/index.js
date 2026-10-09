@@ -27,7 +27,7 @@ import {attachQuoteTags,quoteManifest,importQuoteGroups,quotePhotoName} from './
 import {attachFurnitureTags, furnitureManifest, importFurniture, manifestPartIndex, staticDateFallback} from './furniture-provenance.js';
 import {restoreRunColors} from './run-colors.js';
 import {joinWrappedText} from './content-topology.js';
-import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance, joinAuthors, splitAuthors, slideListBreaks, storedOrganizations, DEFAULT_AUTHOR} from './document-provenance.js';
+import {applyDocumentProvenance, attachDocumentProvenance, documentProvenance, recordContentTopology, restoreDocumentProvenance, joinAuthors, splitAuthors, slideListBreaks, storedMetadata, DEFAULT_AUTHOR, DEFAULT_TITLE} from './document-provenance.js';
 import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './sections.js';
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, nativePlaceholderForPart, writeNativeMasters} from './native-furniture.js';
@@ -59,6 +59,7 @@ import {
   isTemplate,
   OPFCatalogsOptionError,
   resolveSlideContext as resolveCoreSlideContext,
+  resolveSlideVariables,
   resolveVariables,
   validate
 } from "@openpresentation/opf";
@@ -236,7 +237,9 @@ export async function toPptx(input, options = {}) {
   // resolves nowhere instead of composing automatically or drawing with the engine default.
   checkCatalogs('toPptx', options.catalogs);
   options = {...options, strictReferences: options.strictReferences ?? options.strictAssets === true};
-  const presentation = resolveTemplateInput(parseInput(input), options);
+  // The document as given, before the deck-wide variable pass: the furniture manifest records the authored header and footer text.
+  const authored = parseInput(input);
+  const presentation = resolveTemplateInput(authored, options);
   assertValidBoundary(presentation);
   // `options.fonts` is the fonts handle (the renderer's loadFonts()); the exporter reads its measurement, wrapped so the package names the
   // chosen family (FF-31). Internally `options.textMeasurement` is that wrapped measurement; it is not a public option.
@@ -280,6 +283,7 @@ export async function toPptx(input, options = {}) {
   context.furnitureManifests = new Map();
   context.nativeFurniture = new Map();
   context.hostDate = options.date;
+  context.authored = authored;
   context.codeTags = new Map();
   context.captionTags = new Map();
   context.footnoteTags = new Map();
@@ -418,7 +422,18 @@ export async function fromPptx(input, options = {}) {
   // Native sections (PowerPoint's own section list, `Default Section` = none) name each slide's `{{slide.section}}` for the footer text check
   // and, after the slides, are reconciled with the stored value in restoreDocumentProvenance.
   const slideSections = nativeSections(presentationRoot, slideIdsInOrder(presentationRoot, presentationRels, entries, slidePaths));
-  const furniture = importFurniture(furnitureContexts, entries, options.onDiagnostic, {sections: slideSections ?? [], organizations: storedOrganizations(entries, presentationRoot, presentationRels)});
+  const stored = storedMetadata(entries, presentationRoot, presentationRels);
+  // A stored zone text with built-in variables is drawn from the document's own metadata, as toPptx resolved it: the stored record
+  // (organization, speaker ...) and the observed name, description and author (a default the exporter writes is no value).
+  const importedMetadata = {
+    ...(imported.name && imported.name !== DEFAULT_TITLE ? {name: imported.name} : {}),
+    ...(imported.description ? {description: imported.description} : {}),
+    ...(imported.author && joinAuthors(imported.author) !== DEFAULT_AUTHOR ? {author: imported.author} : {}),
+    ...(stored.organization !== undefined ? {organization: stored.organization} : {}),
+    ...(stored.speaker !== undefined ? {speaker: stored.speaker} : {}),
+  };
+  const furniture = importFurniture(furnitureContexts, entries, options.onDiagnostic, {sections: slideSections ?? [], organizations: asArray(stored.organization).filter(item => isPlainObject(item) && typeof item.id === 'string' && typeof item.name === 'string').map(item => ({id: item.id, name: item.name})),
+    draw: (template, {index, count, section}) => drawFurnitureText(template, {index, count, section}, importedMetadata)});
   if (Object.keys(furniture.design).length) imported.design = {...imported.design, ...furniture.design};
   if (furniture.organization) imported.organization = furniture.organization;
 
@@ -611,6 +626,17 @@ function resolveRelationshipTarget(sourcePartPath, target) {
     }
   }
   return parts.join("/");
+}
+
+// A header or footer text as the exporter drew it for one slide: deck-wide built-ins resolved from `metadata` (core
+// resolveVariables), then the slide-scoped tokens for the slide's position, count and section. undefined when core refuses.
+function drawFurnitureText(template, {index, count, section}, metadata) {
+  try {
+    const slide = resolveVariables({...metadata, slides: [{...(section !== undefined ? {section} : {}), text: template}]}).presentation.slides[0];
+    return resolveSlideVariables(slide, {slideNumber: index + 1, slideCount: count}).text;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveSlidePaths(entries, presentationRoot, relationships) {
@@ -2783,10 +2809,13 @@ function defaultFooterParts(composeOptions) {
   }
 }
 
+// The slide and deck as given to toPptx (variables not yet resolved), for the furniture manifest's authored header and footer text.
+const authoredFurniture = (context, slideIndex) => ({presentation: context.authored, slide: context.authored?.slides?.[slideIndex]});
+
 async function addFurniture(slide,presentation,source,layout,context,options,slideIndex) {
   if(!layout){
     if(['header','footer'].some(kind=>(source.design?.[kind]??presentation.design?.[kind])))throw new OPFPptxError('missing-furniture-layout','Header/footer export requires coordinated core furniture geometry.',{path:`slides.${slideIndex}.design`});
-    const manifest = furnitureManifest(presentation, source, {parts: []}, slideIndex);
+    const manifest = furnitureManifest(presentation, source, {parts: []}, slideIndex, undefined, undefined, authoredFurniture(context, slideIndex));
     if (manifest) context.furnitureManifests.set(`ppt/slides/slide${slideIndex + 1}.xml`, manifest);
     return;
   }
@@ -2823,7 +2852,7 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
       if(natives.has(index))context.nativeFurniture.set(`OPF furniture ${slideIndex} part ${index} line 0`,natives.get(index));
     }
   }
-  const manifest = furnitureManifest(presentation, source, layout, slideIndex, staticDates, natives);
+  const manifest = furnitureManifest(presentation, source, layout, slideIndex, staticDates, natives, authoredFurniture(context, slideIndex));
   if (manifest) context.furnitureManifests.set(`ppt/slides/slide${slideIndex + 1}.xml`, manifest);
 }
 

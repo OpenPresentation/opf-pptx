@@ -265,8 +265,8 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
   assert.match(dec.decode(entries['ppt/slides/slide1.xml']), /<\/p:spTree><p:custDataLst><p:tags r:id="rIdOpfFurnitureSlide"\/><\/p:custDataLst><\/p:cSld>/, 'One slide-level tag list.');
   const {deck: imported, issues} = await read(bytes);
   assert.equal(issues.some(issue => issue.code === 'invalid-furniture-provenance'), false);
-  // FA-31: the variable resolved before export, so the footer holds the words and the stored record holds the organization.
-  assert.deepEqual(imported.design.footer, {left: {text: 'Acme'}, right: deck.design.footer.right});
+  // FA-31: the footer drew the organization's name; the stored footer text and record return {{organization.name}} and the organization.
+  assert.deepEqual(imported.design.footer, deck.design.footer);
   assert.deepEqual(imported.organization, deck.organization);
   assert.equal(imported.slides[0].layout, 'title-subtitle');
   // The footer is only words: a retyped name changes the footer text and leaves the stored organization.

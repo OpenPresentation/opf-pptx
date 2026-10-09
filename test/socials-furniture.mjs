@@ -36,7 +36,7 @@ assert.ok(plain.issues.some(issue => issue.code === 'invalid-furniture-provenanc
 assert.ok(JSON.stringify(plain.deck.slides).includes('x.com/acme'), 'The profile lines stay as current text.');
 // With provenance, unedited lines keep the authored form (a handle stays a handle).
 const {deck, issues} = await read(bytes);
-assert.deepEqual(deck.design.footer, {left: {text: 'Acme'}, right: {socials: true}}, 'The name resolved before export; the generated socials return as the flag.');
+assert.deepEqual(deck.design.footer, source.design.footer, 'The organization token returns (drawn from the stored organization); the generated socials return as the flag.');
 assert.deepEqual(deck.organization, organization, 'Unedited profile lines keep the authored socials values.');
 assert.ok(issues.some(issue => issue.code === 'furniture-import-reflow'));
 assert.ok(!issues.some(issue => issue.code === 'invalid-furniture-provenance'));
@@ -113,7 +113,7 @@ assert.ok(/<a:hlinkClick [^>]*>(?:(?!<\/a:r>).)*<\/a:rPr><a:t>x\.com\/acme<\/a:t
 assert.ok(mixedXml.includes('<a:t>Visit us</a:t>'));
 {
   const {deck: back, issues: mixedIssues} = await read(mixedBytes);
-  assert.deepEqual(back.design.footer, {left: {text: 'Acme\nSlide {{slide.number}} of {{deck.slideCount}}'}, right: {socials: true, text: '{{slide.number}}'}});
+  assert.deepEqual(back.design.footer, mixed.design.footer);
   assert.deepEqual(back.organization.socials, mixed.organization.socials);
   assert.ok(!mixedIssues.some(issue => issue.code === 'invalid-furniture-provenance'), JSON.stringify(mixedIssues));
   // Without the stored record the socials are ordinary text (see above); the slide-number fields still import as tokens in a native footer.

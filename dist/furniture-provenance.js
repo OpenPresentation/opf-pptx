@@ -1,8 +1,8 @@
 import {XMLParser} from 'fast-xml-parser';
 import {attachTextTags, decodeTextTag, encodeTextTag} from './code-provenance.js';
 import {sourceLineParagraphs} from './text-provenance.js';
-import {DEFAULT_DATE_FORMAT, NATIVE_DATE_FIELDS, mentionsSlideToken, parseDate, slideNumberTemplate} from './furniture-fields.js';
-import {resolveSlideVariables, schemas} from '@openpresentation/opf';
+import {DEFAULT_DATE_FORMAT, NATIVE_DATE_FIELDS, isBuiltinTemplate, mentionsSlideToken, parseDate, slideNumberTemplate} from './furniture-fields.js';
+import {schemas} from '@openpresentation/opf';
 import {LOGO_TAG} from './logo-provenance.js';
 import {NATIVE_PLACEHOLDERS, footerValue, isNativePlaceholderType, readNativePlaceholders} from './native-furniture.js';
 
@@ -73,9 +73,9 @@ function unchangedStaticDate(marker, format, ordered, paragraphs) {
 }
 
 // This manifest contains topology, identities, inactive flags, format settings and the authored text of a zone whose
-// `text` uses a slide-scoped variable (`templates`, FA-31). Current native shapes supply all words, image bytes and
+// `text` uses built-in variables (`templates`, FA-31; `authored` is the document as given to toPptx, before the deck-wide pass). Current native shapes supply all words, image bytes and
 // alt text, even after edits; a recorded format or template is kept only while the current text still matches it exactly.
-export function furnitureManifest(presentation, slide, layout, slideIndex, staticDates = new Map(), natives = new Map()) {
+export function furnitureManifest(presentation, slide, layout, slideIndex, staticDates = new Map(), natives = new Map(), authored) {
   const definitions = {}, formats = {}, templates = {};
   for (const kind of kinds) {
     const local = slide.design?.[kind] !== undefined;
@@ -90,9 +90,13 @@ export function furnitureManifest(presentation, slide, layout, slideIndex, stati
       }
       const format = Object.fromEntries(settings.filter(setting => typeof source[zone][setting] === 'string').map(setting => [setting, source[zone][setting]]));
       if (Object.keys(format).length) formats[`${kind}.${zone}`] = format;
-      // The authored text with its slide-scoped tokens ({{slide.number}} is a native field; {{deck.slideCount}} and
-      // {{slide.section}} are fixed words), so import restores the tokens while the words still match this slide.
-      if (mentionsSlideToken(source[zone].text)) templates[`${kind}.${zone}`] = source[zone].text;
+      // The authored text with its built-in tokens, so import restores them while the words still match this slide:
+      // {{slide.number}} is a native field; {{deck.slideCount}} and {{slide.section}} are fixed words; the deck-wide built-ins
+      // ({{organization.name}}) were resolved before export. A text that also uses a user variable is not stored (the filled deck
+      // round-trips); then only a slide-scoped token in the resolved text is.
+      const original = (local ? authored?.slide?.design?.[kind] : authored?.presentation?.design?.[kind])?.[zone]?.text;
+      if (isBuiltinTemplate(original)) templates[`${kind}.${zone}`] = original;
+      else if (mentionsSlideToken(source[zone].text)) templates[`${kind}.${zone}`] = source[zone].text;
     }
     definitions[kind] = {scope: local ? 'local' : 'global', value};
   }
@@ -198,7 +202,7 @@ function validateManifest(manifest) {
     for (const [slot, template] of Object.entries(manifest.templates)) {
       const [kind, zone, extra] = slot.split('.');
       check(extra === undefined && manifest.definitions[kind]?.value?.[zone]?.text === 'literal' && typeof template === 'string' &&
-        template.length <= 100000 && mentionsSlideToken(template), 'Invalid furniture text.');
+        template.length <= 100000 && template.includes('{{'), 'Invalid furniture text.');
     }
   }
   if (manifest.formats !== undefined) {
@@ -252,12 +256,13 @@ function orderedFields(ordered, paragraphs) {
   return fields;
 }
 
-// A zone `text`: the stored template while it still draws exactly the words now on the slide (its `{{slide.number}}`
-// native field, `{{deck.slideCount}}` and `{{slide.section}}` as this slide shows them); otherwise the words as they stand,
-// with each native slide-number field as `{{slide.number}}`.
+// A zone `text`: the stored template while it still draws exactly the words now on the slide (`position.draw` resolves its
+// deck-wide built-ins from the document's own metadata and its slide-scoped tokens for this slide); otherwise the words as they
+// stand, with each native slide-number field as `{{slide.number}}`.
 function importedZoneText(text, nativeFields, template, position) {
   if (template !== undefined) {
-    const drawn = resolveSlideVariables({text: template, section: position.section}, {slideNumber: position.index + 1, slideCount: position.count}).text;
+    const drawn = position.draw(template, position);
+    if (typeof drawn !== 'string') return slideNumberTemplate(text, nativeFields);
     // A section name is an XML attribute in the native list: tab, LF and CR come back as spaces (src/sections.js).
     const spaced = value => value.replace(/[\t\n\r]/g, ' ');
     if (drawn === text || (position.section !== undefined && spaced(drawn) === spaced(text))) return template;
@@ -265,7 +270,7 @@ function importedZoneText(text, nativeFields, template, position) {
   return slideNumberTemplate(text, nativeFields);
 }
 
-function readSlide(context, entries, slideIndex, slideCount, report, taggedText, section) {
+function readSlide(context, entries, slideIndex, slideCount, report, taggedText, section, draw) {
   const {root, shapes, paragraphs, pictures, relationships, readPicture} = context;
   const candidates = {};
   const records = [];
@@ -342,7 +347,7 @@ function readSlide(context, entries, slideIndex, slideCount, report, taggedText,
             check(lines.length === part.socials.length && lines.every(line => line.trim()), 'Current social profile lines no longer match their platforms.');
             candidate.socials.push({id: manifest.organizationId, socials: Object.fromEntries(part.socials.map((line, index) => [line.platform, line.scheme + lines[index]]))});
           }
-          value[part.zone][part.field] = part.field === 'text' ? importedZoneText(text, orderedFields(ordered, paragraphs), manifest.templates?.[`${kind}.${part.zone}`], {index: slideIndex, count: slideCount, section}) : part.field === 'date' ? importedDate(definition.value[part.zone].date, format, text, ordered.flatMap(record => (paragraphs[record.index] ?? []).flatMap(paragraph => paragraph.fields ?? [])), value[part.zone], part.staticDate, ordered, paragraphs, message => report(slideIndex, `${kind}.${part.zone}.date: ${message}`)) : true;
+          value[part.zone][part.field] = part.field === 'text' ? importedZoneText(text, orderedFields(ordered, paragraphs), manifest.templates?.[`${kind}.${part.zone}`], {index: slideIndex, count: slideCount, section, draw}) : part.field === 'date' ? importedDate(definition.value[part.zone].date, format, text, ordered.flatMap(record => (paragraphs[record.index] ?? []).flatMap(paragraph => paragraph.fields ?? [])), value[part.zone], part.staticDate, ordered, paragraphs, message => report(slideIndex, `${kind}.${part.zone}.date: ${message}`)) : true;
           candidate.text.push(...ordered.map(record => record.index));
         }
       }
@@ -389,12 +394,13 @@ function importedDate(flag, format, text, nativeFields, zone, marker, ordered, p
 // Reconcile metadata before consuming any shapes. Global inheritance is promoted
 // only when every slide has a valid definition/override and all inherited values
 // agree. A missing tag must never cause another slide's furniture to reappear.
-// `options.sections` are the native section names by slide index (a slide's `{{slide.section}}` is checked against them) and
-// `options.organizations` the stored organizations (OPF_DOCUMENT_V1) a socials part can name by id.
-export function importFurniture(contexts, entries, onDiagnostic, {sections = [], organizations = []} = {}) {
+// `options.sections` are the native section names by slide index (a slide's `{{slide.section}}` is checked against them),
+// `options.organizations` the stored organizations (OPF_DOCUMENT_V1) a socials part can name by id, and `options.draw(template,
+// {index, count, section})` draws a stored zone text for a slide (its built-in variables resolved from the document's metadata).
+export function importFurniture(contexts, entries, onDiagnostic, {sections = [], organizations = [], draw = () => undefined} = {}) {
   const report = (index, message) => onDiagnostic?.({code: 'invalid-furniture-provenance', path: `slides.${index}.design`, message: `${message} Ordinary import retains current native content; no old source words are restored.`});
   const taggedText = contexts.map(() => new Set());
-  const candidates = contexts.map((context, index) => readSlide(context, entries, index, contexts.length, report, taggedText[index], sections[index]));
+  const candidates = contexts.map((context, index) => readSlide(context, entries, index, contexts.length, report, taggedText[index], sections[index], draw));
   // Social profiles belong to the organization the manifest names by id, which only the stored document metadata can supply
   // (no furniture part shows the organization's name any more); without it (or with disagreeing values) the lines stay
   // ordinary current text.

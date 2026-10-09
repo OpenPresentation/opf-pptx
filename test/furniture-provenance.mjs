@@ -45,12 +45,11 @@ let matrix = 0;
 for (const measured of [undefined, fonts])
 for (const dimensions of [{widthInches: 13.333333, heightInches: 7.5}, {widthInches: 5.625, heightInches: 10}])
 for (const local of [false, true]) {
-  // FA-31: header and footer values are variables in `text`. The organization name resolves before export; the section and the
-  // slide number are slide-scoped tokens that return as written.
+  // FA-31: header and footer values are variables in `text`. The built-ins ({{organization.name}}, {{slide.section}}) resolve per
+  // slide and the slide number is a field; the authored text is stored and returns as written while the words still match.
   const definitions = {header: {left: {image, text: literal}, center: {text: '{{organization.name}}'}, right: {text: '{{slide.section}}'}},
     footer: {left: {date: ' 2026-09-14 '}, center: {text: ''}, right: {text: '{{slide.number}}'}}};
-  const expectedDefinitions = structuredClone(definitions);
-  expectedDefinitions.header.center.text = '  Current Org  ';
+  const expectedDefinitions = definitions;
   const source = {organization: {id: 'native_org', name: '  Current Org  '}, design: {fontScheme: 'roboto', dimensions, ...(!local ? definitions : {})},
     slides: ['Overview', ''].map((section, index) => ({title: `Title ${index}`, text: `Body ${index}`, section, ...(local ? {design: definitions} : {})}))};
   const bytes = await exportDeck(source, {fonts: measured});
@@ -184,17 +183,17 @@ const metadata = {organization: {id: 'current_org', name: 'Original organization
 const metadataBytes = await exportDeck(metadata);
 const unchanged = (await read(metadataBytes)).deck;
 assert.deepEqual(unchanged.organization, metadata.organization);
-assert.deepEqual(unchanged.design.header, {left: {text: 'Original organization'}, right: {text: '{{slide.section}}'}});
+assert.deepEqual(unchanged.design.header, metadata.design.header, 'The organization token returns while the stored organization draws the same words.');
 assert.deepEqual(unchanged.design.footer, metadata.design.footer);
 assert.deepEqual(unchanged.slides.map(slide => slide.section), ['First section', 'Second section']);
 const organizationChanged = (await read(modify(metadataBytes, entries => {for (const i of [1, 2]) xml(entries, content => content.replace('Original organization', 'Current organization'), i);}))).deck;
 assert.deepEqual(organizationChanged.organization, metadata.organization, 'The footer words do not edit the stored organization.');
 assert.equal(organizationChanged.design.header.left.text, 'Current organization');
-assert.ok(!JSON.stringify(organizationChanged.design).includes('Original organization'));
+assert.ok(!JSON.stringify(organizationChanged.design).includes('Original organization') && !JSON.stringify(organizationChanged.design.header.left).includes('{{'));
 const disagreed = await read(modify(metadataBytes, entries => xml(entries, content => content.replace('Original organization', 'Different organization'))));
 assert.deepEqual(disagreed.deck.organization, metadata.organization);
 assert.equal(effective(disagreed.deck, 0, 'header').left.text, 'Different organization');
-assert.equal(effective(disagreed.deck, 1, 'header').left.text, 'Original organization');
+assert.equal(effective(disagreed.deck, 1, 'header').left.text, '{{organization.name}}');
 assert.equal(disagreed.deck.design.header, undefined, 'Disagreeing words stay local.');
 // Retyped section words are the words as they stand, and the section itself comes from the native list, which wins.
 const sectionChanged = (await read(modify(metadataBytes, entries => xml(entries, content => content.replaceAll('First section', 'Current section'))))).deck;

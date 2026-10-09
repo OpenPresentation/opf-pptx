@@ -30,15 +30,17 @@ assert.ok(!xml.includes('{{'), 'no unresolved token reaches the file');
 assert.ok(xml.indexOf('<a:t>Acme Corp</a:t>') < xml.indexOf('<a:t>Ada Lovelace, CTO</a:t>', xml.indexOf('<a:t>Acme Corp</a:t>')));
 assert.ok(!xml.includes('type="slidenum"'));
 
-// Import returns the words as the zone text; the stored document record (not the footer) returns the speakers and organization.
+// Import returns the authored tokens: the stored text is drawn from the stored organization and speakers (which the document
+// record also returns), and it is restored while it draws the words now on the slide.
 const {deck} = await read(bytes);
-assert.equal(deck.design.footer.left.text, 'Acme Corp\nAda Lovelace, CTO');
+assert.equal(deck.design.footer.left.text, source.design.footer.left.text, 'The authored tokens return, drawn from the stored organization and speakers.');
 assert.deepEqual(Object.keys(deck.design.footer.left), ['text'], 'no organization or speaker flag exists any more');
 assert.deepEqual(deck.speaker, source.speaker, 'Stored speakers return from the document record.');
 assert.deepEqual(deck.organization, source.organization, 'The stored organization returns.');
 assert.ok(!(await read(bytes)).issues.some(issue => issue.code === 'invalid-furniture-provenance'));
 
-// Without document provenance no speaker or organization metadata is rebuilt from the footer words.
+// Without document provenance there is no metadata to draw the tokens from: the words import as they are, and no speaker or
+// organization metadata is rebuilt from them.
 const plain = await read(await toPptx(source, {provenance: false}));
 assert.equal(plain.deck.speaker, undefined);
 assert.equal(plain.deck.organization, undefined);
@@ -49,10 +51,23 @@ noTitle.speaker = {id: 'solo', name: 'Solo, Jr.'};
 noTitle.design.footer.left.text = '{{organization.name}}\n{{speaker.name}}';
 assert.equal((await read(await toPptx(noTitle, {provenance: false}))).deck.design.footer.left.text, 'Acme Corp\nSolo, Jr.');
 
-// Current native words win: an edited line is the footer's new text, and the stored speakers stay as exported.
+// Current native words win: an edited line no longer matches the drawn text, so it is the footer's new text.
 const retitled = await read(modify(bytes, entries => { for (const index of [1, 2]) entries[`ppt/slides/slide${index}.xml`] = enc.encode(slideXml(entries, index).replace('<a:t>Ada Lovelace, CTO</a:t>', '<a:t>Ada Lovelace, CEO</a:t>')); }));
 assert.equal(retitled.deck.design.footer.left.text, 'Acme Corp\nAda Lovelace, CEO');
 assert.deepEqual(retitled.deck.speaker, source.speaker, 'The footer no longer names the speaker, so the stored speakers are unchanged.');
+
+// Built-ins and user variables. A text whose tokens are all built-ins is stored as authored; a text that also uses a declared user
+// variable is not: the filled deck is what round-trips (templates-and-variables.md), so its words import. A slide-scoped token in
+// such a text still returns as a token (the filled text is stored for it).
+{
+  const user = {name: 'Q4 Review', organization: source.organization, variables: {customer: {type: 'text', example: 'Northstar'}},
+    design: {footer: {left: {text: 'For {{customer}} by {{organization.name}}'}, center: {text: 'Page {{slide.number}} for {{customer}}'}, right: {text: '{{organization.name}} {{slide.number}}'}}},
+    slides: [{title: 'One', text: 'Body'}, {title: 'Two', text: 'Body'}]};
+  const mixed = await read(await toPptx(user, {variables: {customer: 'Northstar'}}));
+  assert.deepEqual(mixed.deck.design.footer, {left: {text: 'For Northstar by Acme Corp'}, center: {text: 'Page {{slide.number}} for Northstar'}, right: {text: '{{organization.name}} {{slide.number}}'}});
+  assert.deepEqual(mixed.deck.organization, source.organization);
+  assert.ok(!mixed.issues.some(issue => issue.code === 'invalid-furniture-provenance'));
+}
 
 // A missing source: the field is unresolved content, a built-in resolves to nothing and is reported.
 const bare = structuredClone(source);
