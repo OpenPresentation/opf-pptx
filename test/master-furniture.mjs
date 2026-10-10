@@ -146,6 +146,28 @@ const oneTone = {organization, design: {background: light, header: {right: {text
   checked++;
 }
 
+// ---- 1b. All three native placeholders beside a master logo: the live date, the footer text and the slide number stay RR-11
+// placeholders on each slide (live fields, the dialog's objects); only the logo moves to the master.
+{
+  const deck = {organization, design: {background: light, footer: {left: {date: true, image: 'var:organization.logo.icon'}, center: {text: 'Internal'}, right: {text: 'Page {{slide.number}}'}}},
+    slides: [{title: 'One', text: 'Body.'}, {title: 'Two', text: 'Body.'}]};
+  const {entries, bytes: output} = await exportDeck(deck);
+  const master = text(entries, 'ppt/slideMasters/slideMaster1.xml');
+  assert.equal(pictures(master).length, 1);
+  assert.match(master, /<p:hf sldNum="1" hdr="0" ftr="1" dt="1"\/>/);
+  for (const number of [1, 2]) {
+    const xml = text(entries, `ppt/slides/slide${number}.xml`);
+    assert.deepEqual(phTypes(xml), ['dt', 'ftr', 'sldNum']);
+    assert.match(xml, /<a:fld [^>]*type="datetime1">/, 'a live date field');
+    assert.match(xml, new RegExp(`<a:t>Page </a:t></a:r><a:fld [^>]*type="slidenum">(?:(?!</a:fld>)[\\s\\S])*<a:t>${number}</a:t>`), 'Page and a live number');
+    assert.equal(pictures(xml).length, 0);
+  }
+  const {imported, invalid} = await read(output);
+  assert.deepEqual(invalid, []);
+  assert.deepEqual(imported.design.footer, deck.design.footer);
+  checked++;
+}
+
 // ---- 2. Light and dark slides: one layout per tone, each drawing its own icon; the master draws no logo.
 {
   const deck = {organization, design: {background: light, footer: {left: {image: 'var:organization.logo.icon'}, right: {text: '{{slide.number}}'}}}, slides: [
@@ -347,4 +369,4 @@ const oneTone = {organization, design: {background: light, header: {right: {text
   checked++;
 }
 
-console.log(`Master furniture passed: ${checked} groups (master logo once, an older importer's view, master edits, per-tone layouts, a single dark slide, hidden footers, a slide's own header, content over the logo, live fields, third-party masters, per-script masters).`);
+console.log(`Master furniture passed: ${checked} groups (master logo once, an older importer's view, master edits, native date, footer and number beside it, per-tone layouts, a single dark slide, hidden footers, a slide's own header, content over the logo, live fields, third-party masters, per-script masters).`);
