@@ -988,6 +988,9 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
     if (furniture.text.has(index) || nativeContext.imageShapes?.has(index) || nativeContext.watermarkShapes?.has(index) || nativeContext.logoPlaceholderShapes?.has(index) || placeholders.consumed.has(index)) continue;
     if (annotations.consumed.has(shape)) { roles.set(shapeKeys.get(shape), 'annotation'); continue; }
     if (code.consumed.has(shape)||metric.consumed.has(shape)||cards.has(shape)||media.consumed.has(shape)||headings.consumed.has(shape)||plainText.consumed.has(shape)||timelines.consumed.has(shape)||quotes.consumed.has(shape)) continue;
+    // RR-81: a placeholder with no text (no runs, or only empty paragraphs) is PowerPoint's prompt ("Click to add text" on a slide
+    // added from a layout), not content. A picture, chart or table in a placeholder is a p:pic or p:graphicFrame, read below.
+    if (shape['p:nvSpPr']?.['p:nvPr']?.['p:ph'] !== undefined && !(paragraphs[index] ?? []).some(paragraph => paragraph.text)) { roles.set(shapeKeys.get(shape), 'prompt'); continue; }
     const ordinaryBody = Object.hasOwn(shape, 'p:txBody') && !shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst']?.['p:tags'];
     const item = importShape(shape, dimensions, paragraphs[index], ordinaryBody || furniture.taggedText.has(index) || media.captionShapes.has(shape));
     if (item && ordinaryBody) item.readNativeBody = () => readBody(index);

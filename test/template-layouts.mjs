@@ -47,6 +47,17 @@ const layoutTag = (entries, path) => {
 const placeholders = xml => [...xml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map(([shape]) => ({
   name: shape.match(/<p:cNvPr\b[^>]*\bname="([^"]*)"/)[1], type: shape.match(/<p:ph\b[^>]*\btype="(\w+)"/)?.[1] ?? 'obj', idx: shape.match(/<p:ph\b[^>]*\bidx="(\d+)"/)?.[1],
   box: shape.match(/<a:off x="(-?\d+)" y="(-?\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"\/>/)?.slice(1).map(Number)}));
+// The placeholder kind of a region and its index: a base per kind plus the region's position among that kind's regions.
+const kindOf = region => {
+  const accepts = new Set(region.accepts), only = (...kinds) => [...accepts].every(kind => kinds.includes(kind));
+  return only('image') ? 'pic' : only('chart') ? 'chart' : only('table') ? 'tbl' : only('video') ? 'media'
+    : region.role === 'media' && accepts.has('image') && only('image', 'video', 'group') ? 'pic' : only('text', 'list') ? 'body' : 'obj';
+};
+const IDX_BASE = {obj: 100, body: 200, pic: 300, chart: 400, tbl: 500, media: 600};
+const indexesOf = record => {
+  const regions = new Map(layoutTemplate(record).regions.map(region => [region.name, region])), counts = {};
+  return Object.fromEntries(Object.keys(record.regions).map(name => { const kind = kindOf(regions.get(name)); counts[kind] = (counts[kind] ?? -1) + 1; return [name, IDX_BASE[kind] + counts[kind]]; }));
+};
 const sample = {
   text: () => ({text: 'A short paragraph of body text.'}),
   list: () => ({items: ['Alpha', 'Beta', 'Gamma']}),
@@ -156,7 +167,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     assert.deepEqual({v: tag.v, group: tag.group, reference: tag.reference, source: tag.source}, {v: 1, group: 'custom', reference: tag.id, source: undefined});
     assert.match(tag.hash, /^[0-9a-f]{16}$/);
     assert.deepEqual(tag.record, record, 'An embedded template carries its record (full provenance)');
-    assert.deepEqual(tag.regions, Object.fromEntries(Object.keys(record.regions).map((name, position) => [String(13 + position), name])), `${tag.id}: region indexes follow the record`);
+    assert.deepEqual(tag.regions, Object.fromEntries(Object.entries(indexesOf(record)).map(([name, idx]) => [String(idx), name])), `${tag.id}: region indexes follow the record`);
     byId.set(tag.id, path);
     assert.equal(xml.match(/<p:cSld name="([^"]*)"/)[1], record.name, 'The layout is named by the record');
     const expectedType = {cover: 'title', section: 'secHead', text: 'obj', list: 'obj', agenda: 'obj', faq: 'obj', 'two-column': 'twoObj', comparison: 'twoObj', 'image-beside': 'picTx'}[tag.id] ?? 'cust';
@@ -168,10 +179,9 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     for (const area of areas.filter(item => !item.heading)) {
       const region = parsed.regions.find(item => item.name === area.name), shape = shapes.find(item => item.name === area.name);
       assert.ok(shape, `${tag.id}: a placeholder for ${area.name}`);
-      assert.equal(shape.idx, String(13 + Object.keys(record.regions).indexOf(area.name)));
-      const accepts = new Set(region.accepts), only = (...kinds) => [...accepts].every(kind => kinds.includes(kind));
-      const type = only('image') ? 'pic' : only('chart') ? 'chart' : only('table') ? 'tbl' : only('video') ? 'media'
-        : region.role === 'media' && accepts.has('image') && only('image', 'video', 'group') ? 'pic' : only('text', 'list') ? 'body' : 'obj';
+      assert.equal(shape.idx, String(indexesOf(record)[area.name]), `${tag.id}.${area.name}: the index of its kind`);
+      const type = kindOf(region);
+      assert.ok(Number(shape.idx) >= IDX_BASE[type] && Number(shape.idx) < IDX_BASE[type] + 100, "The index is in its kind's range");
       assert.equal(shape.type, type, `${tag.id}.${area.name} is a ${type} placeholder`);
       const {x, y, width, height} = area.box;
       assert.deepEqual(shape.box, [emu(x), emu(y), emu(width), emu(height)], `${tag.id}.${area.name} sits at its composed box`);
@@ -198,6 +208,13 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     assert.ok(checkOrder(xml, path) > 10, `${path} is in schema order`);
   }
   assert.deepEqual([...byId.keys()], Object.keys(templates).sort(), 'Every embedded template has its layout, by id.');
+  // Change Layout pairs placeholders by idx: across all 28 layouts an idx always names one placeholder kind.
+  const kinds = new Map();
+  for (const path of layouts.slice(1)) for (const shape of placeholders(text(entries, path)).filter(item => Number(item.idx) >= 100)) {
+    assert.equal(kinds.get(shape.idx) ?? shape.type, shape.type, `idx ${shape.idx} is one kind in every layout`);
+    kinds.set(shape.idx, shape.type);
+  }
+  assert.ok(kinds.size >= 6);
   // Each slide relates to its template's layout, the filled and the empty slide to the same part.
   const count = Object.keys(templates).length;
   Object.keys(templates).forEach((id, index) => {
@@ -208,9 +225,9 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
   const slideXml = id => text(entries, `ppt/slides/slide${Object.keys(templates).indexOf(id) + 1}.xml`);
   const bound = xml => [...xml.matchAll(/<p:(pic|graphicFrame)>[\s\S]*?<\/p:\1>/g)].map(([shape]) => shape).filter(shape => /<p:ph\b/.test(shape))
     .map(shape => shape.match(/<p:ph\b[^>]*\/>/)[0]);
-  for (const id of ['cover', 'image', 'image-beside', 'hero']) assert.deepEqual(bound(slideXml(id)), [`<p:ph type="pic" idx="${13 + Object.keys(templates[id].regions).indexOf('media')}"/>`], `${id}: the picture fills its placeholder`);
-  assert.deepEqual(bound(slideXml('chart-beside')), ['<p:ph type="chart" idx="13"/>']);
-  assert.deepEqual(bound(slideXml('table-beside')), ['<p:ph type="tbl" idx="13"/>']);
+  for (const id of ['cover', 'image', 'image-beside', 'hero']) assert.deepEqual(bound(slideXml(id)), [`<p:ph type="pic" idx="${indexesOf(templates[id]).media}"/>`], `${id}: the picture fills its placeholder`);
+  assert.deepEqual(bound(slideXml('chart-beside')), ['<p:ph type="chart" idx="400"/>']);
+  assert.deepEqual(bound(slideXml('table-beside')), ['<p:ph type="tbl" idx="500"/>']);
   for (const id of ['gallery', 'chart', 'table', 'dashboard', 'team', 'logos']) assert.deepEqual(bound(slideXml(id)), [], `${id}: flowing regions draw free shapes`);
   for (const id of Object.keys(templates)) {
     const xml = slideXml(id);
@@ -275,10 +292,11 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
 // composes to (core composeLayoutAreas with the slide's options and placements), and cover and section titles at the heading parts.
 {
   // An `auto` row is as tall as its content; on the empty layout it holds two body lines, so the text blocks here are two lines.
-  // Cards are off: on a carded slide (comparison's design) an auto row also holds the card's insets, which the empty layout does
-  // not reserve (reported to RR-79), so the verdict row of a carded comparison slide is 24 px taller than its placeholder.
+  // Cards on: each template's own design (comparison draws cards), then cards on every template; a carded auto row holds the card's
+  // insets on the slide and on the empty layout alike.
   const band = {edge: 'left', size: 0.2}, twoLines = block => block.text !== undefined ? {text: 'First line.\nSecond line.'} : block;
-  const deck = {name: 'Bands', catalogs: {custom: {layouts: templates}}, design: {contentBox: false, footer: {left: {text: 'Board review'}, right: {text: '{{slide.number}}'}}},
+  for (const contentBox of [undefined, true]) {
+  const deck = {name: 'Bands', catalogs: {custom: {layouts: templates}}, design: {...(contentBox !== undefined ? {contentBox} : {}), footer: {left: {text: 'Board review'}, right: {text: '{{slide.number}}'}}},
     slides: contentSlides().map(slide => ({...slide, subtitle: 'Subtitle', blocks: [{image: {src: square}, placement: band}, ...(slide.blocks ?? []).map(twoLines)]}))};
   const {entries: parts} = await exportDeck(deck);
   const emu = value => Math.round(value * 9525), boxOf = box => [box.x, box.y, box.width, box.height].map(emu);
@@ -289,7 +307,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     const shapes = placeholders(text(parts, layoutOf(parts, index + 1)));
     for (const region of geometry.regions) {
       assert.equal(region.collapsed, undefined, `${slide.layout}.${region.name} is filled`);
-      assert.deepEqual(shapes.find(item => item.name === region.name).box, boxOf(region.box), `${slide.layout}.${region.name}: the placeholder is the slide's region box`);
+      assert.deepEqual(shapes.find(item => item.name === region.name).box, boxOf(region.box), `${slide.layout}.${region.name} (contentBox ${contentBox}): the placeholder is the slide's region box`);
       compared++;
     }
     const heading = geometry.headingAreas.find(area => area.name === 'title');
@@ -297,6 +315,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     assert.deepEqual(title.box, boxOf(['cover', 'section'].includes(slide.layout) ? heading.parts.title : heading.box), `${slide.layout}: the title placeholder`);
   }
   assert.ok(compared >= 35, `${compared} regions compared`);
+  }
   checked++;
 }
 
@@ -350,14 +369,20 @@ const roadmap = {name: 'Roadmap review', catalogs: {custom: {layouts: {'roadmap-
 }
 
 // ---- 6. A slide added in PowerPoint with an OPF layout: its title placeholder and the text typed into the `verdict` placeholder.
-// Plain binding would put a lone text into `first`, so the block keeps its region with a pin. Placeholders carry no xfrm.
+// Plain binding would put a lone text into `first`, so the block keeps its region with a pin. Placeholders carry no xfrm, and the
+// untouched ones (`first`, `second`, a date, a text body with no paragraph) are prompts, not empty blocks.
 {
   const deck = {name: 'New slide', catalogs: {custom: {layouts: {comparison: templates.comparison}}},
     slides: [{layout: 'comparison', title: 'Before and after', blocks: [{text: 'Before.'}, {text: 'After.'}, {text: 'Ship it.'}]}]};
   const {entries: parts} = await exportDeck(deck);
   const layout = layoutOf(parts, 1);
-  const verdictIdx = placeholders(text(parts, layout)).find(item => item.name === 'verdict').idx;
+  const idxOf = name => placeholders(text(parts, layout)).find(item => item.name === name).idx, verdictIdx = idxOf('verdict');
+  // The untouched placeholders PowerPoint copies onto a new slide: only <p:ph>, no xfrm, an empty text body (the prompt shows).
+  const prompt = (id, name, ph) => `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr>${ph}</p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></p:txBody></p:sp>`;
   const slide = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL}" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>` +
+    prompt(4, 'Content Placeholder 3', `<p:ph idx="${idxOf('first')}"/>`) + prompt(5, 'Content Placeholder 4', `<p:ph idx="${idxOf('second')}"/>`) +
+    prompt(6, 'Date Placeholder 5', '<p:ph type="dt" sz="half" idx="10"/>') +
+    `<p:sp><p:nvSpPr><p:cNvPr id="7" name="Empty Text Placeholder 6"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="${verdictIdx}"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/></p:txBody></p:sp>` +
     `<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title 1"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>Added in PowerPoint</a:t></a:r></a:p></p:txBody></p:sp>` +
     `<p:sp><p:nvSpPr><p:cNvPr id="3" name="Text Placeholder 2"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="${verdictIdx}"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>Typed into the verdict.</a:t></a:r></a:p></p:txBody></p:sp>` +
     `</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;

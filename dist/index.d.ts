@@ -410,7 +410,8 @@ export interface PptxOpfLink {
    * "block" fed a block (`path`, `blockType`); "title", "subtitle" and "tag" fed that slide field. Other roles name a shape the
    * importer consumed without a block of its own: "furniture" (footer, date, number, section), "background" (the picture of an image background),
    * "image-overlay" (the overlay shape of an image background or image block), "watermark", "logo",
-   * and the members of an OPF-tagged group ("code", "metric", "quote", "timeline", "media", "card-frame").
+   * and the members of an OPF-tagged group ("code", "metric", "quote", "timeline", "media", "card-frame"), and "prompt" (an empty
+   * placeholder: the prompt of a slide PowerPoint added from a layout).
    */
   role: string;
   /** Path in the presentation, for example "slides.2.blocks.1", "slides.0.title", or "slides.1.left" after a tagged round trip. */

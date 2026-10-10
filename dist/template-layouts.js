@@ -33,11 +33,14 @@ const NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const LAYOUT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml';
 const TAGS_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml';
 const EMU = 9525;
-// Region placeholder indexes are 13 + the region's position in the record's `regions` (coordinator decision on RR-81): the
-// design's "position in regions" would collide with the indexes PowerPoint gives a layout's date, footer and slide-number
-// placeholders (10, 11 and 12, RR-11) and its subtitle (1). Indexes are stable per record, so Change Layout between two OPF
-// layouts maps a region's content by its position.
-export const FIRST_REGION_IDX = 13;
+// Region placeholder indexes (coordinator decisions on RR-81): a base per placeholder kind plus the region's position among the
+// layout's regions of that kind, in the record's `regions` order: `obj` 100, `body` 200, `pic` 300, `chart` 400, `tbl` 500,
+// `media` 600 (so the first chart region of every layout is 400, its second 401). PowerPoint's Change Layout pairs a slide's
+// placeholders with the new layout's by `idx`, so only regions of one kind pair (Pillars to Text keeps `obj` with `obj`; a chart
+// bound to Chart beside's `chart` region never lands in Table beside's `tbl` region, as it did with one sequence for every kind).
+// The indexes stay clear of PowerPoint's subtitle (1) and date, footer and slide-number placeholders (10, 11, 12, RR-11), and
+// depend on the record only, so they are the same under every slide master.
+export const REGION_IDX_BASE = Object.freeze({obj: 100, body: 200, pic: 300, chart: 400, tbl: 500, media: 600});
 export const SUBTITLE_IDX = 1;
 const NAME = /^[a-z][a-z0-9-]*$/;
 const MAX_REGIONS = 144;
@@ -73,9 +76,15 @@ export function placeholderType(region) {
 const BINDS = {pic: ['picture'], chart: ['chart'], tbl: ['table'], obj: ['picture', 'chart', 'table']};
 export const bindsObject = (type, object) => (BINDS[type] ?? []).includes(object);
 
-/** The placeholder index of each region: its position in the record's `regions`, after the footer indexes. */
+/** The placeholder index of each region: its kind's base plus its position among the regions of that kind (REGION_IDX_BASE). */
 export function regionIndexes(record) {
-  return Object.fromEntries(Object.keys(record?.regions ?? {}).map((name, position) => [name, FIRST_REGION_IDX + position]));
+  const regions = new Map(layoutTemplate(record).regions.map(region => [region.name, region]));
+  const counts = {};
+  return Object.fromEntries(Object.keys(record?.regions ?? {}).filter(name => regions.has(name)).map(name => {
+    const type = placeholderType(regions.get(name));
+    counts[type] = (counts[type] ?? -1) + 1;
+    return [name, REGION_IDX_BASE[type] + counts[type]];
+  }));
 }
 
 // FNV-1a (64-bit) of the record's canonical JSON: evidence of which record the layout was made from.
