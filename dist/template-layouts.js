@@ -1,8 +1,10 @@
 // RR-81: OPF 0.19 layout templates as native PowerPoint slide layouts (core docs/programs/release-readiness/0.19-layouts.md,
 // section 8).
 //
-// Export. Every template a slide of the deck uses becomes one `p:sldLayout` under the slide master of that slide (one per
-// theme and script profile), named by the record's `name`, with one placeholder per area of the empty layout that core's
+// Export. When a slide of the deck uses a template, every template the deck can reach becomes one `p:sldLayout` under each
+// slide master (one per theme and script profile), so Change Layout reaches all of them (design question 7): the templates of
+// the registered catalogs in catalog order, then the templates the document embeds (`custom` first, then the other groups by
+// name), each by id. A deck whose slides use no template gets none (0.18 records and automatic slides export as before). Named by the record's `name`, with one placeholder per area of the empty layout that core's
 // `composeLayoutAreas` composes at the deck size (nothing collapsed): `title` (`ctrTitle` with a `subTitle` below it on
 // `cover` and `section`), `subTitle` for a `subtitle` area, and per body region a placeholder typed by what it accepts
 // (`placeholderType`). The layout keeps RR-11's date, footer and slide-number placeholders and `p:hf` (it starts as a copy of
@@ -21,6 +23,7 @@
 // elsewhere; content that document provenance restored is never pinned.
 
 import {composeLayoutAreas, layoutTemplate, bindRegions, regionAccepts} from '@openpresentation/opf/composition';
+import {validateCatalogRecord} from '@openpresentation/opf';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 
 export const LAYOUT_TAG = 'OPF_LAYOUT_V1';
@@ -30,16 +33,22 @@ const NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const LAYOUT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml';
 const TAGS_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml';
 const EMU = 9525;
-// PowerPoint numbers a layout's date, footer and slide-number placeholders 10, 11 and 12 (RR-11); region placeholders follow.
+// Region placeholder indexes are 13 + the region's position in the record's `regions` (coordinator decision on RR-81): the
+// design's "position in regions" would collide with the indexes PowerPoint gives a layout's date, footer and slide-number
+// placeholders (10, 11 and 12, RR-11) and its subtitle (1). Indexes are stable per record, so Change Layout between two OPF
+// layouts maps a region's content by its position.
 export const FIRST_REGION_IDX = 13;
 export const SUBTITLE_IDX = 1;
 const NAME = /^[a-z][a-z0-9-]*$/;
 const MAX_REGIONS = 144;
 
-/** The PowerPoint layout type of a built-in id (design section 8); every other template is `cust`. */
+/**
+ * The PowerPoint layout type of a built-in id (design section 8); every other template is `cust`. `statement` is `cust` too
+ * (coordinator decision on RR-81): `titleOnly` would contradict its message placeholder.
+ */
 export const POWERPOINT_LAYOUT_TYPES = Object.freeze({
   cover: 'title', section: 'secHead', text: 'obj', list: 'obj', agenda: 'obj', faq: 'obj',
-  'two-column': 'twoObj', comparison: 'twoObj', 'image-beside': 'picTx', statement: 'titleOnly',
+  'two-column': 'twoObj', comparison: 'twoObj', 'image-beside': 'picTx',
 });
 const CENTERED_TITLE = new Set(['cover', 'section']);
 
@@ -89,8 +98,65 @@ export function slideTemplate(core) {
   const record = core?.resolved?.layout, provenance = core?.resolved?.provenance?.layout;
   if (!record || !provenance || !Object.hasOwn(record, 'areas')) return undefined;
   try { layoutTemplate(record); } catch { return undefined; }
-  return {record, id: provenance.id, group: provenance.group, ...(provenance.source !== undefined ? {source: provenance.source} : {}), reference: provenance.reference,
-    key: `${provenance.group}\u0000${provenance.id}\u0000${provenance.source ?? ''}`};
+  return {record, id: provenance.id, group: provenance.group, ...(provenance.source !== undefined ? {source: provenance.source} : {}), reference: provenance.reference, origin: provenance.origin,
+    key: templateKey(provenance)};
+}
+
+const templateKey = ({group, id, source}) => `${group}\u0000${id}\u0000${source ?? ''}`;
+function isTemplate(record) {
+  if (record === null || typeof record !== 'object' || !Object.hasOwn(record, 'areas')) return false;
+  try { layoutTemplate(record); return true; } catch { return false; }
+}
+
+/**
+ * Every template the deck can reach, in the order its layouts are written: the registered catalogs' templates in catalog order
+ * (each catalog's ids as it lists them), then the document's embedded templates (`custom` first, then the other groups by name,
+ * each by id). `resolve(reference)` is core's resolveReference for the deck's layouts; a record is listed under the first
+ * reference that resolves to it, and a record no reference reaches is left out.
+ */
+export function deckTemplates(document, catalogs, resolve) {
+  const result = [], seen = new Set();
+  const add = (references, matches) => {
+    for (const reference of references) {
+      let found;
+      try { found = resolve(reference); } catch { found = undefined; }
+      if (!found || !matches(found) || !isTemplate(found.record)) continue;
+      const template = {record: found.record, id: found.id, group: found.group, ...(found.source !== undefined ? {source: found.source} : {}), reference, origin: found.origin};
+      template.key = templateKey(template);
+      if (!seen.has(template.key)) { seen.add(template.key); result.push(template); }
+      return;
+    }
+  };
+  const groups = document?.catalogs !== null && typeof document?.catalogs === 'object' ? document.catalogs : {};
+  for (const catalog of Array.isArray(catalogs) ? catalogs : []) {
+    const named = Object.keys(groups).filter(name => name !== 'custom' && groups[name]?.source === catalog?.source);
+    for (const [id, record] of Object.entries(catalog?.layouts ?? {})) {
+      if (!NAME.test(id) || !isTemplate(record)) continue;
+      add([id, `default:${id}`, ...named.map(name => `${name}:${id}`)], found => found.origin === 'host' && found.id === id && found.source === catalog.source);
+    }
+  }
+  const names = Object.keys(groups).filter(name => NAME.test(name)).sort((a, b) => a === 'custom' ? -1 : b === 'custom' ? 1 : a < b ? -1 : a > b ? 1 : 0);
+  for (const group of names) for (const id of Object.keys(groups[group]?.layouts ?? {}).filter(id => NAME.test(id)).sort()) {
+    add(group === 'custom' ? [id, `custom:${id}`] : [`${group}:${id}`], found => found.origin === 'document' && found.group === group && found.id === id);
+  }
+  return result;
+}
+
+// RR-79 follow-up: composeLayoutAreas applies no bleed. A bled region's edges on the content box reach the slide edge, as core
+// draws the region on a slide; swap for core's bleed option when #577 has it.
+function bledBox(box, contentBox, width, height) {
+  const near = (a, b) => Math.abs(a - b) < 0.5;
+  const left = near(box.x, contentBox.x) ? 0 : box.x, top = near(box.y, contentBox.y) ? 0 : box.y;
+  const right = near(box.x + box.width, contentBox.x + contentBox.width) ? width : box.x + box.width;
+  const bottom = near(box.y + box.height, contentBox.y + contentBox.height) ? height : box.y + box.height;
+  return {x: left, y: top, width: right - left, height: bottom - top};
+}
+
+// RR-79 follow-up: composeLayoutAreas gives the heading area only. A centred title over its subtitle splits it 60/40, as
+// PowerPoint's Title Slide does; swap for core's title and subtitle sub-boxes when #577 has them.
+function titleSubBoxes(box) {
+  const split = box.height * 0.6;
+  return {title: {...box, height: split}, subtitle: {...box, y: box.y + split, height: box.height - split}};
 }
 
 const escapeXml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -132,29 +198,24 @@ export function layoutPlaceholders(template, {width, height, mirror = false, dir
   const {contentBox, areas} = composeLayoutAreas(record, {width, height, mirror, direction});
   const regions = new Map(parsed.regions.map(region => [region.name, region]));
   const indexes = regionIndexes(record);
-  const near = (a, b) => Math.abs(a - b) < 0.5;
+  // RR-79 follow-up: pass core's header, footer and placed-image band options to composeLayoutAreas when #577 has them, so the
+  // placeholders match the composed slides of a deck with furniture.
   const emu = box => ({x: Math.round(box.x * EMU), y: Math.round(box.y * EMU), cx: Math.max(0, Math.round(box.width * EMU)), cy: Math.max(0, Math.round(box.height * EMU))});
   const result = [];
   for (const area of areas) {
     if (area.name === 'title') {
       if (CENTERED_TITLE.has(id) && !parsed.subtitle) {
         // `cover` and `section`: PowerPoint's centred title over its subtitle, splitting the heading area.
-        const split = area.box.height * 0.6;
-        result.push({name: 'Title', type: 'ctrTitle', anchor: 'b', ...emu({...area.box, height: split})});
-        result.push({name: 'Subtitle', type: 'subTitle', idx: SUBTITLE_IDX, anchor: 't', ...emu({...area.box, y: area.box.y + split, height: area.box.height - split})});
+        const boxes = titleSubBoxes(area.box);
+        result.push({name: 'Title', type: 'ctrTitle', anchor: 'b', ...emu(boxes.title)});
+        result.push({name: 'Subtitle', type: 'subTitle', idx: SUBTITLE_IDX, anchor: 't', ...emu(boxes.subtitle)});
       } else result.push({name: 'Title', type: CENTERED_TITLE.has(id) ? 'ctrTitle' : 'title', ...emu(area.box)});
       continue;
     }
     if (area.name === 'subtitle') { result.push({name: 'Subtitle', type: 'subTitle', idx: SUBTITLE_IDX, anchor: 't', ...emu(area.box)}); continue; }
     const region = regions.get(area.name);
     if (!region) continue;
-    let box = area.box;
-    if (region.bleed) {
-      const left = near(box.x, contentBox.x) ? 0 : box.x, top = near(box.y, contentBox.y) ? 0 : box.y;
-      const right = near(box.x + box.width, contentBox.x + contentBox.width) ? width : box.x + box.width;
-      const bottom = near(box.y + box.height, contentBox.y + contentBox.height) ? height : box.y + box.height;
-      box = {x: left, y: top, width: right - left, height: bottom - top};
-    }
+    const box = region.bleed ? bledBox(area.box, contentBox, width, height) : area.box;
     result.push({name: region.name, type: placeholderType(region), idx: indexes[region.name], ...emu(box)});
   }
   return result;
@@ -171,20 +232,28 @@ function placeholderShape(placeholder, id) {
     `<p:txBody><a:bodyPr${placeholder.anchor ? ` anchor="${placeholder.anchor}"` : ''}/><a:lstStyle/>${paragraph}</p:txBody></p:sp>`;
 }
 
-/** The OPF_LAYOUT_V1 value of a template layout. */
-export function layoutTagValue(template) {
+/**
+ * The OPF_LAYOUT_V1 value of a template layout. With `record` (full provenance) a template the document embeds carries its
+ * record, so a template no slide uses comes back on import (document provenance stores only the records slides reference).
+ */
+export function layoutTagValue(template, {record = false} = {}) {
   return {v: 1, id: template.id, group: template.group, ...(template.source !== undefined ? {source: template.source} : {}), reference: template.reference,
-    hash: recordHash(template.record), regions: Object.fromEntries(Object.entries(regionIndexes(template.record)).map(([name, idx]) => [String(idx), name]))};
+    hash: recordHash(template.record), regions: Object.fromEntries(Object.entries(regionIndexes(template.record)).map(([name, idx]) => [String(idx), name])),
+    ...(record && template.origin === 'document' ? {record: template.record} : {})};
 }
 
 /**
  * Write the template layouts of the finished package and bind the placeholder objects. `output` maps a package path to
  * [bytes, zipOptions]; runs after the per-script slide masters and before RR-72 lifts furniture. `slides[i]` is slide i's
- * template plan ({template, width, height, mirror, direction}) or undefined. `bindings` maps an object name on a slide to
- * {slide, region, object} (`picture`, `chart` or `table`). `partText(path, xml)` applies the deck's language to a generated part.
+ * template plan ({template}) or undefined; `templates` (deckTemplates) are the layouts to write under every slide master, in
+ * order (a slide's own template is added when missing); `geometry` is {width, height, mirror, direction} of the deck. `bindings`
+ * maps an object name on a slide to {slide, region, object} (`picture`, `chart` or `table`). `partText(path, xml)` applies the
+ * deck's language to a generated part.
  */
-export function writeTemplateLayouts(output, slides, bindings = new Map(), partText = (path, xml) => xml) {
+export function writeTemplateLayouts(output, slides, templates, geometry, bindings = new Map(), partText = (path, xml) => xml, {records = false} = {}) {
   if (!slides.some(Boolean)) return;
+  const all = [...templates];
+  for (const plan of slides) if (plan && !all.some(template => template.key === plan.template.key)) all.push(plan.template);
   const has = path => Object.hasOwn(output, path);
   const read = path => dec.decode(output[path][0]);
   const options = output['ppt/presentation.xml'][1];
@@ -206,29 +275,31 @@ export function writeTemplateLayouts(output, slides, bindings = new Map(), partT
   let nextLayoutId = Math.max(2147483648, ...used) + 1;
   let nextLayout = Math.max(0, ...Object.keys(output).map(path => Number(/^ppt\/slideLayouts\/slideLayout(\d+)\.xml$/.exec(path)?.[1] ?? 0))) + 1;
   let nextTag = Math.max(0, ...Object.keys(output).map(path => Number(/^ppt\/tags\/opfLayout(\d+)\.xml$/.exec(path)?.[1] ?? 0))) + 1;
-  const created = new Map(); // master + template key -> layout path
-  const names = new Map(); // master -> Set of layout names
-  for (const [index, plan] of slides.entries()) {
-    if (!plan) continue;
-    const slidePath = slidePaths[index];
+  const created = new Map(); // master + template key -> {path, placeholders}
+  // Every slide master that holds a slide, in slide order, with the layout its slides use now (the copy each new layout starts from).
+  const masters = new Map();
+  for (const [index, slidePath] of slidePaths.entries()) {
     if (!slidePath || !has(slidePath)) throw new Error(`Slide ${index + 1} is missing.`);
     const base = related(slidePath, 'slideLayout'), master = base && related(base, 'slideMaster');
     if (!base || !master) throw new Error(`Slide ${index + 1} has no slide layout and master.`);
-    const key = `${master}\u0001${plan.template.key}`;
-    if (!created.has(key)) {
+    if (!masters.has(master)) masters.set(master, base);
+  }
+  for (const [master, base] of masters) {
+    const taken = new Set(Object.keys(output).filter(part => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(part) && related(part, 'slideMaster') === master)
+      .map(part => unescapeAttribute(read(part).match(/<p:cSld\b[^>]*\bname="([^"]*)"/)?.[1] ?? '')));
+    for (const template of all) {
+      const key = `${master}\u0001${template.key}`;
       const path = `ppt/slideLayouts/slideLayout${nextLayout++}.xml`, tagPath = `ppt/tags/opfLayout${nextTag++}.xml`;
-      const taken = names.get(master) ?? new Set(Object.keys(output).filter(part => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(part) && related(part, 'slideMaster') === master)
-        .map(part => unescapeAttribute(read(part).match(/<p:cSld\b[^>]*\bname="([^"]*)"/)?.[1] ?? '')));
-      names.set(master, taken);
-      let name = typeof plan.template.record.name === 'string' && plan.template.record.name.trim() ? plan.template.record.name : plan.template.id;
-      if (taken.has(name)) name = `${name} (${plan.template.group}:${plan.template.id})`;
+      let name = typeof template.record.name === 'string' && template.record.name.trim() ? template.record.name : template.id;
+      if (taken.has(name)) name = `${name} (${template.group}:${template.id})`;
       taken.add(name);
-      const type = POWERPOINT_LAYOUT_TYPES[plan.template.id] ?? 'cust';
+      const type = POWERPOINT_LAYOUT_TYPES[template.id] ?? 'cust';
+      const placeholders = layoutPlaceholders(template, geometry);
       let xml = read(base);
       xml = xml.replace(/<p:sldLayout\b[^>]*>/, open => `${open.slice(0, -1).replace(/\s+(?:type|userDrawn|showMasterSp)="[^"]*"/g, '')} type="${type}" userDrawn="1">`);
       xml = xml.replace(/(<p:cSld\b[^>]*?)(\s+name="[^"]*")?(\s*>)/, (match, open, _name, close) => `${open} name="${escapeXml(name)}"${close}`);
       let nextId = Math.max(1, ...[...xml.matchAll(/<p:cNvPr\b[^>]*\bid="(\d+)"/g)].map(match => Number(match[1]))) + 1;
-      const shapes = layoutPlaceholders(plan.template, plan).map(placeholder => placeholderShape(placeholder, nextId++)).join('');
+      const shapes = placeholders.map(placeholder => placeholderShape(placeholder, nextId++)).join('');
       const groupEnd = xml.indexOf('</p:grpSpPr>');
       if (groupEnd < 0 || /<p:custDataLst>\s*<p:tags\b[^>]*\/>\s*<\/p:custDataLst>\s*<\/p:cSld>/.test(xml)) throw new Error(`${base} cannot take template placeholders.`);
       xml = xml.slice(0, groupEnd + '</p:grpSpPr>'.length) + shapes + xml.slice(groupEnd + '</p:grpSpPr>'.length);
@@ -240,7 +311,7 @@ export function writeTemplateLayouts(output, slides, bindings = new Map(), partT
       xml = xml.replace('</p:spTree>', `</p:spTree><p:custDataLst><p:tags r:id="${tagged.rid}"/></p:custDataLst>`);
       write(path, partText(path, xml));
       write(relsOf(path), tagged.relsXml);
-      output[tagPath] = [enc.encode(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:tagLst xmlns:p="${NS}"><p:tag name="${LAYOUT_TAG}" val="${encodeTextTag(layoutTagValue(plan.template))}"/></p:tagLst>`), options];
+      output[tagPath] = [enc.encode(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:tagLst xmlns:p="${NS}"><p:tag name="${LAYOUT_TAG}" val="${encodeTextTag(layoutTagValue(template, {record: records}))}"/></p:tagLst>`), options];
       types = types.replace('</Types>', `<Override PartName="/${path}" ContentType="${LAYOUT_TYPE}"/><Override PartName="/${tagPath}" ContentType="${TAGS_TYPE}"/></Types>`);
       const masterRels = has(relsOf(master)) ? read(relsOf(master)) : '';
       const added = addRelationship(masterRels, `${REL}/slideLayout`, relativeTarget(master, path));
@@ -248,9 +319,15 @@ export function writeTemplateLayouts(output, slides, bindings = new Map(), partT
       const masterXml = read(master);
       if (!masterXml.includes('</p:sldLayoutIdLst>')) throw new Error(`${master} has no layout list.`);
       write(master, masterXml.replace('</p:sldLayoutIdLst>', `<p:sldLayoutId id="${nextLayoutId++}" r:id="${added.rid}"/></p:sldLayoutIdLst>`));
-      created.set(key, {path, placeholders: new Map(layoutPlaceholders(plan.template, plan).filter(item => item.idx !== undefined).map(item => [item.name, item]))});
+      created.set(key, {path, placeholders: new Map(placeholders.filter(item => item.idx !== undefined).map(item => [item.name, item]))});
     }
-    const layout = created.get(key);
+  }
+  for (const [index, plan] of slides.entries()) {
+    if (!plan) continue;
+    const slidePath = slidePaths[index];
+    const master = related(related(slidePath, 'slideLayout'), 'slideMaster');
+    const layout = created.get(`${master}\u0001${plan.template.key}`);
+    if (!layout) throw new Error(`Slide ${index + 1} has no template layout.`);
     const slideRels = relsOf(slidePath);
     write(slideRels, read(slideRels).replace(/<Relationship\b[^>]*\/>/g, node => attribute(node, 'Type') === `${REL}/slideLayout` ? node.replace(/\sTarget="[^"]*"/, ` Target="${relativeTarget(slidePath, layout.path)}"`) : node));
     // The lone picture, chart or table of a `none` region becomes its placeholder's content.
@@ -300,6 +377,7 @@ export function readLayoutTag(entries, layoutPath, report = () => {}) {
     if (value === null || typeof value !== 'object' || Array.isArray(value) || value.v !== 1) throw Error('unknown version');
     if (!NAME.test(value.id ?? '') || !NAME.test(value.group ?? '') || (value.source !== undefined && typeof value.source !== 'string')) throw Error('invalid id or group');
     if (typeof value.reference !== 'string' || !/^(?:[a-z][a-z0-9-]*:)?[a-z][a-z0-9-]*$/.test(value.reference) || typeof value.hash !== 'string') throw Error('invalid reference');
+    if (value.record !== undefined && (value.record === null || typeof value.record !== 'object' || Array.isArray(value.record))) throw Error('invalid record');
     const regions = value.regions;
     if (regions === null || typeof regions !== 'object' || Array.isArray(regions) || Object.keys(regions).length > MAX_REGIONS
       || Object.entries(regions).some(([idx, name]) => !/^\d{1,4}$/.test(idx) || typeof name !== 'string' || !NAME.test(name) || name.length > 64)) throw Error('invalid regions');
@@ -324,7 +402,18 @@ const bareId = reference => /^(?:([a-z][a-z0-9-]*):)?([a-z][a-z0-9-]*)$/.exec(re
  * After document provenance: each slide's layout from its tagged slide layout, and the region pins of blocks read from region
  * placeholders. `slides[i]` = {tag, blockRegions, restored}; `recordOf(index)` resolves the slide's layout record.
  */
-export function applyTemplateLayouts(imported, slides, recordOf, report = () => {}) {
+export function applyTemplateLayouts(imported, slides, recordOf, report = () => {}, layoutTags = []) {
+  // Embedded templates no slide uses come back from their layouts' tags, into `custom` or a group the document already has.
+  for (const tag of layoutTags) {
+    if (!tag?.record || recordHash(tag.record) !== tag.hash) continue;
+    if (tag.group !== 'custom' && (imported.catalogs?.[tag.group] === null || typeof imported.catalogs?.[tag.group] !== 'object')) continue;
+    if (imported.catalogs?.[tag.group]?.layouts?.[tag.id] !== undefined) continue;
+    if (!isTemplate(tag.record)) continue;
+    let valid = false;
+    try { valid = validateCatalogRecord('layouts', {$schema: 'https://openpresentation.org/schema/opf-layout/v2', id: tag.id, ...tag.record}).valid; } catch { valid = false; }
+    if (!valid) { report({code: 'invalid-layout-provenance', path: `catalogs.${tag.group}.layouts.${tag.id}`, message: `The layout record stored with the PowerPoint layout of ${tag.reference} does not validate; it was not restored.`}); continue; }
+    imported.catalogs = {...imported.catalogs, [tag.group]: {...imported.catalogs?.[tag.group], layouts: {...imported.catalogs?.[tag.group]?.layouts, [tag.id]: structuredClone(tag.record)}}};
+  }
   for (const [index, entry] of slides.entries()) {
     const slide = imported.slides[index], tag = entry?.tag;
     if (!slide || !tag) continue;

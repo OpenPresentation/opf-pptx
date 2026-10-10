@@ -155,10 +155,11 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     assert.ok(record, `${tag.id} is a template`);
     assert.deepEqual({v: tag.v, group: tag.group, reference: tag.reference, source: tag.source}, {v: 1, group: 'custom', reference: tag.id, source: undefined});
     assert.match(tag.hash, /^[0-9a-f]{16}$/);
+    assert.deepEqual(tag.record, record, 'An embedded template carries its record (full provenance)');
     assert.deepEqual(tag.regions, Object.fromEntries(Object.keys(record.regions).map((name, position) => [String(13 + position), name])), `${tag.id}: region indexes follow the record`);
     byId.set(tag.id, path);
     assert.equal(xml.match(/<p:cSld name="([^"]*)"/)[1], record.name, 'The layout is named by the record');
-    const expectedType = {cover: 'title', section: 'secHead', text: 'obj', list: 'obj', agenda: 'obj', faq: 'obj', 'two-column': 'twoObj', comparison: 'twoObj', 'image-beside': 'picTx', statement: 'titleOnly'}[tag.id] ?? 'cust';
+    const expectedType = {cover: 'title', section: 'secHead', text: 'obj', list: 'obj', agenda: 'obj', faq: 'obj', 'two-column': 'twoObj', comparison: 'twoObj', 'image-beside': 'picTx'}[tag.id] ?? 'cust';
     assert.match(xml, new RegExp(`<p:sldLayout\\b[^>]*\\btype="${expectedType}"`), `${tag.id} is a ${expectedType} layout`);
     // A placeholder per area at composeLayoutAreas' box (bled regions to the slide edge), and RR-11's three footer placeholders.
     const shapes = placeholders(xml), parsed = layoutTemplate(record);
@@ -190,7 +191,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     assert.equal(new Set(ids).size, ids.length, `${tag.id}: shape ids are unique`);
     assert.ok(checkOrder(xml, path) > 10, `${path} is in schema order`);
   }
-  assert.deepEqual([...byId.keys()].sort(), Object.keys(templates).sort(), 'Every template has its layout.');
+  assert.deepEqual([...byId.keys()], Object.keys(templates).sort(), 'Every embedded template has its layout, by id.');
   // Each slide relates to its template's layout, the filled and the empty slide to the same part.
   const count = Object.keys(templates).length;
   Object.keys(templates).forEach((id, index) => {
@@ -229,10 +230,38 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
   const catalogs = [gallery2, defaultCatalog];
   const {bytes: output, entries: parts} = await exportDeck(deck, {catalogs});
   const tags = layoutParts(parts).slice(1).map(path => layoutTag(parts, path));
-  assert.equal(tags.length, 28);
+  assert.deepEqual(tags.map(tag => tag.id), Object.keys(templates), 'One layout per template, in catalog order (the 0.18 records of the default catalog have none).');
   assert.ok(tags.every(tag => tag.group === 'default' && tag.source === gallery2.source), 'A registered layout records its catalog source');
+  assert.ok(tags.every(tag => tag.record === undefined), 'A registered template carries no record');
   const {imported} = await read(output, {catalogs});
   assert.ok(isDeepStrictEqual(imported, deck), 'Registered templates round-trip deep-equal.');
+  checked++;
+}
+
+// ---- 2b. One slide on one registered template: Change Layout reaches every template the deck can resolve, the registered
+// catalog's in catalog order and then the embedded custom templates by id, used or not. A second script profile (its own slide
+// master, opf-pptx#168) gets the same set.
+{
+  const custom = {'zz-notes': {name: 'Notes', areas: ['title', 'notes'], rows: ['auto', 1], regions: {notes: {accepts: ['text', 'list']}}},
+    'aa-split': {name: 'Split', areas: ['title title', 'start end'], rows: ['auto', 1], regions: {start: {accepts: ['text']}, end: {accepts: ['image']}}}};
+  const deck = {name: 'One template', language: 'ja', catalogs: {custom: {layouts: custom}, gallery: {source: defaultCatalog.source}}, slides: [{layout: 'pillars', title: '日本語の見出し', blocks: [{text: 'ひらがな'}]},
+    {title: '日本語の見出し', text: 'カタカナ', design: {fontScheme: 'gallery:ms-mincho'}}]};
+  const catalogs = [gallery2, defaultCatalog];
+  const {bytes: output, entries: parts} = await exportDeck(deck, {catalogs});
+  const masters = Object.keys(parts).filter(path => /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(path)).sort();
+  assert.equal(masters.length, 2, 'Two script profiles, two slide masters');
+  const order = [...Object.keys(templates), 'aa-split', 'zz-notes'];
+  for (const master of masters) {
+    const listed = [...text(parts, master).matchAll(/<p:sldLayoutId id="\d+" r:id="([^"]+)"\/>/g)].map(match => resolvePart(master, relationships(parts, master).find(rel => rel.id === match[1]).target));
+    assert.equal(layoutTag(parts, listed[0]), undefined, `${master} keeps its own layout first`);
+    assert.deepEqual(listed.slice(1).map(path => layoutTag(parts, path).id), order, `${master} lists every reachable template in order`);
+  }
+  assert.equal(layoutParts(parts).length, 2 * (order.length + 1));
+  assert.equal(layoutTag(parts, layoutOf(parts, 1)).id, 'pillars');
+  assert.equal(layoutTag(parts, layoutOf(parts, 2)), undefined, 'The automatic slide keeps its master\'s own layout');
+  assert.notEqual(related(parts, layoutOf(parts, 1), 'slideMaster'), related(parts, layoutOf(parts, 2), 'slideMaster'));
+  const {imported} = await read(output, {catalogs});
+  assert.ok(isDeepStrictEqual(imported, deck), JSON.stringify(imported.catalogs));
   checked++;
 }
 
@@ -360,7 +389,11 @@ const roadmap = {name: 'Roadmap review', catalogs: {custom: {layouts: {'roadmap-
   assert.equal(layoutParts(parts).length, 1);
   assert.ok(!Object.keys(parts).some(path => /opfLayout/.test(path)));
   assert.ok(!/<p:ph\b/.test(text(parts, 'ppt/slides/slide3.xml')));
+  // Registering templates changes nothing while no slide uses one.
+  const registered = await exportDeck(deck, {catalogs: [gallery2, defaultCatalog]});
+  assert.equal(layoutParts(registered.entries).length, 1);
+  assert.ok(!Object.keys(registered.entries).some(path => /opfLayout/.test(path)));
   checked++;
 }
 
-console.log(`Template layouts passed (${checked}): 28 templates as native slide layouts (placeholder per area, types, geometry, OPF_LAYOUT_V1, schema order), bound placeholder objects, embedded and registered round trips, region pins, list columns, Change Layout, a slide added in PowerPoint, no provenance, furniture variants, a damaged tag and unchanged 0.18 exports.`);
+console.log(`Template layouts passed (${checked}): 28 templates as native slide layouts (placeholder per area, types, geometry, OPF_LAYOUT_V1, schema order), every reachable template in catalog order on every master, bound placeholder objects, embedded and registered round trips, region pins, list columns, Change Layout, a slide added in PowerPoint, no provenance, furniture variants, a damaged tag and unchanged 0.18 exports.`);

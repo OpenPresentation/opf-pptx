@@ -32,7 +32,7 @@ import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './section
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, nativePlaceholderForPart, writeNativeMasters} from './native-furniture.js';
 import {liftMasterFurniture} from './master-furniture.js';
-import {applyTemplateLayouts, placeholderRegion, readLayoutTag, slideTemplate, writeTemplateLayouts} from './template-layouts.js';
+import {applyTemplateLayouts, deckTemplates, placeholderRegion, readLayoutTag, slideTemplate, writeTemplateLayouts} from './template-layouts.js';
 import {importImageOrientation} from './image-import.js';
 import {extractSignals, normalizeSignalOptions, themeFactsFor} from './import-signals.js';
 import {placeImages, importImages, importImagePlaceholders, isImagePlaceholderGroup, imageName, imageOverlayName, imagePlaceholderGroupName, backgroundImageName, backgroundOverlayName, IMAGE_TREATMENT_KEYS, BACKGROUND_IMAGE_KEYS, IMAGE_PLACEHOLDER_TAG} from './image-provenance.js';
@@ -349,6 +349,11 @@ export async function toPptx(input, options = {}) {
     await addSlide(pptx, presentation, presentation.slides[index], index, context, options);
   }
 
+  // RR-81: when a slide uses a template, every template the deck reaches gets its native layout (registered catalogs, then embedded).
+  if (context.templateSlides.some(Boolean)) {
+    context.deckTemplates = deckTemplates(presentation, options.catalogs, reference => resolveReference(presentation, 'layouts', reference, options.catalogs !== undefined ? {catalogs: options.catalogs} : {}));
+  }
+
   // FF-08: pitchFamily per exported family, from each slide's resolved scheme, then the font schemes the document embeds
   // and the registered catalogs its groups name (core catalogRecords).
   context.fontPitch = fontPitchFamilies(presentation.slides.map((slide, index) => exportSlideContext(presentation, index, context, options).fonts),
@@ -533,10 +538,13 @@ export async function fromPptx(input, options = {}) {
   if (slideProvenance.length !== imported.slides.length) throw new OPFPptxError("invalid-import-opf", "Slide provenance does not match the imported slides.");
   // RR-81: a slide on a 0.19 template layout takes that layout's reference (a slide added in PowerPoint, Change Layout), and a
   // block read from a region placeholder keeps its region with a pin where plain binding would move it (src/template-layouts.js).
-  if (furnitureContexts.some(context => context.layoutTag)) {
+  // Every tagged layout of the package, used or not: an embedded template no slide uses comes back from its tag.
+  const packageLayoutTags = Object.keys(entries).filter(path => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(path)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]))
+    .map(path => layoutTagOf(path, 0)).filter(Boolean);
+  if (packageLayoutTags.length) {
     const restoredContent = new Set(restoredGroups.filter(group => group.applied && group.contentPaths).map(group => group.contentPaths.slide));
     applyTemplateLayouts(imported, furnitureContexts.map((context, index) => ({tag: context.layoutTag, blockRegions: context.blockRegions, restored: restoredContent.has(index)})),
-      index => resolveCoreSlideContext(imported, index, options.catalogs !== undefined ? {catalogs: options.catalogs} : {}).resolved.layout, report);
+      index => resolveCoreSlideContext(imported, index, options.catalogs !== undefined ? {catalogs: options.catalogs} : {}).resolved.layout, report, packageLayoutTags);
   }
   // RR-34: marker runs become cite/footnote on the runs before them, and the references list is rebuilt
   // from the stored record and the footnote boxes (an edited note keeps its edited text).
@@ -2043,6 +2051,7 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
   const geometry = composeSlide(opfSlide, composeOptions);
   // RR-81: a list core broke into columns (listColumns) is drawn as one measured list whose lines sit in their columns: each line
   // is its own shape at core's geometry, as in every list, and line names, numbering and provenance run across the columns.
+  // RR-79 follow-up: core gives only the first column as item.text; drop this merge when #577 makes item.text the whole list.
   for (const item of geometry.items) if (item.listColumns?.length > 1 && item.text?.listEntries) item.text = {...item.text, listEntries: item.listColumns.flatMap(column => column.text?.listEntries ?? [])};
   // RR-81: a slide on a 0.19 template uses that template's native slide layout (src/template-layouts.js).
   const template = slideTemplate(slideContext.core);
@@ -4119,7 +4128,9 @@ async function normalizePptxZip(raw, context) {
   // placeholders (src/template-layouts.js). Before RR-72, which copies a slide's own layout for a furniture variant.
   if (context.templateSlides.some(Boolean)) {
     try {
-      writeTemplateLayouts(output, context.templateSlides, context.placeholderBindings, (path, xml) => context.scriptFonts ? partScriptFonts(path, xml, context.scriptFonts, 0) : xml);
+      const {width, height, mirror, direction} = context.templateSlides.find(Boolean);
+      writeTemplateLayouts(output, context.templateSlides, context.deckTemplates ?? [], {width, height, mirror, direction}, context.placeholderBindings,
+        (path, xml) => context.scriptFonts ? partScriptFonts(path, xml, context.scriptFonts, 0) : xml, {records: context.provenanceMode === 'full'});
     } catch (error) {
       throw new OPFPptxError('packaging-failed', 'Native slide layouts for the layout templates could not be written.', {cause: errorMessage(error)});
     }
