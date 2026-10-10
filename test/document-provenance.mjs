@@ -6,11 +6,11 @@ import {XMLParser} from 'fast-xml-parser';
 import {toPptx as exportPptx, fromPptx as importPptx} from '../dist/index.js';
 import {restoreDocumentProvenance} from '../dist/document-provenance.js';
 import {validate} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 
 // OPF 0.15 (FA-23): the gallery records the deck names (theme, schemes, title-subtitle) come from the snapshot, which the
 // host registers for export and import; the deck embeds its own layout under catalogs.custom.
-const catalogs = [defaultCatalog];
+const catalogs = [gallery];
 const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs, ...options});
 const fromPptx = (bytes, options = {}) => importPptx(bytes, {catalogs, ...options});
 
@@ -21,7 +21,7 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 const png = await readFile(new URL('fixtures/images/wide.png', import.meta.url));
 const pngUri = `data:image/png;base64,${png.toString('base64')}`;
 const logo = 'https://example.com/acme-logo.png';
-const layoutRecord = {...structuredClone(defaultCatalog.layouts['title-subtitle']), name: 'Hero Title'};
+const layoutRecord = {...structuredClone(gallery.layouts['title-subtitle']), name: 'Hero Title'};
 for (const key of Object.keys(layoutRecord)) if (key.startsWith('x-')) delete layoutRecord[key];
 const unused = {...structuredClone(layoutRecord), name: 'Never used'};
 const embedded = {custom: {layouts: {'hero-title': layoutRecord}}};

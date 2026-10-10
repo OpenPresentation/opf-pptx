@@ -10,13 +10,13 @@ import {readFileSync} from 'node:fs';
 import {unzipSync} from 'fflate';
 import {toSvg} from '@openpresentation/opf-render';
 import {resolvePresentation} from '@openpresentation/opf-render/svg';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toPptx, fromPptx} from '../dist/index.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/gallery-alignment-layouts.json', import.meta.url), 'utf8'));
 // OPF 0.15: the 7 gallery-only records are embedded in their documents under catalogs.default; the 50 others are default
 // catalog records the host registers (zero built-ins), as the gallery itself does.
-const HOST = {catalogs: [defaultCatalog]};
+const HOST = {catalogs: [gallery]};
 assert.equal(fixture.layouts.length, 57, 'the 50 partial and 7 gallery-only layouts audit A flagged');
 assert.equal(fixture.layouts.filter(layout => layout.status === 'partial').length, 50);
 
@@ -24,7 +24,7 @@ assert.equal(fixture.layouts.filter(layout => layout.status === 'partial').lengt
 // so their boxes move by design and they are no longer alignment-only layouts; test/placeholder-groups.mjs covers nested
 // records. Any other fixture layout whose host record gains groups must be reviewed the same way.
 const NESTED_RECORDS = ['chart-2x', 'chart-3x'];
-const nested = ({id, document}) => !document.catalogs?.default?.layouts?.[id] && (defaultCatalog.layouts[id]?.placeholders ?? []).some(entry => entry?.type === 'group');
+const nested = ({id, document}) => !document.catalogs?.default?.layouts?.[id] && (gallery.layouts[id]?.placeholders ?? []).some(entry => entry?.type === 'group');
 assert.deepEqual(fixture.layouts.filter(nested).map(layout => layout.id), NESTED_RECORDS);
 
 const decoder = new TextDecoder();
@@ -48,7 +48,7 @@ const geometry = xml => [...xml.matchAll(/<a:off x="(-?\d+)" y="(-?\d+)"\/><a:ex
 const shapeCounts = xml => ({sp: (xml.match(/<p:sp>/g) ?? []).length, pic: (xml.match(/<p:pic>/g) ?? []).length, frame: (xml.match(/<p:graphicFrame>/g) ?? []).length});
 const withoutLayout = document => {
   const base = structuredClone(document);
-  const id = base.slides[0].layout, record = base.catalogs?.default?.layouts?.[id] ?? defaultCatalog.layouts[id];
+  const id = base.slides[0].layout, record = base.catalogs?.default?.layouts?.[id] ?? gallery.layouts[id];
   delete base.slides[0].layout; delete base.slides[0].design; delete base.slides[0].composition; delete base.catalogs;
   // OPF 0.15's default fit is cover (0.14's was contain): a layout's imageFit is kept on the deck, so the comparison still
   // isolates the alignment the layout changes.

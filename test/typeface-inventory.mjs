@@ -3,16 +3,16 @@ import {readFile} from 'node:fs/promises';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import {resolveSlideContext} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {examples} from '@openpresentation/opf/examples';
 import {resolveFontFamilies, resolveScriptFonts} from '@openpresentation/opf/composition';
 import {writeWorkbookFonts} from '../src/package-fonts.js';
 import {toPptx as exportPptx, checkTypefaces, inventoryTypefaces, THEME_SCRIPT_SUPPLEMENTS} from '../src/index.js';
 
 // OPF 0.15 (FA-23): the gallery records these checks name come from the snapshot, which a host registers explicitly
-// (`catalogs: [defaultCatalog]`); `records` lists them with their keys as ids.
-const records = Object.fromEntries(Object.entries(defaultCatalog).filter(([, map]) => map && typeof map === 'object').map(([kind, map]) => [kind, Object.entries(map).map(([id, record]) => ({id, ...record}))]));
-const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [defaultCatalog], ...options});
+// (`catalogs: [gallery]`); `records` lists them with their keys as ids.
+const records = Object.fromEntries(Object.entries(gallery).filter(([, map]) => map && typeof map === 'object').map(([kind, map]) => [kind, Object.entries(map).map(([id, record]) => ({id, ...record}))]));
+const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [gallery], ...options});
 
 // FF-08 (font-fidelity-everywhere): the exported package names only the fonts
 // the document chose. checkTypefaces walks every XML part, including the
@@ -158,14 +158,14 @@ assert.throws(() => checkTypefaces(bytes, {}), TypeError);
 // Corpus: every example deck, with the fonts its design and runs choose.
 const designFonts = (presentation, index) => {
   // Core's slide context resolves the slide's font scheme (slide design, deck design, theme, engine default).
-  const scheme = resolveSlideContext(presentation, index, {catalogs: [defaultCatalog]}).resolved.fontScheme;
+  const scheme = resolveSlideContext(presentation, index, {catalogs: [gallery]}).resolved.fontScheme;
   return {...resolveFontFamilies(scheme), mono: scheme.type === 'monospace' ? [scheme.major, scheme.minor] : []};
 };
 // FF-07 writes the language's script fonts (theme and run ea/cs and the language's
 // own theme supplement) through core resolveScriptFonts(); those resolved families are chosen fonts too.
 const scriptFonts = presentation => {
   return [undefined, ...presentation.slides.keys()].flatMap(slideIndex => {
-    const resolved = resolveScriptFonts(presentation, {catalogs: [defaultCatalog], ...(slideIndex === undefined ? {} : {slideIndex})});
+    const resolved = resolveScriptFonts(presentation, {catalogs: [gallery], ...(slideIndex === undefined ? {} : {slideIndex})});
     const slots = [resolved.heading, resolved.body].flatMap(slot => [slot.latin, slot.eastAsian, slot.complexScript]);
     return [...slots, ...(resolved.supplement ? [resolved.supplement.heading, resolved.supplement.body] : [])].filter(Boolean);
   });
@@ -179,7 +179,7 @@ for (const {file, deck: example} of examples) {
   const mono = roles.flatMap(role => [...role.mono, role.code]);
   const exported = await toPptx(example, {imageResolver: async () => new Uint8Array(await readFile(new URL('./fixtures/images/wide.png', import.meta.url)))});
   // FF-49: a theme ea/cs is written exactly where the deck selected a script font (scheme slot or language), else empty.
-  const deckSlots = resolveScriptFonts(example, {catalogs: [defaultCatalog]});
+  const deckSlots = resolveScriptFonts(example, {catalogs: [gallery]});
   const supplied = role => Object.fromEntries([['ea', 'eastAsian'], ['cs', 'complexScript']].map(([element, key]) => [element, deckSlots.sources[key] === 'latin' ? '' : deckSlots[role][key]]));
   const checked = checkTypefaces(exported, {families: fonts, monospace: mono, themeScripts: {major: supplied('heading'), minor: supplied('body')}});
   corpus.decks++;

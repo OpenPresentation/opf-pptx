@@ -166,7 +166,7 @@ export interface ToPptxOptions {
    * against a document group's `catalogs.<group>.source`, and the first is the host default that bare ids use when the document
    * omits `catalogs.default`. Never fetched. Every reference (slide layouts, themes, colour and font schemes) resolves in the
    * document's embedded records first, then here; omitted or `[]`, only embedded records resolve. Register the gallery snapshot
-   * explicitly with `catalogs: [defaultCatalog]` from `@openpresentation/opf/catalog`.
+   * explicitly with `catalogs: [gallery]` from `@openpresentation/gallery`.
    */
   catalogs?: readonly Catalog[];
 }

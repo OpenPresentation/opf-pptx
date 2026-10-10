@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {strFromU8, unzipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import {validate} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {LANGUAGES, paragraphDirection, resolveScriptFonts} from '@openpresentation/opf/composition';
 import {fromPptx, toPptx} from '../dist/index.js';
 
@@ -312,7 +312,7 @@ for (const expected of cases) {
   // selects a complex-script font, and the Uigh entry PowerPoint applies to ug-CN runs takes that same family; with no
   // complex-script font selected, Uigh takes the latin family. Arab follows core's rule as before. The font scheme is a
   // reference to the gallery snapshot, which the host registers.
-  const catalogs = [defaultCatalog];
+  const catalogs = [gallery];
   const uyghur = fontScheme => ({language: {bcp47: 'ug-Arab', name: 'Uyghur', ooxmlLang: 'ug-CN', script: 'Arab', direction: 'rtl', ...(fontScheme ? {fontScheme} : {})}, name: 'Uyghur', slides: [{title: 'ئۇيغۇرچە', text: 'Uyghur'}]});
   for (const [fontScheme, expect] of [['arabic-typesetting', {major: 'Arabic Typesetting', minor: 'Arabic Typesetting', arab: true}], [undefined, {major: 'Aptos Display', minor: 'Aptos', arab: false}]]) {
     const presentation = uyghur(fontScheme), resolved = resolveScriptFonts(presentation, {catalogs});

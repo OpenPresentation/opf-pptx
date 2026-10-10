@@ -3,15 +3,15 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { unzipSync } from "fflate";
 import { XMLParser } from "fast-xml-parser";
-import { defaultCatalog } from "@openpresentation/opf/catalog";
+import { gallery } from "@openpresentation/gallery";
 import { normalizeHexColor, resolveColorRef } from "@openpresentation/opf/composition";
 import { resolveColorRefValue, resolveExportColor, colorContext } from "../dist/color-ref.js";
 import {toPptx as exportPptx} from "../dist/index.js";
 
 // OPF 0.15 (FA-23): the gallery records these checks name come from the snapshot, which a host registers explicitly
-// (`catalogs: [defaultCatalog]`); `records` lists them with their keys as ids.
-const records = Object.fromEntries(Object.entries(defaultCatalog).filter(([, map]) => map && typeof map === 'object').map(([kind, map]) => [kind, Object.entries(map).map(([id, record]) => ({id, ...record}))]));
-const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [defaultCatalog], ...options});
+// (`catalogs: [gallery]`); `records` lists them with their keys as ids.
+const records = Object.fromEntries(Object.entries(gallery).filter(([, map]) => map && typeof map === 'object').map(([kind, map]) => [kind, Object.entries(map).map(([id, record]) => ({id, ...record}))]));
+const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [gallery], ...options});
 
 const forest = records.colorSchemes.find((record) => record.id === "forest-green");
 assert.ok(forest, "forest-green catalog record");

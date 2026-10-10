@@ -2,16 +2,16 @@ import assert from 'node:assert/strict';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import {validate} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {nativeTableBytes} from './table-values.js';
 import {toPptx as exportPptx, fromPptx as importPptx} from '../dist/index.js';
 import {themeSlotColors, writeThemeColors} from '../dist/theme-colors.js';
 
 // OPF 0.15 (FA-23): the gallery records these checks name come from the snapshot, which a host registers explicitly
-// (`catalogs: [defaultCatalog]`); `records` lists them with their keys as ids.
-const records = Object.fromEntries(Object.entries(defaultCatalog).filter(([, map]) => map && typeof map === 'object').map(([kind, map]) => [kind, Object.entries(map).map(([id, record]) => ({id, ...record}))]));
-const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [defaultCatalog], ...options});
-const fromPptx = (bytes, options = {}) => importPptx(bytes, {catalogs: [defaultCatalog], ...options});
+// (`catalogs: [gallery]`); `records` lists them with their keys as ids.
+const records = Object.fromEntries(Object.entries(gallery).filter(([, map]) => map && typeof map === 'object').map(([kind, map]) => [kind, Object.entries(map).map(([id, record]) => ({id, ...record}))]));
+const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [gallery], ...options});
+const fromPptx = (bytes, options = {}) => importPptx(bytes, {catalogs: [gallery], ...options});
 
 // FF-24c: table cell fills, borders and text that name a theme slot or role, and
 // the engine's own table chrome (header accent, body surface, border, paired text),

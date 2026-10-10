@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
-import {catalogDisplay} from '@openpresentation/opf/catalog';
+import {catalogDisplay} from '@openpresentation/gallery';
 import {fromPptx, toPptx} from './helpers/default-catalog.mjs';
 import {CHART_TYPES, CHARTEX_NAMESPACES, chartTypeFromChartex, resolveChartType} from '../dist/chart-types.js';
 import {CHARTEX_CONTENT_TYPES, CHARTEX_RELATIONSHIP_TYPES, chartexPointColors, columnLetters, scottBinCount} from '../dist/chartex.js';

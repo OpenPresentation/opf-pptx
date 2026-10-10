@@ -4,11 +4,11 @@ import {unzipSync} from 'fflate';
 import {toSvg as renderToSvg} from '@openpresentation/opf-render';
 import {resolvePresentation as resolveForPreview} from '@openpresentation/opf-render/svg';
 import {toPptx as exportPptx, fromPptx as importPptx} from '../dist/index.js';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 
 // OPF 0.15: the deck's font scheme (roboto) is the gallery snapshot's, which the host registers for preview, export and
 // import alike; the layout under test is embedded in catalogs.custom.
-const catalogs = [defaultCatalog];
+const catalogs = [gallery];
 const toSvg = (deck, slide, options = {}) => renderToSvg(deck, slide, {catalogs, ...options});
 const resolvePresentation = (deck, options = {}) => resolveForPreview(deck, {catalogs, ...options});
 const toPptx = (deck, options = {}) => exportPptx(deck, {catalogs, ...options});

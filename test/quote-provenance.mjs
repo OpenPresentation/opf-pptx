@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {unzipSync,zipSync} from 'fflate';
 import {XMLParser} from 'fast-xml-parser';
 import {toPptx as exportPptx,fromPptx as importPptx} from '../dist/index.js';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {decodeTextTag} from '../dist/code-provenance.js';
 import {loadFonts} from '@openpresentation/opf-render/fonts-node';
 
@@ -29,7 +29,7 @@ const fixtures=[
 
 // OPF 0.15: the quote layouts are the gallery snapshot's, registered for export and import (a stored layout reference
 // that resolves only in a registered catalog restores where the importer registers it).
-const catalogs=[defaultCatalog];
+const catalogs=[gallery];
 const toPptx=(source,options={})=>exportPptx(source,{catalogs,...options});
 const fromPptx=(bytes,options={})=>importPptx(bytes,{catalogs,...options});
 const exportSource=(source,options=OPTIONS)=>toPptx(source,options);

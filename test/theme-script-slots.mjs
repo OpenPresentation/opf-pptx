@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {unzipSync} from 'fflate';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {LANGUAGES, resolveScriptFonts} from '@openpresentation/opf/composition';
 import {examples} from '@openpresentation/opf/examples';
 import {resolvePresentation} from '@openpresentation/opf-render';
@@ -23,8 +23,8 @@ const deck = (fontScheme, language, extra = {}) => ({name: 'Theme slots', ...(la
 
 // OPF 0.15: the font schemes come from the gallery snapshot, which the host registers for every engine (export, preview,
 // import and core's resolver); languages are BCP-47 tags in core's language vocabulary.
-const catalogs = [defaultCatalog];
-const fontSchemeRecords = Object.entries(defaultCatalog.fontSchemes).map(([id, record]) => ({id, ...record}));
+const catalogs = [gallery];
+const fontSchemeRecords = Object.entries(gallery.fontSchemes).map(([id, record]) => ({id, ...record}));
 const exported = async (presentation, options = {}) => {
   const diagnostics = [];
   const bytes = await toPptx(structuredClone(presentation), {catalogs, ...options, onDiagnostic: diagnostic => diagnostics.push(diagnostic)});
