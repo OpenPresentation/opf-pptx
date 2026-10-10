@@ -350,8 +350,18 @@ export async function toPptx(input, options = {}) {
   }
 
   // RR-81: when a slide uses a template, every template the deck reaches gets its native layout (registered catalogs, then embedded).
+  // A template's placeholders are composed with the options of the first slide that uses it; a template no slide uses, with the
+  // options of a slide that would (the deck's header and footer, the template's own design) and no placed-image band.
   if (context.templateSlides.some(Boolean)) {
-    context.deckTemplates = deckTemplates(presentation, options.catalogs, reference => resolveReference(presentation, 'layouts', reference, options.catalogs !== undefined ? {catalogs: options.catalogs} : {}));
+    const plans = context.templateSlides.filter(Boolean), first = plans[0];
+    const reachable = deckTemplates(presentation, options.catalogs, reference => resolveReference(presentation, 'layouts', reference, options.catalogs !== undefined ? {catalogs: options.catalogs} : {}));
+    for (const plan of plans) if (!reachable.some(template => template.key === plan.template.key)) reachable.push(plan.template);
+    context.deckTemplates = reachable.map(template => {
+      const used = plans.find(plan => plan.template.key === template.key);
+      if (used) return {...template, areaOptions: used.areaOptions};
+      const core = coreContext({...presentation, slides: [{layout: template.reference}]}, 0, options).options;
+      return {...template, areaOptions: {...core, fontFamilies: first.areaOptions.fontFamilies, textRasterPadding: options.textRasterPadding, placements: []}};
+    });
   }
 
   // FF-08: pitchFamily per exported family, from each slide's resolved scheme, then the font schemes the document embeds
@@ -2051,11 +2061,13 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
   const geometry = composeSlide(opfSlide, composeOptions);
   // RR-81: a list core broke into columns (listColumns) is drawn as one measured list whose lines sit in their columns: each line
   // is its own shape at core's geometry, as in every list, and line names, numbering and provenance run across the columns.
-  // RR-79 follow-up: core gives only the first column as item.text; drop this merge when #577 makes item.text the whole list.
+  // Core's item.text is the whole list (every entry at its column's position); the lines are taken from listColumns, which replace
+  // the entries rather than add to them, so each entry is drawn once.
   for (const item of geometry.items) if (item.listColumns?.length > 1 && item.text?.listEntries) item.text = {...item.text, listEntries: item.listColumns.flatMap(column => column.text?.listEntries ?? [])};
-  // RR-81: a slide on a 0.19 template uses that template's native slide layout (src/template-layouts.js).
+  // RR-81: a slide on a 0.19 template uses that template's native slide layout (src/template-layouts.js), whose placeholders
+  // core composes with this slide's options (canvas, the deck's header and footer, direction) and its placed-image bands.
   const template = slideTemplate(slideContext.core);
-  if (template) context.templateSlides[slideIndex] = {template, width: widthInches * 96, height: heightInches * 96, mirror: presentation.design?.mirror === true, direction: geometry.direction === 'rtl' ? 'rtl' : 'ltr'};
+  if (template) context.templateSlides[slideIndex] = {template, areaOptions: {...composeOptions, placements: placedImageBands(opfSlide)}};
   // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
   if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
   slideContext.zoneBand = zoneBands(composeOptions);
@@ -2169,6 +2181,13 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
     slide.addNotes(notes);
     if (notes.includes('\r')) context.notesWithCarriageReturns.set(`ppt/notesSlides/notesSlide${slideIndex + 1}.xml`, notes);
   }
+}
+
+// RR-81: the placed-image bands of a slide (its image blocks with a `placement`), which a template layout reserves as the slide does.
+function placedImageBands(slide) {
+  return (Array.isArray(slide?.blocks) ? slide.blocks : [])
+    .filter(block => isPlainObject(block) && isPlainObject(block.placement) && typeof block.placement.edge === 'string' && (block.image !== undefined || block.type === 'image'))
+    .map(({placement}) => ({edge: placement.edge, ...(placement.size !== undefined ? {size: placement.size} : {}), ...(placement.inset !== undefined ? {inset: placement.inset} : {})}));
 }
 
 // One slide's export context: core's resolveSlideContext (`core`: composeSlide's options, the records and the diagnostics) and
@@ -4128,8 +4147,7 @@ async function normalizePptxZip(raw, context) {
   // placeholders (src/template-layouts.js). Before RR-72, which copies a slide's own layout for a furniture variant.
   if (context.templateSlides.some(Boolean)) {
     try {
-      const {width, height, mirror, direction} = context.templateSlides.find(Boolean);
-      writeTemplateLayouts(output, context.templateSlides, context.deckTemplates ?? [], {width, height, mirror, direction}, context.placeholderBindings,
+      writeTemplateLayouts(output, context.templateSlides, context.deckTemplates ?? [], context.placeholderBindings,
         (path, xml) => context.scriptFonts ? partScriptFonts(path, xml, context.scriptFonts, 0) : xml, {records: context.provenanceMode === 'full'});
     } catch (error) {
       throw new OPFPptxError('packaging-failed', 'Native slide layouts for the layout templates could not be written.', {cause: errorMessage(error)});

@@ -8,8 +8,8 @@ import {readFile} from 'node:fs/promises';
 import {isDeepStrictEqual} from 'node:util';
 import {unzipSync, zipSync} from 'fflate';
 import {XMLParser} from 'fast-xml-parser';
-import {validate} from '@openpresentation/opf';
-import {composeLayoutAreas, layoutTemplate} from '@openpresentation/opf/composition';
+import {resolveSlideContext, validate} from '@openpresentation/opf';
+import {composeLayoutAreas, composeSlide, layoutTemplate} from '@openpresentation/opf/composition';
 import {defaultCatalog, toPptx, fromPptx} from './helpers/default-catalog.mjs';
 
 const dec = new TextDecoder(), enc = new TextEncoder();
@@ -163,7 +163,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
     assert.match(xml, new RegExp(`<p:sldLayout\\b[^>]*\\btype="${expectedType}"`), `${tag.id} is a ${expectedType} layout`);
     // A placeholder per area at composeLayoutAreas' box (bled regions to the slide edge), and RR-11's three footer placeholders.
     const shapes = placeholders(xml), parsed = layoutTemplate(record);
-    const {contentBox, areas} = composeLayoutAreas(record, {width: 1280, height: 720});
+    const {areas} = composeLayoutAreas(record, {presentation: embedded});
     const emu = value => Math.round(value * 9525);
     for (const area of areas.filter(item => !item.heading)) {
       const region = parsed.regions.find(item => item.name === area.name), shape = shapes.find(item => item.name === area.name);
@@ -173,18 +173,24 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
       const type = only('image') ? 'pic' : only('chart') ? 'chart' : only('table') ? 'tbl' : only('video') ? 'media'
         : region.role === 'media' && accepts.has('image') && only('image', 'video', 'group') ? 'pic' : only('text', 'list') ? 'body' : 'obj';
       assert.equal(shape.type, type, `${tag.id}.${area.name} is a ${type} placeholder`);
-      let {x, y, width, height} = area.box;
-      if (region.bleed) {
-        const near = (a, b) => Math.abs(a - b) < .5;
-        const right = near(x + width, contentBox.x + contentBox.width) ? 1280 : x + width, bottom = near(y + height, contentBox.y + contentBox.height) ? 720 : y + height;
-        x = near(x, contentBox.x) ? 0 : x; y = near(y, contentBox.y) ? 0 : y; width = right - x; height = bottom - y;
-      }
+      const {x, y, width, height} = area.box;
       assert.deepEqual(shape.box, [emu(x), emu(y), emu(width), emu(height)], `${tag.id}.${area.name} sits at its composed box`);
     }
     const title = shapes.filter(item => ['title', 'ctrTitle'].includes(item.type));
     assert.equal(title.length, 1, `${tag.id}: one title placeholder`);
     assert.equal(title[0].type, ['cover', 'section'].includes(tag.id) ? 'ctrTitle' : 'title');
     assert.equal(shapes.some(item => item.type === 'subTitle' && item.idx === '1'), ['cover', 'section'].includes(tag.id), `${tag.id}: a subtitle placeholder on cover and section only`);
+    if (['cover', 'section'].includes(tag.id)) {
+      const {parts} = areas.find(item => item.name === 'title');
+      const boxOf = box => [box.x, box.y, box.width, box.height].map(emu);
+      assert.deepEqual(title[0].box, boxOf(parts.title), `${tag.id}: ctrTitle at core's title part`);
+      assert.deepEqual(shapes.find(item => item.type === 'subTitle').box, boxOf(parts.subtitle), `${tag.id}: subTitle at core's subtitle part`);
+    }
+    if (['cover', 'section'].includes(tag.id)) {
+      const {parts} = areas.find(item => item.name === 'title');
+      assert.deepEqual(title[0].box, [parts.title.x, parts.title.y, parts.title.width, parts.title.height].map(emu), );
+      assert.deepEqual(shapes.find(item => item.type === 'subTitle').box, [parts.subtitle.x, parts.subtitle.y, parts.subtitle.width, parts.subtitle.height].map(emu), );
+    }
     assert.deepEqual(shapes.filter(item => ['dt', 'ftr', 'sldNum'].includes(item.type)).map(item => `${item.type}:${item.idx}`), ['dt:10', 'ftr:11', 'sldNum:12']);
     assert.match(xml, /<p:hf\b[^>]*\/><\/p:sldLayout>|<p:hf\b[^>]*\/>\s*<\/p:sldLayout>/);
     const ids = [...xml.matchAll(/<p:cNvPr\b[^>]*\bid="(\d+)"/g)].map(match => match[1]);
@@ -262,6 +268,35 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
   assert.notEqual(related(parts, layoutOf(parts, 1), 'slideMaster'), related(parts, layoutOf(parts, 2), 'slideMaster'));
   const {imported} = await read(output, {catalogs});
   assert.ok(isDeepStrictEqual(imported, deck), JSON.stringify(imported.catalogs));
+  checked++;
+}
+
+// ---- 2c. A deck with a footer and a placed picture band: every layout placeholder sits at the region box the filled slide
+// composes to (core composeLayoutAreas with the slide's options and placements), and cover and section titles at the heading parts.
+{
+  // An `auto` row is as tall as its content; on the empty layout it holds two body lines, so the text blocks here are two lines.
+  // Cards are off: on a carded slide (comparison's design) an auto row also holds the card's insets, which the empty layout does
+  // not reserve (reported to RR-79), so the verdict row of a carded comparison slide is 24 px taller than its placeholder.
+  const band = {edge: 'left', size: 0.2}, twoLines = block => block.text !== undefined ? {text: 'First line.\nSecond line.'} : block;
+  const deck = {name: 'Bands', catalogs: {custom: {layouts: templates}}, design: {contentBox: false, footer: {left: {text: 'Board review'}, right: {text: '{{slide.number}}'}}},
+    slides: contentSlides().map(slide => ({...slide, subtitle: 'Subtitle', blocks: [{image: {src: square}, placement: band}, ...(slide.blocks ?? []).map(twoLines)]}))};
+  const {entries: parts} = await exportDeck(deck);
+  const emu = value => Math.round(value * 9525), boxOf = box => [box.x, box.y, box.width, box.height].map(emu);
+  let compared = 0;
+  for (const [index, slide] of deck.slides.entries()) {
+    const context = resolveSlideContext(deck, index, {});
+    const geometry = composeSlide(context.slide, context.options);
+    const shapes = placeholders(text(parts, layoutOf(parts, index + 1)));
+    for (const region of geometry.regions) {
+      assert.equal(region.collapsed, undefined, `${slide.layout}.${region.name} is filled`);
+      assert.deepEqual(shapes.find(item => item.name === region.name).box, boxOf(region.box), `${slide.layout}.${region.name}: the placeholder is the slide's region box`);
+      compared++;
+    }
+    const heading = geometry.headingAreas.find(area => area.name === 'title');
+    const title = shapes.find(item => ['title', 'ctrTitle'].includes(item.type));
+    assert.deepEqual(title.box, boxOf(['cover', 'section'].includes(slide.layout) ? heading.parts.title : heading.box), `${slide.layout}: the title placeholder`);
+  }
+  assert.ok(compared >= 35, `${compared} regions compared`);
   checked++;
 }
 

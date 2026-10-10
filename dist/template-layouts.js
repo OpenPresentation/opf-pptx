@@ -142,23 +142,6 @@ export function deckTemplates(document, catalogs, resolve) {
   return result;
 }
 
-// RR-79 follow-up: composeLayoutAreas applies no bleed. A bled region's edges on the content box reach the slide edge, as core
-// draws the region on a slide; swap for core's bleed option when #577 has it.
-function bledBox(box, contentBox, width, height) {
-  const near = (a, b) => Math.abs(a - b) < 0.5;
-  const left = near(box.x, contentBox.x) ? 0 : box.x, top = near(box.y, contentBox.y) ? 0 : box.y;
-  const right = near(box.x + box.width, contentBox.x + contentBox.width) ? width : box.x + box.width;
-  const bottom = near(box.y + box.height, contentBox.y + contentBox.height) ? height : box.y + box.height;
-  return {x: left, y: top, width: right - left, height: bottom - top};
-}
-
-// RR-79 follow-up: composeLayoutAreas gives the heading area only. A centred title over its subtitle splits it 60/40, as
-// PowerPoint's Title Slide does; swap for core's title and subtitle sub-boxes when #577 has them.
-function titleSubBoxes(box) {
-  const split = box.height * 0.6;
-  return {title: {...box, height: split}, subtitle: {...box, y: box.y + split, height: box.height - split}};
-}
-
 const escapeXml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const attribute = (xml, name) => new RegExp(`\\s${name}="([^"]*)"`).exec(xml)?.[1];
 const relsOf = path => path.replace(/([^/]+)$/, '_rels/$1.rels');
@@ -189,34 +172,31 @@ function addRelationship(relsXml, type, target) {
 }
 
 /**
- * The placeholders of one template layout in EMU at the deck size: [{name, type, idx?, x, y, cx, cy, anchor?}]. A bled region
- * reaches the slide edge wherever its box lies on the content box's edge, as core draws it on a slide.
+ * The placeholders of one template layout in EMU: [{name, type, idx?, x, y, cx, cy, anchor?}]. Core's composeLayoutAreas
+ * composes the empty layout as composeSlide composes a slide with a one-line title and subtitle and every region kept:
+ * `template.areaOptions` are composeSlide's options of a slide on the template (canvas, the deck's header and footer, direction)
+ * plus its placed-image `placements`, so each box is where that slide's region lands, bled regions reaching the slide edge.
  */
-export function layoutPlaceholders(template, {width, height, mirror = false, direction = 'ltr'}) {
+export function layoutPlaceholders(template) {
   const {record, id} = template;
   const parsed = layoutTemplate(record);
-  const {contentBox, areas} = composeLayoutAreas(record, {width, height, mirror, direction});
+  const {areas} = composeLayoutAreas(record, template.areaOptions ?? {});
   const regions = new Map(parsed.regions.map(region => [region.name, region]));
   const indexes = regionIndexes(record);
-  // RR-79 follow-up: pass core's header, footer and placed-image band options to composeLayoutAreas when #577 has them, so the
-  // placeholders match the composed slides of a deck with furniture.
   const emu = box => ({x: Math.round(box.x * EMU), y: Math.round(box.y * EMU), cx: Math.max(0, Math.round(box.width * EMU)), cy: Math.max(0, Math.round(box.height * EMU))});
   const result = [];
   for (const area of areas) {
     if (area.name === 'title') {
-      if (CENTERED_TITLE.has(id) && !parsed.subtitle) {
-        // `cover` and `section`: PowerPoint's centred title over its subtitle, splitting the heading area.
-        const boxes = titleSubBoxes(area.box);
-        result.push({name: 'Title', type: 'ctrTitle', anchor: 'b', ...emu(boxes.title)});
-        result.push({name: 'Subtitle', type: 'subTitle', idx: SUBTITLE_IDX, anchor: 't', ...emu(boxes.subtitle)});
+      if (CENTERED_TITLE.has(id) && area.parts) {
+        // `cover` and `section`: PowerPoint's centred title over its subtitle, at core's title and subtitle sub-boxes.
+        result.push({name: 'Title', type: 'ctrTitle', anchor: 'b', ...emu(area.parts.title)});
+        result.push({name: 'Subtitle', type: 'subTitle', idx: SUBTITLE_IDX, anchor: 't', ...emu(area.parts.subtitle)});
       } else result.push({name: 'Title', type: CENTERED_TITLE.has(id) ? 'ctrTitle' : 'title', ...emu(area.box)});
       continue;
     }
     if (area.name === 'subtitle') { result.push({name: 'Subtitle', type: 'subTitle', idx: SUBTITLE_IDX, anchor: 't', ...emu(area.box)}); continue; }
     const region = regions.get(area.name);
-    if (!region) continue;
-    const box = region.bleed ? bledBox(area.box, contentBox, width, height) : area.box;
-    result.push({name: region.name, type: placeholderType(region), idx: indexes[region.name], ...emu(box)});
+    if (region) result.push({name: region.name, type: placeholderType(region), idx: indexes[region.name], ...emu(area.box)});
   }
   return result;
 }
@@ -245,15 +225,15 @@ export function layoutTagValue(template, {record = false} = {}) {
 /**
  * Write the template layouts of the finished package and bind the placeholder objects. `output` maps a package path to
  * [bytes, zipOptions]; runs after the per-script slide masters and before RR-72 lifts furniture. `slides[i]` is slide i's
- * template plan ({template}) or undefined; `templates` (deckTemplates) are the layouts to write under every slide master, in
- * order (a slide's own template is added when missing); `geometry` is {width, height, mirror, direction} of the deck. `bindings`
+ * template plan ({template, areaOptions}) or undefined; `templates` (deckTemplates, each with the `areaOptions` its placeholders
+ * are composed with) are the layouts to write under every slide master, in order (a slide's own template is added when missing). `bindings`
  * maps an object name on a slide to {slide, region, object} (`picture`, `chart` or `table`). `partText(path, xml)` applies the
  * deck's language to a generated part.
  */
-export function writeTemplateLayouts(output, slides, templates, geometry, bindings = new Map(), partText = (path, xml) => xml, {records = false} = {}) {
+export function writeTemplateLayouts(output, slides, templates, bindings = new Map(), partText = (path, xml) => xml, {records = false} = {}) {
   if (!slides.some(Boolean)) return;
   const all = [...templates];
-  for (const plan of slides) if (plan && !all.some(template => template.key === plan.template.key)) all.push(plan.template);
+  for (const plan of slides) if (plan && !all.some(template => template.key === plan.template.key)) all.push({...plan.template, areaOptions: plan.areaOptions});
   const has = path => Object.hasOwn(output, path);
   const read = path => dec.decode(output[path][0]);
   const options = output['ppt/presentation.xml'][1];
@@ -294,7 +274,7 @@ export function writeTemplateLayouts(output, slides, templates, geometry, bindin
       if (taken.has(name)) name = `${name} (${template.group}:${template.id})`;
       taken.add(name);
       const type = POWERPOINT_LAYOUT_TYPES[template.id] ?? 'cust';
-      const placeholders = layoutPlaceholders(template, geometry);
+      const placeholders = layoutPlaceholders(template);
       let xml = read(base);
       xml = xml.replace(/<p:sldLayout\b[^>]*>/, open => `${open.slice(0, -1).replace(/\s+(?:type|userDrawn|showMasterSp)="[^"]*"/g, '')} type="${type}" userDrawn="1">`);
       xml = xml.replace(/(<p:cSld\b[^>]*?)(\s+name="[^"]*")?(\s*>)/, (match, open, _name, close) => `${open} name="${escapeXml(name)}"${close}`);
