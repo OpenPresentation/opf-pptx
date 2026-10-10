@@ -32,6 +32,7 @@ import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './section
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, nativePlaceholderForPart, writeNativeMasters} from './native-furniture.js';
 import {liftMasterFurniture} from './master-furniture.js';
+import {applyTemplateLayouts, placeholderRegion, readLayoutTag, slideTemplate, writeTemplateLayouts} from './template-layouts.js';
 import {importImageOrientation} from './image-import.js';
 import {extractSignals, normalizeSignalOptions, themeFactsFor} from './import-signals.js';
 import {placeImages, importImages, importImagePlaceholders, isImagePlaceholderGroup, imageName, imageOverlayName, imagePlaceholderGroupName, backgroundImageName, backgroundOverlayName, IMAGE_TREATMENT_KEYS, BACKGROUND_IMAGE_KEYS, IMAGE_PLACEHOLDER_TAG} from './image-provenance.js';
@@ -290,6 +291,9 @@ export async function toPptx(input, options = {}) {
   context.nativeFurnitureBands = new Map();
   // RR-72: each slide's furniture parts and the object names of their shapes, for the slide master and layouts.
   context.furnitureParts = [];
+  // RR-81: the 0.19 template each slide uses (its native slide layout) and the objects bound to a region placeholder.
+  context.templateSlides = [];
+  context.placeholderBindings = new Map();
   context.hostDate = options.date;
   context.authored = authored;
   context.codeTags = new Map();
@@ -429,11 +433,26 @@ export async function fromPptx(input, options = {}) {
     return inheritedParts.get(path);
   };
   const relatedPath = (path, type) => path ? [...cachedRelationships(path).values()].find(rel => rel.type === `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}` && rel.targetMode !== 'External' && entries[rel.path])?.path : undefined;
+  // RR-81: the OPF_LAYOUT_V1 tag of each slide's layout (a 0.19 template layout), read once per layout part.
+  const layoutTags = new Map();
+  const layoutTagOf = (layoutPath, index) => {
+    if (!layoutPath) return undefined;
+    if (!layoutTags.has(layoutPath)) layoutTags.set(layoutPath, readLayoutTag(entries, layoutPath, message => options.onDiagnostic?.({code: 'invalid-layout-provenance', path: `slides.${index}.layout`, message})));
+    return layoutTags.get(layoutPath);
+  };
   const furnitureContexts = slidePaths.map((slidePath, index) => {
     const root = parseRequiredXml(entries, slidePath)['p:sld'];
     if (!root) throw new OPFPptxError('invalid-pptx', `PPTX slide is not a PresentationML slide: ${slidePath}.`, {path: slidePath});
     const tree = root['p:cSld']?.['p:spTree'], relationships = parseRelationships(entries, slidePath);
-    return {root, relationships, shapes: nativeTextShapes(tree), pictures: nativePictures(tree),
+    const layoutPath = relatedPath(slidePath, 'slideLayout'), layoutTag = layoutTagOf(layoutPath, index);
+    return {root, relationships, shapes: nativeTextShapes(tree), pictures: nativePictures(tree), layoutTag,
+      // RR-81: a region placeholder typed into in PowerPoint has no xfrm of its own; it sits where the template layout puts it.
+      layoutBounds: layoutTag ? shape => {
+        const ph = shape?.['p:nvSpPr']?.['p:nvPr']?.['p:ph'];
+        if (ph?.idx === undefined) return undefined;
+        const match = asArray(cachedPart(layoutPath)?.['p:sldLayout']?.['p:cSld']?.['p:spTree']?.['p:sp']).find(candidate => candidate?.['p:nvSpPr']?.['p:nvPr']?.['p:ph']?.idx === ph.idx);
+        return match ? shapeBounds(match['p:spPr']?.['a:xfrm']) ?? undefined : undefined;
+      } : undefined,
       // RR-11: native footer placeholders resolve their position through the layout and master.
       path: slidePath, slideWidth: Number(presentationRoot['p:sldSz']?.cx), relationshipsOf: cachedRelationships, readPart: cachedPart,
       paragraphs: nativeShapeParagraphs(decodeText(entries[slidePath])),
@@ -512,6 +531,13 @@ export async function fromPptx(input, options = {}) {
     report({code: "invalid-document-provenance", path: "", message: `${errorMessage(error)} Ordinary import keeps the values observed in the PPTX.`});
   }
   if (slideProvenance.length !== imported.slides.length) throw new OPFPptxError("invalid-import-opf", "Slide provenance does not match the imported slides.");
+  // RR-81: a slide on a 0.19 template layout takes that layout's reference (a slide added in PowerPoint, Change Layout), and a
+  // block read from a region placeholder keeps its region with a pin where plain binding would move it (src/template-layouts.js).
+  if (furnitureContexts.some(context => context.layoutTag)) {
+    const restoredContent = new Set(restoredGroups.filter(group => group.applied && group.contentPaths).map(group => group.contentPaths.slide));
+    applyTemplateLayouts(imported, furnitureContexts.map((context, index) => ({tag: context.layoutTag, blockRegions: context.blockRegions, restored: restoredContent.has(index)})),
+      index => resolveCoreSlideContext(imported, index, options.catalogs !== undefined ? {catalogs: options.catalogs} : {}).resolved.layout, report);
+  }
   // RR-34: marker runs become cite/footnote on the runs before them, and the references list is rebuilt
   // from the stored record and the footnote boxes (an edited note keeps its edited text).
   restoreCitations(imported, furnitureContexts.map(context => context.annotations?.notes ?? []), report);
@@ -824,6 +850,18 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
     .map((item) => ({payload: payloadFromSlideItem(item, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`})), bounds: item.visualBounds ?? item.bounds, sources: item.sources ?? []}))
     .filter((entry) => entry.payload);
   const blocks = content.map((entry) => entry.payload);
+  // RR-81: the region of each block read from one region placeholder of the slide's 0.19 template layout (its p:ph idx).
+  if (nativeContext.layoutTag) {
+    const frames = asArray(slideRoot['p:cSld']?.['p:spTree']?.['p:graphicFrame']);
+    const nodeOf = source => {
+      const [kind, position] = source.split(':');
+      return kind === 'sp' ? nativeContext.shapes[position] : kind === 'pic' ? nativeContext.pictures[position] : kind === 'frame' ? frames[position] : undefined;
+    };
+    nativeContext.blockRegions = content.map(entry => {
+      const regions = new Set(entry.sources.map(source => placeholderRegion(nodeOf(source), nativeContext.layoutTag)));
+      return regions.size === 1 ? [...regions][0] : undefined;
+    });
+  }
   // RR-34: a tagged caption re-attaches to the block whose native media shape it names (never by position).
   const annotations = nativeContext.annotations;
   if (annotations?.captions.size) {
@@ -935,6 +973,7 @@ function collectSlideItems(entries, slideRoot, slidePath, relationships, dimensi
     const ordinaryBody = Object.hasOwn(shape, 'p:txBody') && !shape['p:nvSpPr']?.['p:nvPr']?.['p:custDataLst']?.['p:tags'];
     const item = importShape(shape, dimensions, paragraphs[index], ordinaryBody || furniture.taggedText.has(index) || media.captionShapes.has(shape));
     if (item && ordinaryBody) item.readNativeBody = () => readBody(index);
+    if (item && !item.bounds && nativeContext.layoutBounds) item.bounds = nativeContext.layoutBounds(shape) ?? item.bounds;
     // A damaged/edited furniture group falls back to current native text,
     // including cleared text boxes, without inventing a title or shape label.
     if (item && (furniture.taggedText.has(index) || media.captionShapes.has(shape))) item.sourceText = true;
@@ -2002,6 +2041,12 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
   // Core resolves every shared design key once (slide design, deck design, then the layout record's design): the text alignment of
   // each item (item.alignment), and each image item's own fit and treatment (item.image).
   const geometry = composeSlide(opfSlide, composeOptions);
+  // RR-81: a list core broke into columns (listColumns) is drawn as one measured list whose lines sit in their columns: each line
+  // is its own shape at core's geometry, as in every list, and line names, numbering and provenance run across the columns.
+  for (const item of geometry.items) if (item.listColumns?.length > 1 && item.text?.listEntries) item.text = {...item.text, listEntries: item.listColumns.flatMap(column => column.text?.listEntries ?? [])};
+  // RR-81: a slide on a 0.19 template uses that template's native slide layout (src/template-layouts.js).
+  const template = slideTemplate(slideContext.core);
+  if (template) context.templateSlides[slideIndex] = {template, width: widthInches * 96, height: heightInches * 96, mirror: presentation.design?.mirror === true, direction: geometry.direction === 'rtl' ? 'rtl' : 'ltr'};
   // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
   if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
   slideContext.zoneBand = zoneBands(composeOptions);
@@ -2035,6 +2080,11 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
   // Cover and section slides: the deck logo core composed at the top-left of the free area, after the watermark and before content.
   if (geometry.logo) await addLogo(slide, presentation, geometry.logo, slideIndex, slideContext, context, options);
   for (const item of geometry.items) {
+    // RR-81: the lone picture, chart or table of a `none` region binds to that region's placeholder on the slide layout. A captioned
+    // object or one drawn on a card stays a free shape: Change Layout would move it away from its caption or card.
+    const boundRegion = template && item.region !== undefined && ['image', 'chart', 'table'].includes(item.field) && !item.caption && !item.frameBox
+      ? geometry.regions?.find(region => region.name === item.region && region.flow === 'none' && region.content?.length === 1 && !region.overflow?.length) : undefined;
+    const drawnBefore = boundRegion && {images: context.images.size, placeholders: context.imagePlaceholders.size, charts: context.chartHeadings.size, tables: context.tableHeaders.size};
     // Card text sits on a literal card fill, not the slide background: keep it literal.
     const itemContext = item.frameBox ? {...slideContext, textColor: slideContext.colors.text, mutedColor: slideContext.colors.mutedText} : slideContext;
     const region = { x: item.box.x / 96, y: item.box.y / 96, w: item.box.width / 96, h: item.box.height / 96 };
@@ -2090,6 +2140,12 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
         const mediaName = item.field === 'video' ? `OPF media ${item.path} frame` : [...context.images.keys(), ...context.imagePlaceholders.keys(), ...context.chartHeadings.keys(), ...context.tableHeaders.keys()].find(name => !mediaNames.has(name));
         addCaption(slide, item, mediaName, itemContext, exportHelpers, (code, message) => new OPFPptxError(code, message, {path: item.caption.path}));
       }
+    }
+    if (drawnBefore) {
+      const added = (map, size) => [...map.keys()].slice(size);
+      const names = item.field === 'image' ? (context.imagePlaceholders.size === drawnBefore.placeholders ? added(context.images, drawnBefore.images) : [])
+        : item.field === 'chart' ? added(context.chartHeadings, drawnBefore.charts).filter(name => !context.chartex.has(name)) : added(context.tableHeaders, drawnBefore.tables);
+      if (names.length === 1) context.placeholderBindings.set(names[0], {slide: slideIndex, region: boundRegion.name, object: item.field === 'image' ? 'picture' : item.field});
     }
   }
   // RR-34: the footnote area core reserved above the footer band (rule plus one tagged text box per listed line).
@@ -4058,6 +4114,15 @@ async function normalizePptxZip(raw, context) {
       throw new OPFPptxError('packaging-failed', 'Slide masters for per-slide script fonts could not be written.', {cause: errorMessage(error)});
     }
     reportPerSlideNotesScriptFonts(context.scriptFonts, slideThemes);
+  }
+  // RR-81: one native slide layout per 0.19 template the slides use, under each slide's master, and the objects bound to its
+  // placeholders (src/template-layouts.js). Before RR-72, which copies a slide's own layout for a furniture variant.
+  if (context.templateSlides.some(Boolean)) {
+    try {
+      writeTemplateLayouts(output, context.templateSlides, context.placeholderBindings, (path, xml) => context.scriptFonts ? partScriptFonts(path, xml, context.scriptFonts, 0) : xml);
+    } catch (error) {
+      throw new OPFPptxError('packaging-failed', 'Native slide layouts for the layout templates could not be written.', {cause: errorMessage(error)});
+    }
   }
   // RR-72: furniture drawn the same on several slides moves to the slide master or a layout (src/master-furniture.js).
   try {
