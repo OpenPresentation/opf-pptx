@@ -186,9 +186,16 @@ for (const type of chartexTypes) {
 }
 assert.deepEqual(chartexTypes.filter((id) => CHART_TYPES[id].unconfirmed), ['world'], 'only the map is unconfirmed natively');
 // A single-series chartex construct given several series keeps the first and says so, like a pie (the map's fallback keeps every series).
-for (const type of ['treemap', 'waterfall', 'funnel', 'histogram', 'pareto']) {
+for (const type of ['treemap', 'waterfall', 'funnel', 'histogram']) {
   const {diagnostics} = await diagnosticsFor(type, categoryData);
   assert.deepEqual(diagnostics.map((diagnostic) => [diagnostic.adaptation, diagnostic.path]), [['series-dropped', 'slides.0.chart']], type);
+}
+// Pareto cannot represent independent series natively, so auto preserves them all in the explicit classic fallback.
+{
+  const {diagnostics, xml, chartex} = await diagnosticsFor('pareto', categoryData);
+  assert.deepEqual(diagnostics.map((diagnostic) => [diagnostic.adaptation, diagnostic.path]), [['chartex-fallback', 'slides.0.chart']]);
+  assert.equal(chartex, false);
+  assert.equal(construct(xml).series.length, categoryData.columns.length - 1, 'Pareto fallback preserves every value series');
 }
 // Classic ids report nothing.
 for (const type of classic) {
