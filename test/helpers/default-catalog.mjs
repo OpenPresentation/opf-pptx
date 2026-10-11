@@ -2,13 +2,13 @@
 // 'roboto', 'cool-horizon', ...) resolve only from the catalogs the host registers. Tests whose documents name gallery ids
 // import these wrappers instead of the bare functions: each registers the default catalog (the pinned gallery snapshot)
 // unless the call passes its own `catalogs`.
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {resolveScriptFonts as coreResolveScriptFonts} from '@openpresentation/opf/composition';
 import * as render from '@openpresentation/opf-render/svg';
 import * as pptx from '../../dist/index.js';
 
-export {defaultCatalog};
-export const catalogs = Object.freeze([defaultCatalog]);
+export {gallery};
+export const catalogs = Object.freeze([gallery]);
 
 const withCatalogs = (options = {}) => (options.catalogs === undefined ? {...options, catalogs} : options);
 

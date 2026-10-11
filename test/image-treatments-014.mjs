@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {unzipSync} from 'fflate';
 import {XMLParser} from 'fast-xml-parser';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toPptx} from '../dist/index.js';
 
 const before = JSON.parse(await readFile(new URL('fixtures/image-treatments-0.14.json', import.meta.url), 'utf8'));
@@ -43,7 +43,7 @@ const CHANGED = {
   'cinematic-crop': 'a flowed 2.39:1 image block below the headings, on the dark1 background'
 };
 const deck = {assets: {hero}, design: {theme: 'classic'}, slides: Object.entries(SLIDES).map(([id, slide]) => ({id, ...(id === 'collage-grid' ? {title: 'Collage Grid'} : heading(id)), ...slide}))};
-const bytes = await toPptx(deck, {imageFormat: 'preserve', strictAssets: true, provenance: false, catalogs: [defaultCatalog]});
+const bytes = await toPptx(deck, {imageFormat: 'preserve', strictAssets: true, provenance: false, catalogs: [gallery]});
 const entries = unzipSync(bytes);
 const flat = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false});
 // 0.14's names for the same objects, so the paint order compares as is.

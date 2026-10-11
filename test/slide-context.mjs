@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import {strFromU8, unzipSync} from 'fflate';
 import {resolveSlideContext as coreResolveSlideContext} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toPptx as exportPptx} from '../dist/index.js';
 
 // OPF 0.15: the font schemes this deck names come from the gallery snapshot, which a host registers explicitly; the
 // exporter and core's context get the same catalogs.
-const catalogs = [defaultCatalog];
+const catalogs = [gallery];
 const resolveSlideContext = (presentation, index) => coreResolveSlideContext(presentation, index, {catalogs});
 const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs, ...options});
 

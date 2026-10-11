@@ -4,7 +4,7 @@
 // them absent while the native value is still the default export wrote. A value edited in PowerPoint is imported as observed.
 import assert from 'node:assert/strict';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {fromPptx, toPptx} from '../dist/index.js';
 
 const SCHEMA = 'https://openpresentation.org/schema/opf/v1';
@@ -41,7 +41,7 @@ const decks = {
   'author and description': {name: 'Meta', author: 'Ann Lee', description: 'About the deck', slides: [{title: 'Hello'}]},
 };
 for (const [label, deck] of Object.entries(decks)) {
-  for (const catalogs of [undefined, [defaultCatalog]]) {
+  for (const catalogs of [undefined, [gallery]]) {
     const options = catalogs ? {catalogs} : {};
     const bytes = await toPptx(structuredClone(deck), options);
     const {deck: imported, provenance} = await read(bytes, options);
@@ -102,7 +102,7 @@ for (const [label, deck] of Object.entries(decks)) {
     assert.ok(!Object.keys(rest).some(key => !['$schema', 'name', 'language', 'author', 'design'].includes(key)));
   }
   // A stated theme whose colours were edited: the theme is reported and both observed values stay.
-  const themed = await read(edit(await toPptx(decks['theme only'], {catalogs: [defaultCatalog]}), (name, xml) => name === 'ppt/theme/theme1.xml' ? xml.replace(/(<a:accent1><a:srgbClr val=")[^"]+/, '$100FF00') : xml), {catalogs: [defaultCatalog]});
+  const themed = await read(edit(await toPptx(decks['theme only'], {catalogs: [gallery]}), (name, xml) => name === 'ppt/theme/theme1.xml' ? xml.replace(/(<a:accent1><a:srgbClr val=")[^"]+/, '$100FF00') : xml), {catalogs: [gallery]});
   assert.equal(themed.deck.design.colorScheme.accent1, '#00FF00');
   assert.deepEqual(themed.provenance.map(issue => [issue.code, issue.path]), [['design-reference-changed', 'design.theme']]);
   checks++;

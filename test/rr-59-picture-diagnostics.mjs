@@ -7,11 +7,11 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {strFromU8, unzipSync} from 'fflate';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toPptx} from '../dist/index.js';
 
 const light = {type: 'solid', color: '#FFFFFF'};
-const catalogs = [defaultCatalog];
+const catalogs = [gallery];
 // [path the diagnostic names, deck with the source at that path, what the slide shows instead]
 const paths = src => [
   ['slides.0.image', {slides: [{title: 'Image', image: src}]}, 'placeholder'],

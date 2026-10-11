@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
 import {validate} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toPptx as exportPptx, fromPptx} from '../dist/index.js';
 
 // FF-24 (font-fidelity-everywhere): the exported theme carries the deck color
@@ -10,10 +10,10 @@ import {toPptx as exportPptx, fromPptx} from '../dist/index.js';
 // holds exactly that color, and fromPptx recovers design.colorScheme (and a
 // catalog design.theme when the package corroborates it).
 // OPF 0.15 (FA-23): the themes and colour schemes are the gallery snapshot's, which the host registers explicitly for
-// export and import (`catalogs: [defaultCatalog]`). Recovery matches the first registered catalog: an exact match imports
+// export and import (`catalogs: [gallery]`). Recovery matches the first registered catalog: an exact match imports
 // as its bare id; with no catalog registered the colour scheme imports as inline slots and no theme id is recovered.
-const catalogs = [defaultCatalog];
-const records = kind => Object.entries(defaultCatalog[kind]).map(([id, record]) => ({id, ...record}));
+const catalogs = [gallery];
+const records = kind => Object.entries(gallery[kind]).map(([id, record]) => ({id, ...record}));
 const colorSchemes = records('colorSchemes'), themes = records('themes');
 const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs, ...options});
 

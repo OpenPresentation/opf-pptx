@@ -1,6 +1,9 @@
 {
   "name": "@openpresentation/opf-pptx",
   "version": "0.18.0",
+  "opf": {
+    "requiresUnreleasedCore": "0.19.0"
+  },
   "description": "Pure local OPF to PPTX export and PPTX to OPF import tooling.",
   "license": "MIT",
   "type": "module",
@@ -97,6 +100,7 @@
     "@expo-google-fonts/roboto": "0.4.3",
     "@expo-google-fonts/roboto-mono": "0.4.2",
     "@expo-google-fonts/tinos": "0.4.2",
+    "@openpresentation/gallery": "0.0.1",
     "@openpresentation/opf-render": "0.18.0",
     "@resvg/resvg-js": "2.6.2",
     "esbuild": "0.28.2",

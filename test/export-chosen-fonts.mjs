@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import {strFromU8, unzipSync} from 'fflate';
 import {loadFonts} from '@openpresentation/opf-render/fonts-node';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toPptx as exportPptx} from '../src/index.js';
 
 // OPF 0.15: the named font schemes are the gallery snapshot's, which the host registers explicitly; strict export
 // (strictAssets) fails on a reference that resolves nowhere.
-const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [defaultCatalog], ...options});
+const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs: [gallery], ...options});
 
 // FF-31: a preview font substitute (Carlito for Aptos, Gelasio for Georgia, ...) only
 // changes measurement and drawing. The exported PPTX always names the developer's

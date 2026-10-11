@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {unzipSync, zipSync} from 'fflate';
 import {toPptx as exportPptx, fromPptx as importPptx} from '../dist/index.js';
 import {validate, validateCatalogRecord} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {toSvg} from '@openpresentation/opf-render';
 
 // FF-29, OPF 0.15 (FA-23): slide layout intent (layout reference, type, composition, composition hints and the record the
@@ -11,11 +11,11 @@ import {toSvg} from '@openpresentation/opf-render';
 // gallery layout that resolves in the registered snapshot (the host registers it for export, preview and import) and is
 // therefore not embedded; each deck embeds its own layouts under catalogs.custom.
 const enc = new TextEncoder(), dec = new TextDecoder();
-const catalogs = [defaultCatalog];
+const catalogs = [gallery];
 const toPptx = (presentation, options = {}) => exportPptx(presentation, {catalogs, ...options});
 const fromPptx = (bytes, options = {}) => importPptx(bytes, {catalogs, ...options});
 const LAYOUT_SCHEMA = 'https://openpresentation.org/schema/opf-layout/v1';
-const base = structuredClone(defaultCatalog.layouts['title-subtitle']);
+const base = structuredClone(gallery.layouts['title-subtitle']);
 // Gallery records name a preview image (vectorSrc), which is a source, and display metadata; the copies carry neither.
 delete base.preview;
 for (const key of Object.keys(base)) if (key.startsWith('x-')) delete base[key];

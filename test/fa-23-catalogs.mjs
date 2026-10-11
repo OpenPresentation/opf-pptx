@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readdirSync, readFileSync} from 'node:fs';
 import {strFromU8, unzipSync} from 'fflate';
 import {OPFCatalogsOptionError, resolveSlideContext} from '@openpresentation/opf';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {fromPptx, toPptx} from '../dist/index.js';
 
 // FA-23 (format audit, OPF 0.15), catalogs half: the exporter and the importer resolve every reference through core with the
@@ -66,7 +66,7 @@ const hostDeck = {name: 'Catalogs', catalogs: {acme: {source: ACME}}, slides};
 // composes automatically; strict export fails naming the same reference.
 {
   const automatic = await collect({name: 'Catalogs', slides: [{title: slides[0].title, blocks: slides[0].blocks}]});
-  for (const catalogs of [undefined, [], [defaultCatalog]]) {
+  for (const catalogs of [undefined, [], [gallery]]) {
     const result = await collect(hostDeck, catalogs === undefined ? {} : {catalogs});
     assert.deepEqual(result.unresolved.map(brief), [{kind: 'layouts', reference: 'acme:hero', path: 'slides.0.layout', group: 'acme', source: ACME, fallback: 'automatic'}]);
     assert.match(result.unresolved[0].message, /acme:hero/);
@@ -96,13 +96,13 @@ const hostDeck = {name: 'Catalogs', catalogs: {acme: {source: ACME}}, slides};
 // resolves in the host default (the first registered catalog).
 {
   const bare = {name: 'Bare', slides: [{layout: 'two-column', title: 'Before and after', blocks: [{type: 'text', text: 'Manual'}, {type: 'text', text: 'One click'}]}]};
-  const resolved = await collect(bare, {catalogs: [defaultCatalog]});
+  const resolved = await collect(bare, {catalogs: [gallery]});
   assert.deepEqual(resolved.unresolved, [], 'a bare id resolves in the host default catalog');
-  const closed = await collect({...bare, catalogs: {default: false}}, {catalogs: [defaultCatalog]});
+  const closed = await collect({...bare, catalogs: {default: false}}, {catalogs: [gallery]});
   assert.deepEqual(closed.unresolved.map(brief), [{kind: 'layouts', reference: 'two-column', path: 'slides.0.layout', group: 'default', fallback: 'automatic'}]);
-  await assert.rejects(toPptx({...structuredClone(bare), catalogs: {default: false}}, {catalogs: [defaultCatalog], strictReferences: true}), error => error.code === 'unresolved-reference');
+  await assert.rejects(toPptx({...structuredClone(bare), catalogs: {default: false}}, {catalogs: [gallery], strictReferences: true}), error => error.code === 'unresolved-reference');
   // The host default is the first registered catalog only: a bare id does not reach a second one.
-  const second = await collect(bare, {catalogs: [acmeCatalog, defaultCatalog]});
+  const second = await collect(bare, {catalogs: [acmeCatalog, gallery]});
   assert.deepEqual(second.unresolved.map(diagnostic => diagnostic.reference), ['two-column']);
 }
 
@@ -130,8 +130,8 @@ const hostDeck = {name: 'Catalogs', catalogs: {acme: {source: ACME}}, slides};
 // bare id names); with none registered the colour scheme imports inline and no theme id is recovered. The dominant run
 // language imports as a BCP-47 tag.
 {
-  const bytes = await toPptx({name: 'Recovery', language: 'ja', design: {theme: 'minimal'}, slides: [{title: 'こんにちは'}]}, {catalogs: [defaultCatalog], provenance: false});
-  const registered = await fromPptx(bytes, {catalogs: [defaultCatalog]});
+  const bytes = await toPptx({name: 'Recovery', language: 'ja', design: {theme: 'minimal'}, slides: [{title: 'こんにちは'}]}, {catalogs: [gallery], provenance: false});
+  const registered = await fromPptx(bytes, {catalogs: [gallery]});
   assert.equal(registered.design.theme, 'minimal');
   assert.equal(registered.design.colorScheme, 'cool-horizon');
   const unregistered = await fromPptx(bytes);
@@ -140,7 +140,7 @@ const hostDeck = {name: 'Catalogs', catalogs: {acme: {source: ACME}}, slides};
   assert.equal(unregistered.design.colorScheme.accent1.toUpperCase(), '#2874A6');
   assert.equal(unregistered.language, 'ja-JP', 'the run tag, as a BCP-47 tag');
   // Another registered catalog is no host default: an exact match there still imports inline.
-  const elsewhere = await fromPptx(bytes, {catalogs: [acmeCatalog, defaultCatalog]});
+  const elsewhere = await fromPptx(bytes, {catalogs: [acmeCatalog, gallery]});
   assert.equal(elsewhere.design.theme, undefined);
   assert.equal(typeof elsewhere.design.colorScheme, 'object');
 }
@@ -155,7 +155,7 @@ await assert.rejects(toPptx({name: 'Old', slides: [{title: 'One', layout: 'two-c
 // 8. A reference with an undeclared catalog prefix (foo:hero with no catalogs.foo) is a format error (opf/undeclared-catalog):
 // export refuses the document at the boundary, before any composition, whatever the strict policy.
 for (const strictReferences of [false, true]) {
-  await assert.rejects(toPptx({name: 'Undeclared', slides: [{title: 'One', layout: 'foo:hero'}]}, {catalogs: [defaultCatalog], strictReferences}),
+  await assert.rejects(toPptx({name: 'Undeclared', slides: [{title: 'One', layout: 'foo:hero'}]}, {catalogs: [gallery], strictReferences}),
     error => error.code === 'invalid-opf' && error.findings.some(finding => finding.ruleId === 'opf/undeclared-catalog' && finding.path === '/slides/0/layout'));
 }
 

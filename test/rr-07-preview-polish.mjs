@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
 import {PATTERN_PRESETS, patternRuns, resolvePatternPreset, codeSyntaxPaletteForScheme} from '@openpresentation/opf/composition';
 // OPF 0.15: the gallery colour schemes come from the registered default catalog (records keyed by id).
-import {defaultCatalog, fromPptx, toSvg, toPptx} from './helpers/default-catalog.mjs';
-const colorSchemes = Object.entries(defaultCatalog.colorSchemes).map(([id, record]) => ({id, ...record}));
+import {gallery, fromPptx, toSvg, toPptx} from './helpers/default-catalog.mjs';
+const colorSchemes = Object.entries(gallery.colorSchemes).map(([id, record]) => ({id, ...record}));
 import {presetPatterns, nativePatternPreset} from '../dist/background.js';
 
 // RR-07 parity: the SVG preview and the PPTX export draw code syntax colours, metric trend arrows and the

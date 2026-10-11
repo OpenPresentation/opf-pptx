@@ -5,9 +5,9 @@ import * as pptx from '@openpresentation/opf-pptx';
 import {validate} from '@openpresentation/opf';
 import * as render from '@openpresentation/opf-render';
 import {unzipSync,zipSync,strFromU8,strToU8} from 'fflate';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 // OPF 0.15: the gallery ids these documents name resolve from the registered default catalog (no built-in records).
-const host = options => ({catalogs: [defaultCatalog], ...options});
+const host = options => ({catalogs: [gallery], ...options});
 const toPptx = (deck, options) => pptx.toPptx(deck, host(options)), fromPptx = (bytes, options) => pptx.fromPptx(bytes, host(options));
 const toSvg = (deck, slide, options) => render.toSvg(deck, slide, host(options));
 const output=document.querySelector('pre');

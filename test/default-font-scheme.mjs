@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {strFromU8, unzipSync} from 'fflate';
-import {defaultCatalog} from '@openpresentation/opf/catalog';
+import {gallery} from '@openpresentation/gallery';
 import {ENGINE_DEFAULT_FONT_SCHEME, resolveFontFamilies} from '@openpresentation/opf/composition';
 import {paginate} from '@openpresentation/opf';
 import {toPptx} from '../src/index.js';
@@ -11,10 +11,10 @@ import {toPptx} from '../src/index.js';
 // the resolved theme names no font scheme, or a font-scheme reference resolves nowhere.
 // FF-17: code runs use the shared resolveFontFamilies() code role: the scheme's
 // `code`, else Roboto Mono. Named schemes (roboto, consolas) come from the gallery
-// snapshot, which the host registers explicitly (`catalogs: [defaultCatalog]`).
+// snapshot, which the host registers explicitly (`catalogs: [gallery]`).
 
 const theme = 'ppt/theme/theme1.xml';
-const catalogs = [defaultCatalog];
+const catalogs = [gallery];
 const parts = async (presentation) => unzipSync(new Uint8Array(await toPptx(presentation, {strictAssets: true, catalogs})));
 const themePair = entries => {
   const xml = strFromU8(entries[theme]);
@@ -63,7 +63,7 @@ assert.ok(fallback.has('Roboto Mono') && !fallback.has('Consolas'));
 const consolas = await codeFaces({id: 'consolas', code: 'Consolas'});
 assert.deepEqual([...consolas], ['Consolas'], 'A Consolas scheme with a Consolas code role exports only Consolas');
 // The registered record's code role (Consolas once the catalog carries it, FF-17) reaches the runs.
-const registered = defaultCatalog.fontSchemes.consolas;
+const registered = gallery.fontSchemes.consolas;
 assert.ok((await codeFaces('consolas')).has(resolveFontFamilies(registered).code));
 
 console.log(JSON.stringify({test: 'default-font-scheme', passed: true, lastResort: 'engine default'}));
