@@ -171,7 +171,7 @@ for (const [label, presentation] of [
 ]) {
   const result = await exported(presentation);
   const parts = Object.keys(result.xml).filter(name => /^ppt\/(?:slideMasters|slideLayouts|theme)\/[^/]+\.xml$/.test(name)).sort();
-  assert.deepEqual(parts, ['ppt/slideLayouts/slideLayout1.xml', 'ppt/slideMasters/slideMaster1.xml', 'ppt/theme/theme1.xml', 'ppt/theme/theme2.xml'], `${label}: one master`);
+  assert.deepEqual(parts, ['ppt/slideLayouts/slideLayout1.xml', 'ppt/slideLayouts/slideLayout2.xml', 'ppt/slideMasters/slideMaster1.xml', 'ppt/theme/theme1.xml', 'ppt/theme/theme2.xml'], `${label}: one master`);
   assert.deepEqual(result.diagnostics.filter(diagnostic => /script-font/.test(diagnostic.code)), [], `${label}: not reported`);
   assertProfiles(label, presentation, result);
 }

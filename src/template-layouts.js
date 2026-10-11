@@ -4,7 +4,7 @@
 // Export. When a slide of the deck uses a template, every template the deck can reach becomes one `p:sldLayout` under each
 // slide master (one per theme and script profile), so Change Layout reaches all of them (design question 7): the templates of
 // the registered catalogs in catalog order, then the templates the document embeds (`custom` first, then the other groups by
-// name), each by id. A deck whose slides use no template gets none (0.18 records and automatic slides export as before). Named by the record's `name`, with one placeholder per area of the empty layout that core's
+// name), each by id. Automatic slides also get an OPF auto titleOnly layout. Named by the record's `name`, with one placeholder per area of the empty layout that core's
 // `composeLayoutAreas` composes at the deck size (nothing collapsed): `title` (`ctrTitle` with a `subTitle` below it on
 // `cover` and `section`), `subTitle` for a `subtitle` area, and per body region a placeholder typed by what it accepts
 // (`placeholderType`). The layout keeps RR-11's date, footer and slide-number placeholders and `p:hf` (it starts as a copy of
@@ -17,13 +17,16 @@
 // everything else stay editable shapes at core's geometry (the slide's OPF_SLIDE_V1 content topology names the region of
 // each root block); the slide does not instantiate those placeholders, so a filled slide shows no prompt.
 //
-// Import. A slide whose layout carries OPF_LAYOUT_V1 takes that layout's reference when it has none (a slide added in
+// Accepted one-line plain titles bind to the native title placeholder; long and rich titles remain tagged line shapes.
+// Automatic slides use OPF auto (titleOnly), independently of registered catalogs. Layout prompts carry explicit OPF typography.
+//
+// Import. Foreign layouts map by type or a case-insensitive built-in name when v2 built-ins are registered. A slide whose layout carries OPF_LAYOUT_V1 takes that layout's reference when it has none (a slide added in
 // PowerPoint, or an export without provenance) or when its stored layout names another layout (Change Layout:
 // `layout-changed`). A block read from a placeholder of a region gets a `region` pin when plain binding would put it
 // elsewhere; content that document provenance restored is never pinned.
 
-import {composeLayoutAreas, layoutTemplate, bindRegions, regionAccepts} from '@openpresentation/opf/composition';
-import {validateCatalogRecord} from '@openpresentation/opf';
+import {composeLayoutAreas, composeSlide, layoutTemplate, bindRegions, regionAccepts} from '@openpresentation/opf/composition';
+import {validateCatalogRecord, catalogRecords, resolveReference} from '@openpresentation/opf';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 
 export const LAYOUT_TAG = 'OPF_LAYOUT_V1';
@@ -34,13 +37,14 @@ const LAYOUT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationm
 const TAGS_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml';
 const EMU = 9525;
 // Region placeholder indexes (coordinator decisions on RR-81): a base per placeholder kind plus the region's position among the
-// layout's regions of that kind, in the record's `regions` order: `obj` 100, `body` 200, `pic` 300, `chart` 400, `tbl` 500,
-// `media` 600 (so the first chart region of every layout is 400, its second 401). PowerPoint's Change Layout pairs a slide's
+// layout's regions of that kind, in the record's `regions` order: `obj` 100, `body` 300, `pic` 500, `chart` 700, `tbl` 900,
+// `media` 1100 (so the first chart region of every layout is 700, its second 701). PowerPoint's Change Layout pairs a slide's
 // placeholders with the new layout's by `idx`, so only regions of one kind pair (Pillars to Text keeps `obj` with `obj`; a chart
 // bound to Chart beside's `chart` region never lands in Table beside's `tbl` region, as it did with one sequence for every kind).
 // The indexes stay clear of PowerPoint's subtitle (1) and date, footer and slide-number placeholders (10, 11, 12, RR-11), and
+// Each kind reserves 200 indexes so a 144-region custom grid cannot collide across kinds. They
 // depend on the record only, so they are the same under every slide master.
-export const REGION_IDX_BASE = Object.freeze({obj: 100, body: 200, pic: 300, chart: 400, tbl: 500, media: 600});
+export const REGION_IDX_BASE = Object.freeze({obj: 100, body: 300, pic: 500, chart: 700, tbl: 900, media: 1100});
 export const SUBTITLE_IDX = 1;
 const NAME = /^[a-z][a-z0-9-]*$/;
 const MAX_REGIONS = 144;
@@ -73,7 +77,7 @@ export function placeholderType(region) {
 }
 
 /** Which slide objects a placeholder of each type takes (binding a `none` region's lone object). */
-const BINDS = {pic: ['picture'], chart: ['chart'], tbl: ['table'], obj: ['picture', 'chart', 'table']};
+const BINDS = {title: ['title'], ctrTitle: ['title'], pic: ['picture'], chart: ['chart'], tbl: ['table'], obj: ['picture', 'chart', 'table']};
 export const bindsObject = (type, object) => (BINDS[type] ?? []).includes(object);
 
 /** The placeholder index of each region: its kind's base plus its position among the regions of that kind (REGION_IDX_BASE). */
@@ -207,18 +211,30 @@ export function layoutPlaceholders(template) {
     const region = regions.get(area.name);
     if (region) result.push({name: region.name, type: placeholderType(region), idx: indexes[region.name], ...emu(area.box)});
   }
+  const sample = composeSlide({title: 'Title', subtitle: 'Subtitle', blocks: [{text: 'Body'}]}, {...template.areaOptions, layout: record});
+  for (const placeholder of result) {
+    const field = placeholder.type === 'title' || placeholder.type === 'ctrTitle' ? 'title' : placeholder.type === 'subTitle' ? 'subtitle' : 'text';
+    const item = sample.items.find(item => item.field === field);
+    if (item?.textStyle && item.text?.fontSize) placeholder.style = {...item.textStyle, fontSize: item.text.fontSize, alignment: item.alignment};
+  }
   return result;
 }
 
 const PROMPTS = {title: 'Click to edit Master title style', ctrTitle: 'Click to edit Master title style', subTitle: 'Click to edit Master subtitle style', body: 'Click to edit Master text styles', obj: 'Click to edit Master text styles'};
 function placeholderShape(placeholder, id) {
+  const style = placeholder.style;
+  const align = {left: 'l', center: 'ctr', right: 'r'}[style?.alignment] ?? 'l';
+  // Each copy inherits its own master's chosen heading/body fonts (including script-profile variants).
+  const fontRole = placeholder.type === 'title' || placeholder.type === 'ctrTitle' ? 'mj' : 'mn';
+  const defaults = style ? `<a:defRPr sz="${Math.round(style.fontSize * 75)}"${Number(style.fontWeight) >= 600 ? ' b="1"' : ''}><a:latin typeface="${fontRole === 'mj' ? '+mj-lt' : '+mn-lt'}"/><a:ea typeface="+${fontRole}-ea"/><a:cs typeface="+${fontRole}-cs"/></a:defRPr>` : '';
+  const listStyle = defaults ? `<a:lstStyle>${Array.from({length: 9}, (_, level) => `<a:lvl${level + 1}pPr algn="${align}">${defaults}</a:lvl${level + 1}pPr>`).join('')}</a:lstStyle>` : '<a:lstStyle/>';
   const typeAttribute = placeholder.type === 'obj' ? '' : ` type="${placeholder.type}"`;
   const idx = placeholder.idx !== undefined ? ` idx="${placeholder.idx}"` : '';
   const prompt = PROMPTS[placeholder.type];
   const paragraph = prompt ? `<a:p><a:r><a:rPr lang="en-US"/><a:t>${prompt}</a:t></a:r></a:p>` : '<a:p><a:endParaRPr lang="en-US"/></a:p>';
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(placeholder.name)}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph${typeAttribute}${idx}/></p:nvPr></p:nvSpPr>` +
     `<p:spPr><a:xfrm><a:off x="${placeholder.x}" y="${placeholder.y}"/><a:ext cx="${placeholder.cx}" cy="${placeholder.cy}"/></a:xfrm></p:spPr>` +
-    `<p:txBody><a:bodyPr${placeholder.anchor ? ` anchor="${placeholder.anchor}"` : ''}/><a:lstStyle/>${paragraph}</p:txBody></p:sp>`;
+    `<p:txBody><a:bodyPr${placeholder.anchor ? ` anchor="${placeholder.anchor}"` : ''}/>${listStyle}${paragraph}</p:txBody></p:sp>`;
 }
 
 /**
@@ -239,8 +255,8 @@ export function layoutTagValue(template, {record = false} = {}) {
  * maps an object name on a slide to {slide, region, object} (`picture`, `chart` or `table`). `partText(path, xml)` applies the
  * deck's language to a generated part.
  */
-export function writeTemplateLayouts(output, slides, templates, bindings = new Map(), partText = (path, xml) => xml, {records = false} = {}) {
-  if (!slides.some(Boolean)) return;
+export function writeTemplateLayouts(output, slides, templates, bindings = new Map(), partText = (path, xml) => xml, {records = false, automaticSlides = []} = {}) {
+  if (!slides.some(Boolean) && !templates.length && !automaticSlides.some(Boolean)) return;
   const all = [...templates];
   for (const plan of slides) if (plan && !all.some(template => template.key === plan.template.key)) all.push({...plan.template, areaOptions: plan.areaOptions});
   const has = path => Object.hasOwn(output, path);
@@ -308,14 +324,37 @@ export function writeTemplateLayouts(output, slides, templates, bindings = new M
       const masterXml = read(master);
       if (!masterXml.includes('</p:sldLayoutIdLst>')) throw new Error(`${master} has no layout list.`);
       write(master, masterXml.replace('</p:sldLayoutIdLst>', `<p:sldLayoutId id="${nextLayoutId++}" r:id="${added.rid}"/></p:sldLayoutIdLst>`));
-      created.set(key, {path, placeholders: new Map(placeholders.filter(item => item.idx !== undefined).map(item => [item.name, item]))});
+      created.set(key, {path, placeholders: new Map(placeholders.map(item => [item.name, item]))});
     }
   }
-  for (const [index, plan] of slides.entries()) {
-    if (!plan) continue;
+  // Automatic composition is its own titleOnly layout, independently of catalog region templates.
+  for (const [master, base] of masters) {
+    const first = automaticSlides.find((plan, index) => plan && related(related(slidePaths[index], 'slideLayout'), 'slideMaster') === master);
+    if (!first) continue;
+    const path = `ppt/slideLayouts/slideLayout${nextLayout++}.xml`, tagPath = `ppt/tags/opfLayout${nextTag++}.xml`;
+    // Reuse accepted title geometry; an empty slide needs only the engine's default prompt, never a re-fit through the caller's measurement provider.
+    const title = first.title ?? composeSlide({title: 'Title'}, {...first.areaOptions, layout: undefined, textMeasurement: undefined}).items.find(item => item.field === 'title');
+    const placeholder = {name: 'Title', type: 'title', x: Math.round(title.box.x * EMU), y: Math.round(title.box.y * EMU), cx: Math.round(title.box.width * EMU), cy: Math.round(title.box.height * EMU), style: {...title.textStyle, fontSize: title.text.fontSize, alignment: title.alignment}};
+    let xml = read(base).replace(/<p:sldLayout\b[^>]*>/, open => `${open.slice(0, -1).replace(/\s+(?:type|userDrawn|showMasterSp)="[^"]*"/g, '')} type="titleOnly" userDrawn="1">`);
+    xml = xml.replace(/(<p:cSld\b[^>]*?)(\s+name="[^"]*")?(\s*>)/, (match, open, _name, close) => `${open} name="OPF auto"${close}`);
+    const nextId = Math.max(1, ...[...xml.matchAll(/<p:cNvPr\b[^>]*\bid="(\d+)"/g)].map(match => Number(match[1]))) + 1;
+    xml = xml.replace('</p:grpSpPr>', `</p:grpSpPr>${placeholderShape(placeholder, nextId)}`);
+    const masterRel = relationships(read(relsOf(base))).find(rel => rel.type === `${REL}/slideMaster`);
+    const tagged = addRelationship(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${masterRel.node}</Relationships>`, `${REL}/tags`, relativeTarget(path, tagPath));
+    xml = xml.replace('</p:spTree>', `</p:spTree><p:custDataLst><p:tags r:id="${tagged.rid}"/></p:custDataLst>`);
+    write(path, partText(path, xml)); write(relsOf(path), tagged.relsXml);
+    output[tagPath] = [enc.encode(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:tagLst xmlns:p="${NS}"><p:tag name="${LAYOUT_TAG}" val="${encodeTextTag({v: 1, id: 'auto', group: 'custom', reference: 'auto', hash: recordHash({auto: true}), regions: {}})}"/></p:tagLst>`), options];
+    types = types.replace('</Types>', `<Override PartName="/${path}" ContentType="${LAYOUT_TYPE}"/><Override PartName="/${tagPath}" ContentType="${TAGS_TYPE}"/></Types>`);
+    const added = addRelationship(read(relsOf(master)), `${REL}/slideLayout`, relativeTarget(master, path));
+    write(relsOf(master), added.relsXml);
+    write(master, read(master).replace('</p:sldLayoutIdLst>', `<p:sldLayoutId id="${nextLayoutId++}" r:id="${added.rid}"/></p:sldLayoutIdLst>`));
+    created.set(`${master}\u0001auto`, {path, placeholders: new Map([['Title', placeholder]])});
+  }
+  for (const [index, plan] of slidePaths.map((_, index) => slides[index]).entries()) {
+    if (!plan && !automaticSlides[index]) continue;
     const slidePath = slidePaths[index];
     const master = related(related(slidePath, 'slideLayout'), 'slideMaster');
-    const layout = created.get(`${master}\u0001${plan.template.key}`);
+    const layout = created.get(`${master}\u0001${plan ? plan.template.key : 'auto'}`);
     if (!layout) throw new Error(`Slide ${index + 1} has no template layout.`);
     const slideRels = relsOf(slidePath);
     write(slideRels, read(slideRels).replace(/<Relationship\b[^>]*\/>/g, node => attribute(node, 'Type') === `${REL}/slideLayout` ? node.replace(/\sTarget="[^"]*"/, ` Target="${relativeTarget(slidePath, layout.path)}"`) : node));
@@ -325,8 +364,8 @@ export function writeTemplateLayouts(output, slides, templates, bindings = new M
       if (binding.slide !== index) continue;
       const placeholder = layout.placeholders.get(binding.region);
       if (!placeholder || !bindsObject(placeholder.type, binding.object)) continue;
-      const ph = `<p:ph${placeholder.type === 'obj' ? '' : ` type="${placeholder.type}"`} idx="${placeholder.idx}"/>`;
-      const element = binding.object === 'picture' ? 'pic' : 'graphicFrame';
+      const ph = `<p:ph${placeholder.type === 'obj' ? '' : ` type="${placeholder.type}"`}${placeholder.idx !== undefined ? ` idx="${placeholder.idx}"` : ''}/>`;
+      const element = binding.object === 'picture' ? 'pic' : binding.object === 'title' ? 'sp' : 'graphicFrame';
       const pattern = new RegExp(`<p:${element}>[\\s\\S]*?<\\/p:${element}>`, 'g');
       slideXml = slideXml.replace(pattern, shape => {
         if (unescapeAttribute(shape.match(/<p:cNvPr\b[^>]*\bname="([^"]*)"/)?.[1] ?? '') !== objectName || /<p:ph\b/.test(shape)) return shape;
@@ -335,7 +374,9 @@ export function writeTemplateLayouts(output, slides, templates, bindings = new M
         if (element === 'pic') {
           next = /<a:picLocks\b[^>]*\/>/.test(next) ? next.replace(/<a:picLocks\b([^>]*?)\s*\/>/, (match, rest) => /noGrp=/.test(rest) ? match : `<a:picLocks noGrp="1"${rest}/>`)
             : next.replace(/<p:cNvPicPr\s*\/>/, '<p:cNvPicPr><a:picLocks noGrp="1"/></p:cNvPicPr>').replace(/<p:cNvPicPr>(?!<a:picLocks)/, '<p:cNvPicPr><a:picLocks noGrp="1"/>');
-        } else {
+        } else if (element === 'sp') {
+          next = next.replace(/<p:cNvSpPr\b([^>]*)\/>/, '<p:cNvSpPr$1><a:spLocks noGrp="1"/></p:cNvSpPr>');
+        } else if (element === 'graphicFrame') {
           next = /<a:graphicFrameLocks\b[^>]*\/>/.test(next) ? next.replace(/<a:graphicFrameLocks\b([^>]*?)\s*\/>/, (match, rest) => /noGrp=/.test(rest) ? match : `<a:graphicFrameLocks noGrp="1"${rest}/>`)
             : next.replace(/<p:cNvGraphicFramePr\s*\/>/, '<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr>');
         }
@@ -406,6 +447,7 @@ export function applyTemplateLayouts(imported, slides, recordOf, report = () => 
   for (const [index, entry] of slides.entries()) {
     const slide = imported.slides[index], tag = entry?.tag;
     if (!slide || !tag) continue;
+    if (tag.id === 'auto' && entry.preservedAutomatic && (entry.storedLayout === undefined || entry.storedLayout === 'auto')) { if (entry.storedLayout === 'auto') slide.layout = 'auto'; continue; }
     if (slide.layout === undefined) slide.layout = tag.reference;
     else if (slide.layout !== tag.reference) {
       const match = bareId(slide.layout);
@@ -426,4 +468,24 @@ export function applyTemplateLayouts(imported, slides, recordOf, report = () => 
       if (bound?.name !== name) block.region = name;
     }
   }
+}
+
+/** Map foreign PowerPoint layouts to available v2 built-ins; no layout reconstruction or migration aliases. */
+export function foreignLayoutReference(layout, catalogs) {
+  const types = {title: 'cover', secHead: 'section', obj: 'text', tx: 'text', twoObj: 'two-column', twoTxTwoObj: 'two-column', picTx: 'image-beside'};
+  const type = layout?.type;
+  if (type === 'blank' || type === 'titleOnly') return 'auto';
+  const options = catalogs === undefined ? {} : {catalogs};
+  // Use core's default catalog resolution: a same-id record in another host catalog must never supply a misleading name match.
+  const builtins = catalogRecords({}, 'layouts', options).filter(entry => entry.group === 'default' && isTemplate(entry.record))
+    .filter(entry => Object.hasOwn(POWERPOINT_LAYOUT_TYPES, entry.id) || ['image', 'gallery', 'chart', 'chart-beside', 'table', 'table-beside', 'code', 'pillars', 'process', 'timeline', 'quote', 'metrics', 'scorecard', 'hero', 'dashboard', 'team', 'logos', 'statement', 'closing'].includes(entry.id))
+    .filter(entry => resolveReference({}, 'layouts', `default:${entry.id}`, options)?.source === entry.source);
+  const id = types[type];
+  if (id) return builtins.some(entry => entry.id === id) ? `default:${id}` : undefined;
+  if (type === 'cust') {
+    const name = String(layout?.['p:cSld']?.name ?? '').trim().toLowerCase();
+    const matched = builtins.find(entry => entry.id.toLowerCase() === name || String(entry.record.name ?? '').trim().toLowerCase() === name);
+    return matched ? `default:${matched.id}` : 'auto';
+  }
+  return 'auto';
 }

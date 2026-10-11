@@ -215,7 +215,7 @@ const tagValue = xml => JSON.parse(Buffer.from(xml.match(/\bval="([^"]+)"/)[1], 
     for (const path of Object.keys(entries).filter(path => /^ppt\/(presentation|slides\/slide\d+)\.xml$/.test(path))) text(entries, path, xml => xml.replace(/<p:custDataLst>[\s\S]*?<\/p:custDataLst>/g, ''));
   }));
   assert.deepEqual(foreign.provenance, []);
-  assert.equal(foreign.deck.slides[0].layout, undefined);
+  assert.equal(foreign.deck.slides[0].layout, 'auto', 'Foreign blank layouts map to automatic composition');
   assert.equal(foreign.deck.catalogs, undefined);
 
   const damaged = await read(modify(exported, entries => text(entries, 'ppt/tags/opfDocument.xml', xml => xml.replace(/val="[0-9A-F]{8}/, 'val="ZZZZZZZZ'))));

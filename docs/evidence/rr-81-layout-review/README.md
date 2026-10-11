@@ -1,0 +1,9 @@
+# RR-81 independent layout review
+
+The archive comparison preserves the accepted pre-review converter (`991023c`, rebased on main `5b6c793`, including the table-save fix) and the reviewed candidate using the same Node 24.21.0 runtime, fonts and locally packed dependencies: core `fe9fe3fa2c3ad0130e271b73d9853f66e920c1d5` and renderer `9fbddcb78dbebcb87355922ca92af7d26c24c48d`.
+
+Nine chartex fixtures use their actual test helper's registered default catalog; the 21 RR-54 fixtures use the bare converter, matching their tests. The archives are preserved at `/private/tmp/rr81-archive-review-exact/`. The initial bare-catalog chartex comparison at `/private/tmp/rr81-archive-review/` is superseded: it omitted the test helper's catalog and its world-category mismatch was not a product regression. The exact comparison shows world-category unchanged and passing its historical hash.
+
+All chart parts, their relationships, embedded workbooks, media and themes remain byte-identical. Every changed slide XML differs only in the accepted one-line title's native title placeholder and its no-group lock. Automatic slides add the OPF auto `titleOnly` layout, its relationship/tag and corresponding content types, master layout registration and slide relationship changes. The coordinator independently reviewed all 30 pairs and authorized the explicit hash updates for the approved 0.19 design section 8 behavior. Strict whole-archive, diagnostics, mode and native-slide hash checks remain enforced; historical hashes are retained where recorded.
+
+This review establishes archive structure and content preservation. It does not establish native PowerPoint raster, Reset Slide, Change Layout, Header/Footer dialog or Slide Master behavior after these changes. Earlier COM observations remain historical; a fresh Windows native recheck is pending.

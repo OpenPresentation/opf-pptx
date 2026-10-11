@@ -32,7 +32,8 @@ const EXPORT = {seed: 1, timestamp: '2026-01-01T00:00:00Z', zipDate: '2026-01-01
 const PT_PER_EMU = 1 / 12700, PT_PER_PX = 0.75, GATE_PT = 0.02;
 const nativeAlign = {start: 'l', middle: 'ctr', end: 'r'};
 const unescape = text => text.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-const tokens = text => text.split(/(?=<)/);
+// Native automatic title binding is independent of the alignment being compared.
+const tokens = text => text.replace(/<a:spLocks noGrp="1"\/>/g, '').replace(/<p:cNvSpPr><\/p:cNvSpPr>/g, '<p:cNvSpPr/>').replace(/<p:ph type="title"\/>/g, '').split(/(?=<)/);
 const slideXml = async deck => decoder.decode(unzipSync(await toPptx(deck, EXPORT))['ppt/slides/slide1.xml']);
 // Every native text paragraph (outside tables and charts) with its alignment.
 const paragraphs = xml => [...xml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].flatMap(([shape]) => [...shape.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)].map(([, body]) => ({

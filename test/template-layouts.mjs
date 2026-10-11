@@ -53,7 +53,7 @@ const kindOf = region => {
   return only('image') ? 'pic' : only('chart') ? 'chart' : only('table') ? 'tbl' : only('video') ? 'media'
     : region.role === 'media' && accepts.has('image') && only('image', 'video', 'group') ? 'pic' : only('text', 'list') ? 'body' : 'obj';
 };
-const IDX_BASE = {obj: 100, body: 200, pic: 300, chart: 400, tbl: 500, media: 600};
+const IDX_BASE = {obj: 100, body: 300, pic: 500, chart: 700, tbl: 900, media: 1100};
 const indexesOf = record => {
   const regions = new Map(layoutTemplate(record).regions.map(region => [region.name, region])), counts = {};
   return Object.fromEntries(Object.keys(record.regions).map(name => { const kind = kindOf(regions.get(name)); counts[kind] = (counts[kind] ?? -1) + 1; return [name, IDX_BASE[kind] + counts[kind]]; }));
@@ -226,14 +226,14 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
   const bound = xml => [...xml.matchAll(/<p:(pic|graphicFrame)>[\s\S]*?<\/p:\1>/g)].map(([shape]) => shape).filter(shape => /<p:ph\b/.test(shape))
     .map(shape => shape.match(/<p:ph\b[^>]*\/>/)[0]);
   for (const id of ['cover', 'image', 'image-beside', 'hero']) assert.deepEqual(bound(slideXml(id)), [`<p:ph type="pic" idx="${indexesOf(templates[id]).media}"/>`], `${id}: the picture fills its placeholder`);
-  assert.deepEqual(bound(slideXml('chart-beside')), ['<p:ph type="chart" idx="400"/>']);
-  assert.deepEqual(bound(slideXml('table-beside')), ['<p:ph type="tbl" idx="500"/>']);
+  assert.deepEqual(bound(slideXml('chart-beside')), ['<p:ph type="chart" idx="700"/>']);
+  assert.deepEqual(bound(slideXml('table-beside')), ['<p:ph type="tbl" idx="900"/>']);
   for (const id of ['gallery', 'chart', 'table', 'dashboard', 'team', 'logos']) assert.deepEqual(bound(slideXml(id)), [], `${id}: flowing regions draw free shapes`);
   for (const id of Object.keys(templates)) {
     const xml = slideXml(id);
     assert.ok(checkOrder(xml, `${id} slide`) > 3);
     assert.ok([...xml.matchAll(/<p:pic>[\s\S]*?<\/p:pic>/g)].every(([shape]) => !/<p:ph\b/.test(shape) || /<a:picLocks noGrp="1"/.test(shape)), 'A placeholder picture is locked against grouping, as PowerPoint writes it');
-    assert.ok(!/<p:sp>(?:(?!<\/p:sp>)[\s\S])*<p:ph\b(?:(?!<\/p:sp>)[\s\S])*<\/p:sp>/.test(xml.replace(/<p:sp>(?:(?!<\/p:sp>)[\s\S])*type="(?:dt|ftr|sldNum)"[\s\S]*?<\/p:sp>/g, '')),
+    assert.ok(!/<p:sp>(?:(?!<\/p:sp>)[\s\S])*<p:ph\b(?:(?!<\/p:sp>)[\s\S])*<\/p:sp>/.test(xml.replace(/<p:sp>(?:(?!<\/p:sp>)[\s\S])*type="(?:title|ctrTitle|dt|ftr|sldNum)"[\s\S]*?<\/p:sp>/g, '')),
       `${id}: no empty region placeholder is instantiated on a filled slide (no prompt)`);
   }
   // The content topology names the region each root block was drawn in.
@@ -277,11 +277,11 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
   for (const master of masters) {
     const listed = [...text(parts, master).matchAll(/<p:sldLayoutId id="\d+" r:id="([^"]+)"\/>/g)].map(match => resolvePart(master, relationships(parts, master).find(rel => rel.id === match[1]).target));
     assert.equal(layoutTag(parts, listed[0]), undefined, `${master} keeps its own layout first`);
-    assert.deepEqual(listed.slice(1).map(path => layoutTag(parts, path).id), order, `${master} lists every reachable template in order`);
+    assert.deepEqual(listed.slice(1).map(path => layoutTag(parts, path).id).filter(id => id !== 'auto'), order, `${master} lists every reachable template in order`);
   }
-  assert.equal(layoutParts(parts).length, 2 * (order.length + 1));
+  assert.equal(layoutParts(parts).length, 2 * (order.length + 1) + 1);
   assert.equal(layoutTag(parts, layoutOf(parts, 1)).id, 'pillars');
-  assert.equal(layoutTag(parts, layoutOf(parts, 2)), undefined, 'The automatic slide keeps its master\'s own layout');
+  assert.equal(layoutTag(parts, layoutOf(parts, 2)).id, 'auto', 'The automatic slide uses OPF auto');
   assert.notEqual(related(parts, layoutOf(parts, 1), 'slideMaster'), related(parts, layoutOf(parts, 2), 'slideMaster'));
   const {imported} = await read(output, {catalogs});
   assert.ok(isDeepStrictEqual(imported, deck), JSON.stringify(imported.catalogs));
@@ -425,7 +425,7 @@ const roadmap = {name: 'Roadmap review', catalogs: {custom: {layouts: {'roadmap-
   assert.deepEqual(layoutTag(parts, third), layoutTag(parts, first));
   assert.deepEqual(placeholders(text(parts, third)).map(item => item.name), placeholders(text(parts, first)).map(item => item.name));
   assert.ok(checkOrder(text(parts, third), third) > 5);
-  assert.equal(layoutTag(parts, layoutOf(parts, 4)), undefined, 'The automatic slide keeps the master\'s layout');
+  assert.equal(layoutTag(parts, layoutOf(parts, 4)).id, 'auto', 'The automatic slide uses OPF auto');
   const {imported} = await read(output);
   assert.ok(isDeepStrictEqual(imported, deck), JSON.stringify(imported.slides.map(slide => [slide.layout, slide.design])));
   checked++;
@@ -442,18 +442,18 @@ const roadmap = {name: 'Roadmap review', catalogs: {custom: {layouts: {'roadmap-
   checked++;
 }
 
-// ---- 10. 0.18 records and automatic slides export as before: no template layouts, no layout tags, no bound placeholders.
+// ---- 10. v1 layouts keep their layout; automatic slides use the dedicated OPF auto layout in 0.19.
 {
   const deck = {name: 'Classic', slides: [{layout: 'title', title: 'Title', subtitle: 'Subtitle'}, {layout: 'text-1x', title: 'Text', text: 'Body.'}, {title: 'Auto', blocks: [{image: {src: square}}]}]};
   const {entries: parts} = await exportDeck(deck);
-  assert.equal(layoutParts(parts).length, 1);
-  assert.ok(!Object.keys(parts).some(path => /opfLayout/.test(path)));
-  assert.ok(!/<p:ph\b/.test(text(parts, 'ppt/slides/slide3.xml')));
-  // Registering templates changes nothing while no slide uses one.
+  assert.equal(layoutParts(parts).length, 2);
+  assert.equal(layoutTag(parts, layoutOf(parts, 3)).id, 'auto');
+  assert.match(text(parts, 'ppt/slides/slide3.xml'), /<p:ph type="title"\/>/);
+  // Registering v2 templates exposes the templates and OPF auto on automatic slides. This is the intentional 0.19 contract.
   const registered = await exportDeck(deck, {catalogs: [gallery2, defaultCatalog]});
-  assert.equal(layoutParts(registered.entries).length, 1);
-  assert.ok(!Object.keys(registered.entries).some(path => /opfLayout/.test(path)));
+  assert.equal(layoutParts(registered.entries).length, 30);
+  assert.equal(layoutTag(registered.entries, layoutOf(registered.entries, 3)).id, 'auto');
   checked++;
 }
 
-console.log(`Template layouts passed (${checked}): 28 templates as native slide layouts (placeholder per area, types, geometry, OPF_LAYOUT_V1, schema order), every reachable template in catalog order on every master, bound placeholder objects, embedded and registered round trips, region pins, list columns, Change Layout, a slide added in PowerPoint, no provenance, furniture variants, a damaged tag and unchanged 0.18 exports.`);
+console.log(`Template layouts passed (${checked}): 28 templates as native slide layouts (placeholder per area, types, geometry, OPF_LAYOUT_V1, schema order), every reachable template in catalog order on every master, bound placeholder objects, embedded and registered round trips, region pins, list columns, Change Layout, a slide added in PowerPoint, no provenance, furniture variants, a damaged tag and automatic titleOnly layouts.`);
