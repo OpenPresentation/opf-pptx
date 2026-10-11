@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {strFromU8, strToU8, unzipSync, zipSync} from 'fflate';
 import {XMLValidator} from 'fast-xml-parser';
-import {catalogDisplay} from '@openpresentation/opf/catalog';
+import {catalogDisplay} from '@openpresentation/gallery';
 import {fromPptx, toPptx} from './helpers/default-catalog.mjs';
 import {CHART_TYPES, CHARTEX_NAMESPACES, chartTypeFromChartex, resolveChartType} from '../dist/chart-types.js';
 import {CHARTEX_CONTENT_TYPES, CHARTEX_RELATIONSHIP_TYPES, chartexPointColors, columnLetters, scottBinCount} from '../dist/chartex.js';
@@ -381,8 +381,8 @@ const classicNumbers = (xml, tag) => [...xml.matchAll(new RegExp(`<c:${tag}>([\\
 }
 
 // ---------------------------------------------------------------------------
-// Modes. `chartex: 'fallback'` keeps the export of every chartex id byte-identical to main's (SHA-256 fixture generated from
-// main, see its `source`) with main's diagnostics and no chartex part. The default ('auto', owner decision after the
+// Modes. `chartex: 'fallback'` keeps strict whole-archive hashes for the explicitly reviewed fixture baseline
+// (see its source and finalGalleryReview), its diagnostics and no chartex part. The default ('auto', owner decision after the
 // 2026-09-30 native PowerPoint check) writes the chartex parts for the six confirmed constructs and keeps only the map
 // on the fallback, reporting it; `chartex: 'native'` writes every construct, map included.
 {
@@ -398,8 +398,8 @@ const classicNumbers = (xml, tag) => [...xml.matchAll(new RegExp(`<c:${tag}>([\\
   };
   for (const [name, deck] of Object.entries(fixture.decks)) {
     const fallback = await run(deck, 'fallback');
-    assert.equal(digest(fallback.bytes), fixture.entries[name].sha256, `${name} (fallback): bytes identical to main ${fixture.source.commit.slice(0, 7)}`);
-    assert.deepEqual(fallback.diagnostics, fixture.entries[name].diagnostics, `${name} (fallback): main's diagnostics`);
+    assert.equal(digest(fallback.bytes), fixture.entries[name].sha256, `${name} (fallback): bytes identical to the reviewed archive fixture`);
+    assert.deepEqual(fallback.diagnostics, fixture.entries[name].diagnostics, `${name} (fallback): reviewed diagnostics`);
     assert.equal(fallback.chartexParts, 0, `${name} (fallback): no chartex parts`);
     assert.ok(fallback.slides.every((slide) => !slide.includes('AlternateContent')), `${name} (fallback): no alternate content`);
     const maps = deck.slides.filter((slide) => slide.chart.type === 'world').length;
@@ -413,7 +413,7 @@ const classicNumbers = (xml, tag) => [...xml.matchAll(new RegExp(`<c:${tag}>([\\
       assert.deepEqual(auto.diagnostics.filter((d) => d.endsWith('/chartex-fallback')).length, maps, `${name} (auto): the map reports its fallback`);
       assert.ok(!auto.diagnostics.includes('chart-map-geodata') && native.diagnostics.includes('chart-map-geodata'), `${name}: geodata notice only when the map is native`);
     }
-    if (maps === deck.slides.length) assert.deepEqual(digest(auto.bytes), fixture.entries[name].sha256, `${name} (auto): a map-only deck keeps main's bytes`);
+    if (maps === deck.slides.length) assert.deepEqual(digest(auto.bytes), fixture.entries[name].sha256, `${name} (auto): a map-only deck keeps the reviewed fallback bytes`);
     else assert.ok(auto.diagnostics.every((d) => d !== 'chart-data-adapted/histogram-binned'), `${name} (auto): histograms bin natively`);
   }
   await assert.rejects(toPptx({slides: [{title: 't', chart: {type: 'treemap', data: categoryData}}]}, {chartex: 'maybe'}), (error) => error.code === 'invalid-chartex-mode' && error.details?.path === 'options.chartex');
@@ -462,4 +462,4 @@ assert.deepEqual(chartexPointColors('waterfall', [1, -2, 0, null], ['UP', 'DOWN'
 assert.deepEqual(chartexPointColors('funnel', [1, 2], ['A']), [null, null]);
 assert.equal(resolveChartType('treemap-3x').id, null, 'a retired alias is outside the catalog');
 
-console.log(`Chartex passed: ${checks} checks; ${chartexIds.length} chartex ids export native cx:chartSpace parts with style parts, content types, relationships and alternate-content frames, agree with core chartTypeRecords, round-trip and are deterministic; the default writes them for the six confirmed constructs and keeps the map on the fallback (chartex: 'fallback' stays byte-identical to main).`);
+console.log(`Chartex passed: ${checks} checks; ${chartexIds.length} chartex ids export native cx:chartSpace parts with style parts, content types, relationships and alternate-content frames, agree with core chartTypeRecords, round-trip and are deterministic; the default writes them for the six confirmed constructs and keeps the map on the fallback (chartex: 'fallback' retains strict reviewed archive hashes).`);

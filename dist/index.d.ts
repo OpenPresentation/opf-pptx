@@ -166,7 +166,7 @@ export interface ToPptxOptions {
    * against a document group's `catalogs.<group>.source`, and the first is the host default that bare ids use when the document
    * omits `catalogs.default`. Never fetched. Every reference (slide layouts, themes, colour and font schemes) resolves in the
    * document's embedded records first, then here; omitted or `[]`, only embedded records resolve. Register the gallery snapshot
-   * explicitly with `catalogs: [defaultCatalog]` from `@openpresentation/opf/catalog`.
+   * explicitly with `catalogs: [gallery]` from `@openpresentation/gallery`.
    */
   catalogs?: readonly Catalog[];
 }
@@ -177,7 +177,7 @@ export interface FromPptxOptions {
   fallbackName?: string;
   schema?: string;
   /**
-   * The catalogs the host registered (core `Catalog[]`, as in ToPptxOptions; never fetched). Theme and colour-scheme recovery
+   * The catalogs the host registered (core `Catalog[]`, as in ToPptxOptions; never fetched). Omitted catalogs use the bundled gallery for foreign built-in layout mapping; explicit `[]` opts out. Theme and colour-scheme recovery
    * (FF-24) matches the package's theme against the first one, the host default: an exact colour-scheme match imports as its
    * bare id and a corroborated theme name as `design.theme`. Without catalogs the colour scheme imports as an inline object and
    * no theme id is recovered. A stored slide layout reference also resolves here.
@@ -410,7 +410,8 @@ export interface PptxOpfLink {
    * "block" fed a block (`path`, `blockType`); "title", "subtitle" and "tag" fed that slide field. Other roles name a shape the
    * importer consumed without a block of its own: "furniture" (footer, date, number, section), "background" (the picture of an image background),
    * "image-overlay" (the overlay shape of an image background or image block), "watermark", "logo",
-   * and the members of an OPF-tagged group ("code", "metric", "quote", "timeline", "media", "card-frame").
+   * and the members of an OPF-tagged group ("code", "metric", "quote", "timeline", "media", "card-frame"), and "prompt" (an empty
+   * placeholder: the prompt of a slide PowerPoint added from a layout).
    */
   role: string;
   /** Path in the presentation, for example "slides.2.blocks.1", "slides.0.title", or "slides.1.left" after a tagged round trip. */

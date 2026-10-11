@@ -27,7 +27,7 @@ try {
   const deck = {name: 'Interop', filename: 'interop-deck', extensions: {'x-vendor': {a: 1}}, tone: 'formal', purpose: 'inform',
     organization: {id: 'acme', name: 'Acme', logo: png}, assets: {spare: png},
     design: {fontScheme: 'arial', logo: 'var:organization.acme.logo', contentAlignment: 'center'},
-    slides: [{id: 'one', layout: 'title-subtitle', title: 'One', subtitle: 'Two', section: 'Intro', extensions: {'x-s': true}, design: {logo: false, titleAlignment: 'center'}},
+    slides: [{id: 'one', layout: 'cover', title: 'One', subtitle: 'Two', section: 'Intro', extensions: {'x-s': true}, design: {logo: false, titleAlignment: 'center'}},
       {title: 'Two', section: 'Intro', blocks: [{type: 'group', id: 'g', blocks: [{type: 'text', text: 'a'}, {type: 'text', text: 'b'}]}]}]};
   const bytes = await toPptx(deck, {timestamp: '2026-01-01T00:00:00Z', seed: 1});
   const entries = unzipSync(bytes);
@@ -47,7 +47,7 @@ try {
   assert.equal(old.tone, 'formal'); assert.equal(old.purpose, 'inform');
   assert.deepEqual(old.organization, {id: 'acme', name: 'Acme', logo: png});
   assert.equal(old.design.contentAlignment, 'center'); assert.equal(old.design.fontScheme, 'arial');
-  assert.deepEqual(old.slides.map(item => [item.id, item.layout, item.design?.titleAlignment]), [['one', 'title-subtitle', 'center'], [undefined, undefined, undefined]]);
+  assert.deepEqual(old.slides.map(item => [item.id, item.layout, item.design?.titleAlignment]), [['one', 'cover', 'center'], [undefined, undefined, undefined]]);
   assert.equal(old.filename, undefined); assert.equal(old.design.logo, undefined); assert.equal(old.slides[1].blocks[0].type, 'text', 'older importers keep flat blocks');
 
   // This build restores everything.
@@ -72,8 +72,8 @@ try {
       organization: {id: 'acme', name: 'Acme', role: 'primary', logo: square},
       design: {fontScheme: {id: 'aptos'}, listBullet: 'image', background: {type: 'solid', color: '#FFFFFF'},
         header: {right: {image: 'var:organization.logo.icon'}}, footer: {left: {image: 'var:organization.logo.icon'}, center: {text: 'Confidential'}, right: {text: '{{slide.number}}'}}},
-      slides: [{tag: 'Eyebrow', title: 'Cover', subtitle: 'Subtitle', layout: 'title-subtitle'},
-        {title: 'Section', layout: 'section-divider', section: 'Part one'},
+      slides: [{tag: 'Eyebrow', title: 'Cover', subtitle: 'Subtitle', layout: 'cover'},
+        {title: 'Section', layout: 'section', section: 'Part one'},
         {title: 'Items', items: ['Alpha', 'Beta', 'Gamma']},
         {title: 'Quote', quote: {text: 'Design is how it works.', attribution: 'Someone'}}]};
     const exported = await toPptx(p2, {timestamp: '2026-01-01T00:00:00Z', seed: 1});
