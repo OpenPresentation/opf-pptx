@@ -177,9 +177,9 @@ export interface FromPptxOptions {
   fallbackName?: string;
   schema?: string;
   /**
-   * The catalogs the host registered (core `Catalog[]`, as in ToPptxOptions; never fetched). Omitted catalogs use the bundled gallery for foreign built-in layout mapping; explicit `[]` opts out. Theme and colour-scheme recovery
+   * The catalogs the host registered (core `Catalog[]`, as in ToPptxOptions; never fetched). Omitted catalogs select the default from installed `@openpresentation/gallery` only for foreign layout mapping; explicit `[]` opts out. Theme and colour-scheme recovery requires explicitly registered catalogs and
    * (FF-24) matches the package's theme against the first one, the host default: an exact colour-scheme match imports as its
-   * bare id and a corroborated theme name as `design.theme`. Without catalogs the colour scheme imports as an inline object and
+   * bare id and a corroborated theme name as `design.theme`. With omitted catalogs or explicit `catalogs: []` the colour scheme imports as an inline object and
    * no theme id is recovered. A stored slide layout reference also resolves here.
    */
   catalogs?: readonly Catalog[];
