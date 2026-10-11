@@ -2536,7 +2536,7 @@ function applyChartTextSize(xml, size) {
 }
 
 function addChartPayload(slide, chart, region, context, options = {}, path = "chart", presentation) {
-  const chartData = toPptxChartData(chart, context.chartexMode, presentation);
+  const chartData = toPptxChartData(chart, context.chartexMode, presentation, path);
   if (!chartData.series) {
     // Never lose a chart silently: the placeholder frame stands in for it, and a diagnostic names the reason.
     options.onDiagnostic?.({code: "chart-data-unplottable", path, message: chartData.message, reason: chartData.reason});
@@ -3454,7 +3454,7 @@ function textRuns(value, context, fallbackFontSize) {
  * goes through core's strict `chartNumber` (a string that is not a plain decimal is a gap, reported once per chart as
  * `chart-value-not-numeric`). `formats` holds the Excel codes of the columns' number formats per exported series.
  */
-function toPptxChartData(chart, chartexMode = 'auto', presentation) {
+function toPptxChartData(chart, chartexMode = 'auto', presentation, path = 'chart') {
   const unplottable = (reason, summary, message) => ({reason, summary, message: `${message} No native chart was exported; a placeholder frame stands in for it.`});
   // A dataset reference is inlined from the document first (composition normally hands over the inline copy already).
   const source = isDatasetRef(chart?.data) ? inlineChartData(chart, presentation) : chart;
@@ -3473,19 +3473,25 @@ function toPptxChartData(chart, chartexMode = 'auto', presentation) {
   const columnCodes = (resolvedData.formats ?? []).map(excelCode);
   const diagnostics = resolvedData.diagnostics.filter((entry) => entry.severity === 'warning' && entry.code !== 'chart-value-not-numeric');
   const rejected = resolvedData.diagnostics.filter((entry) => entry.code === 'chart-value-not-numeric');
-  const resolved = resolveChartType(chart.type).spec;
+  const {id: chartId, spec: resolved} = resolveChartType(chart.type);
   // A chartex type (treemap, histogram, pareto, box & whisker, waterfall, funnel, map) has no classic construct. Natively
   // it is written as its cx:chartSpace part and the clustered column chart of the same data is its mc:Fallback
   // (src/chartex.js). 'auto' (the default) does that for the constructs the native PowerPoint check confirmed and keeps
   // the unconfirmed map on the clustered column chart alone; 'fallback' keeps every chartex id there. The fallback is
   // reported as chartex-fallback, never silent.
-  const native = chartexMode === 'native' || (chartexMode === 'auto' && resolved.family === 'chartex' && !resolved.unconfirmed);
+  const multiSeriesPareto = chartId === 'pareto' && data.columns.length > 2;
+  if (multiSeriesPareto && chartexMode === 'native') {
+    throw new OPFPptxError('unsupported-chart-data', 'Native Pareto supports one value series. Use chartex auto or fallback to export every series as an editable clustered column chart.', {path, series: data.columns.slice(1)});
+  }
+  const native = chartexMode === 'native' || (chartexMode === 'auto' && resolved.family === 'chartex' && !resolved.unconfirmed && !multiSeriesPareto);
   const chartex = resolved.family === 'chartex' && native ? resolved : null;
   const spec = resolved.family === 'chartex' ? CHARTEX_FALLBACK : resolved;
   const typeName = stringifyText(chart.type);
   const adaptations = [];
   if (resolved.family === 'chartex' && !native) {
-    const reason = chartexMode === 'fallback'
+    const reason = multiSeriesPareto && chartexMode === 'auto'
+      ? 'that cannot represent multiple value series natively; all authored series are preserved in the fallback'
+      : chartexMode === 'fallback'
       ? 'that this exporter does not write'
       : 'that PowerPoint has not yet accepted natively from this exporter (pass chartex: \'native\' to write its chartex part)';
     adaptations.push({adaptation: "chartex-fallback", message: `The '${typeName}' chart is a PowerPoint extension (chartex) chart ${reason}; its data is exported as a native clustered column chart instead.`});

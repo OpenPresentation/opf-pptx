@@ -89,7 +89,9 @@ export interface ToPptxOptions {
    * clustered column chart as fallback) for the constructs desktop PowerPoint confirmed natively on 2026-09-30 (treemap,
    * histogram, pareto, box-and-whisker, waterfall, funnel) and keeps `world` on the clustered column chart with
    * `chart-data-adapted` (`chartex-fallback`) because the regionMap part, though accepted with `Requires="cx4"`, draws
-   * nothing until PowerPoint fetches map data online. "native" writes every chartex part, the map included (reports
+   * nothing until PowerPoint fetches map data online. Multi-series Pareto also uses editable clustered columns with all series and this diagnostic;
+   * explicit native mode rejects it with unsupported-chart-data before returning bytes. Single-series Pareto stays native.
+   * "native" writes supported chartex parts, the map included (reports
    * `chart-map-geodata`). "fallback" writes clustered columns only
    * (`chartex-fallback`, `histogram-binned`), as releases before FF-22b did. Import of chartex parts is always on.
    */
