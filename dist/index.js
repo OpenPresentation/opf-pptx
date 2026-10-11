@@ -32,6 +32,7 @@ import {INVALID_XML_CHARACTER, nativeSections, writeSectionList} from './section
 import {attachFurnitureFields, furniturePartFields, lineFields, nativeFieldType} from './furniture-fields.js';
 import {attachNativePlaceholders, defaultPlaceholderGeometry, nativeDateText, nativeFurnitureParts, nativePlaceholderForPart, writeNativeMasters} from './native-furniture.js';
 import {liftMasterFurniture} from './master-furniture.js';
+import {gallery} from '@openpresentation/gallery';
 import {applyTemplateLayouts, deckTemplates, foreignLayoutReference, placeholderRegion, readLayoutTag, slideTemplate, writeTemplateLayouts} from './template-layouts.js';
 import {importImageOrientation} from './image-import.js';
 import {extractSignals, normalizeSignalOptions, themeFactsFor} from './import-signals.js';
@@ -561,11 +562,13 @@ export async function fromPptx(input, options = {}) {
   for (const [index, context] of furnitureContexts.entries()) {
     if (!context.layoutTag && slideProvenance[index]?.structure === 'untagged' && context.foreignLayout !== undefined && imported.slides[index].layout === undefined)
       {
-        imported.slides[index].layout = context.foreignLayout;
         if (context.foreignLayout.startsWith('default:')) {
-          const found = resolveReference({}, 'layouts', context.foreignLayout, options.catalogs === undefined ? {} : {catalogs: options.catalogs});
+          const found = resolveReference({}, 'layouts', context.foreignLayout, {catalogs: options.catalogs ?? [gallery]});
+          const existing = imported.catalogs?.default;
+          if (existing === false || (existing?.source !== undefined && existing.source !== found?.source)) continue;
           if (found?.source) imported.catalogs = {...imported.catalogs, default: {...imported.catalogs?.default, source: found.source}};
         }
+        imported.slides[index].layout = context.foreignLayout;
       }
   }
   // RR-34: marker runs become cite/footnote on the runs before them, and the references list is rebuilt

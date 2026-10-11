@@ -166,7 +166,7 @@ export interface ToPptxOptions {
    * against a document group's `catalogs.<group>.source`, and the first is the host default that bare ids use when the document
    * omits `catalogs.default`. Never fetched. Every reference (slide layouts, themes, colour and font schemes) resolves in the
    * document's embedded records first, then here; omitted or `[]`, only embedded records resolve. Register the gallery snapshot
-   * explicitly with `catalogs: [defaultCatalog]` from `@openpresentation/opf/catalog`.
+   * explicitly with `catalogs: [gallery]` from `@openpresentation/gallery`.
    */
   catalogs?: readonly Catalog[];
 }
@@ -177,7 +177,7 @@ export interface FromPptxOptions {
   fallbackName?: string;
   schema?: string;
   /**
-   * The catalogs the host registered (core `Catalog[]`, as in ToPptxOptions; never fetched). Theme and colour-scheme recovery
+   * The catalogs the host registered (core `Catalog[]`, as in ToPptxOptions; never fetched). Omitted catalogs use the bundled gallery for foreign built-in layout mapping; explicit `[]` opts out. Theme and colour-scheme recovery
    * (FF-24) matches the package's theme against the first one, the host default: an exact colour-scheme match imports as its
    * bare id and a corroborated theme name as `design.theme`. Without catalogs the colour scheme imports as an inline object and
    * no theme id is recovered. A stored slide layout reference also resolves here.

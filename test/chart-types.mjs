@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
 import {CHART_TYPES as CORE_CHART_TYPES} from '@openpresentation/opf/composition';
-import {catalogDisplay} from '@openpresentation/opf/catalog';
+import {catalogDisplay} from '@openpresentation/gallery';
 import {toPptx, fromPptx} from '../dist/index.js';
 import {CHART_TYPES, CHARTEX_FALLBACK, resolveChartType} from '../dist/chart-types.js';
 

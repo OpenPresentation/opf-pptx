@@ -27,6 +27,7 @@
 
 import {composeLayoutAreas, composeSlide, layoutTemplate, bindRegions, regionAccepts} from '@openpresentation/opf/composition';
 import {validateCatalogRecord, catalogRecords, resolveReference} from '@openpresentation/opf';
+import {gallery} from '@openpresentation/gallery';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 
 export const LAYOUT_TAG = 'OPF_LAYOUT_V1';
@@ -193,7 +194,7 @@ function addRelationship(relsXml, type, target) {
 export function layoutPlaceholders(template) {
   const {record, id} = template;
   const parsed = layoutTemplate(record);
-  const {areas} = composeLayoutAreas(record, template.areaOptions ?? {});
+  const {areas} = composeLayoutAreas(record, {...template.areaOptions, textMeasurement: undefined});
   const regions = new Map(parsed.regions.map(region => [region.name, region]));
   const indexes = regionIndexes(record);
   const emu = box => ({x: Math.round(box.x * EMU), y: Math.round(box.y * EMU), cx: Math.max(0, Math.round(box.width * EMU)), cy: Math.max(0, Math.round(box.height * EMU))});
@@ -211,7 +212,7 @@ export function layoutPlaceholders(template) {
     const region = regions.get(area.name);
     if (region) result.push({name: region.name, type: placeholderType(region), idx: indexes[region.name], ...emu(area.box)});
   }
-  const sample = composeSlide({title: 'Title', subtitle: 'Subtitle', blocks: [{text: 'Body'}]}, {...template.areaOptions, layout: record});
+  const sample = composeSlide({title: 'Title', subtitle: 'Subtitle', blocks: [{text: 'Body'}]}, {...template.areaOptions, layout: record, textMeasurement: undefined});
   for (const placeholder of result) {
     const field = placeholder.type === 'title' || placeholder.type === 'ctrTitle' ? 'title' : placeholder.type === 'subTitle' ? 'subtitle' : 'text';
     const item = sample.items.find(item => item.field === field);
@@ -391,6 +392,17 @@ export function writeTemplateLayouts(output, slides, templates, bindings = new M
 // ---------------------------------------------------------------------------
 // Import
 
+function tagIdentityError(tag) {
+  if (!NAME.test(tag?.id ?? '') || !NAME.test(tag?.group ?? '')) return 'invalid id or group';
+  const reference = /^(?:([a-z][a-z0-9-]*):)?([a-z][a-z0-9-]*)$/.exec(tag.reference ?? '');
+  if (!reference || reference[2] !== tag.id || (reference[1] !== undefined && reference[1] !== tag.group)) return 'reference does not match id and group';
+  if (reference[1] === undefined && !['custom', 'default'].includes(tag.group)) return 'bare reference cannot name an external catalog';
+  if (tag.source !== undefined && (typeof tag.source !== 'string' || !/^(?:https:\/\/[^\s]+|pkg:[^\s]+)$/.test(tag.source))) return 'invalid catalog source';
+  if (tag.group === 'custom' && tag.source !== undefined) return 'custom catalog cannot have a source';
+  if (tag.group !== 'custom' && tag.source === undefined) return 'catalog source is missing';
+  return undefined;
+}
+
 /** The validated OPF_LAYOUT_V1 value of a slide layout part, or undefined. `report(message)` names a damaged tag. */
 export function readLayoutTag(entries, layoutPath, report = () => {}) {
   if (!layoutPath || !entries[layoutPath]) return undefined;
@@ -405,7 +417,8 @@ export function readLayoutTag(entries, layoutPath, report = () => {}) {
   try {
     const value = decodeTextTag(unescapeAttribute(attribute(tag, 'val') ?? ''));
     if (value === null || typeof value !== 'object' || Array.isArray(value) || value.v !== 1) throw Error('unknown version');
-    if (!NAME.test(value.id ?? '') || !NAME.test(value.group ?? '') || (value.source !== undefined && typeof value.source !== 'string')) throw Error('invalid id or group');
+    const identityError = tagIdentityError(value);
+    if (identityError) throw Error(identityError);
     if (typeof value.reference !== 'string' || !/^(?:[a-z][a-z0-9-]*:)?[a-z][a-z0-9-]*$/.test(value.reference) || typeof value.hash !== 'string') throw Error('invalid reference');
     if (value.record !== undefined && (value.record === null || typeof value.record !== 'object' || Array.isArray(value.record))) throw Error('invalid record');
     const regions = value.regions;
@@ -433,20 +446,30 @@ const bareId = reference => /^(?:([a-z][a-z0-9-]*):)?([a-z][a-z0-9-]*)$/.exec(re
  * placeholders. `slides[i]` = {tag, blockRegions, restored}; `recordOf(index)` resolves the slide's layout record.
  */
 export function applyTemplateLayouts(imported, slides, recordOf, report = () => {}, layoutTags = []) {
-  // Embedded templates no slide uses come back from their layouts' tags, into `custom` or a group the document already has.
+  const usable = tag => {
+    const error = tagIdentityError(tag);
+    const existing = imported.catalogs?.[tag?.group];
+    const conflict = existing === false || (existing?.source !== undefined && existing.source !== tag.source);
+    if (!error && !conflict) return true;
+    report({code: 'invalid-layout-provenance', path: `catalogs.${tag?.group}`, message: `The PowerPoint layout tag was not restored (${error ?? 'catalog source conflicts with document provenance'}).`});
+    return false;
+  };
+  // Restore unused embedded templates only with consistent, schema-valid catalog provenance.
   for (const tag of layoutTags) {
-    if (!tag?.record || recordHash(tag.record) !== tag.hash) continue;
-    if (tag.group !== 'custom' && (imported.catalogs?.[tag.group] === null || typeof imported.catalogs?.[tag.group] !== 'object')) continue;
+    if (!tag?.record || !usable(tag) || recordHash(tag.record) !== tag.hash) continue;
     if (imported.catalogs?.[tag.group]?.layouts?.[tag.id] !== undefined) continue;
     if (!isTemplate(tag.record)) continue;
     let valid = false;
     try { valid = validateCatalogRecord('layouts', {$schema: 'https://openpresentation.org/schema/opf-layout/v2', id: tag.id, ...tag.record}).valid; } catch { valid = false; }
     if (!valid) { report({code: 'invalid-layout-provenance', path: `catalogs.${tag.group}.layouts.${tag.id}`, message: `The layout record stored with the PowerPoint layout of ${tag.reference} does not validate; it was not restored.`}); continue; }
-    imported.catalogs = {...imported.catalogs, [tag.group]: {...imported.catalogs?.[tag.group], layouts: {...imported.catalogs?.[tag.group]?.layouts, [tag.id]: structuredClone(tag.record)}}};
+    imported.catalogs = {...imported.catalogs, [tag.group]: {...(tag.source ? {source: tag.source} : {}), ...imported.catalogs?.[tag.group], layouts: {...imported.catalogs?.[tag.group]?.layouts, [tag.id]: structuredClone(tag.record)}}};
   }
   for (const [index, entry] of slides.entries()) {
     const slide = imported.slides[index], tag = entry?.tag;
-    if (!slide || !tag) continue;
+    if (!slide || !tag || !usable(tag)) continue;
+    const qualified = bareId(tag.reference)?.[1];
+    if (qualified && tag.source && (!imported.catalogs?.[qualified] || typeof imported.catalogs[qualified] !== 'object'))
+      imported.catalogs = {...imported.catalogs, [qualified]: {source: tag.source}};
     if (tag.id === 'auto' && entry.preservedAutomatic && (entry.storedLayout === undefined || entry.storedLayout === 'auto')) { if (entry.storedLayout === 'auto') slide.layout = 'auto'; continue; }
     if (slide.layout === undefined) slide.layout = tag.reference;
     else if (slide.layout !== tag.reference) {
@@ -471,7 +494,7 @@ export function applyTemplateLayouts(imported, slides, recordOf, report = () => 
 }
 
 /** Map foreign PowerPoint layouts to available v2 built-ins; no layout reconstruction or migration aliases. */
-export function foreignLayoutReference(layout, catalogs) {
+export function foreignLayoutReference(layout, catalogs = [gallery]) {
   const types = {title: 'cover', secHead: 'section', obj: 'text', tx: 'text', twoObj: 'two-column', twoTxTwoObj: 'two-column', picTx: 'image-beside'};
   const type = layout?.type;
   if (type === 'blank' || type === 'titleOnly') return 'auto';

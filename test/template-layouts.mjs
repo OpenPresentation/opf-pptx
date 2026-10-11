@@ -19,7 +19,7 @@ const ordered = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '',
 const FIXED = {seed: 1, timestamp: '2026-01-01T00:00:00Z', date: '2026-10-10'};
 // The 28 built-in layouts of OPF 0.19 (core packages/javascript/test/fixtures/layout-templates-0.19.json at RR-79): replace with
 // @openpresentation/gallery@^2 once gallery 2.0.0 (RR-80) is published.
-const templates = JSON.parse(await readFile(new URL('./fixtures/layout-templates-0.19.json', import.meta.url), 'utf8')).layouts;
+const templates = defaultCatalog.layouts;
 assert.equal(Object.keys(templates).length, 28);
 // A registered catalog of the 28, as gallery 2.0.0 will be: bare ids resolve to it first.
 const gallery2 = Object.freeze({source: 'pkg:@openpresentation/gallery@2', layouts: templates});
@@ -80,7 +80,7 @@ const emptySlides = () => Object.entries(templates).map(([id, record]) => ({layo
 
 const exportDeck = async (deck, options = {}) => {
   const diagnostics = [], before = structuredClone(deck);
-  const bytes = await toPptx(deck, {...FIXED, onDiagnostic: item => diagnostics.push(item), ...options});
+  const bytes = await toPptx(deck, {catalogs: [], ...FIXED, onDiagnostic: item => diagnostics.push(item), ...options});
   assert.deepEqual(deck, before, 'Export leaves the source unchanged.');
   const entries = unzipSync(bytes);
   for (const [path, data] of Object.entries(entries)) if (/\.(?:xml|rels)$/.test(path)) parser.parse(dec.decode(data));
@@ -273,7 +273,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
   const {bytes: output, entries: parts} = await exportDeck(deck, {catalogs});
   const masters = Object.keys(parts).filter(path => /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(path)).sort();
   assert.equal(masters.length, 2, 'Two script profiles, two slide masters');
-  const order = [...Object.keys(templates), 'aa-split', 'zz-notes'];
+  const order = [...Object.keys(templates), ...Object.keys(defaultCatalog.layouts), 'aa-split', 'zz-notes'];
   for (const master of masters) {
     const listed = [...text(parts, master).matchAll(/<p:sldLayoutId id="\d+" r:id="([^"]+)"\/>/g)].map(match => resolvePart(master, relationships(parts, master).find(rel => rel.id === match[1]).target));
     assert.equal(layoutTag(parts, listed[0]), undefined, `${master} keeps its own layout first`);
@@ -442,9 +442,9 @@ const roadmap = {name: 'Roadmap review', catalogs: {custom: {layouts: {'roadmap-
   checked++;
 }
 
-// ---- 10. v1 layouts keep their layout; automatic slides use the dedicated OPF auto layout in 0.19.
+// ---- 10. Automatic slides use the dedicated OPF auto layout independently of host catalogs.
 {
-  const deck = {name: 'Classic', slides: [{layout: 'title', title: 'Title', subtitle: 'Subtitle'}, {layout: 'text-1x', title: 'Text', text: 'Body.'}, {title: 'Auto', blocks: [{image: {src: square}}]}]};
+  const deck = {name: 'Classic', slides: [{title: 'Title', subtitle: 'Subtitle'}, {layout: 'auto', title: 'Text', text: 'Body.'}, {title: 'Auto', blocks: [{image: {src: square}}]}]};
   const {entries: parts} = await exportDeck(deck);
   assert.equal(layoutParts(parts).length, 2);
   assert.equal(layoutTag(parts, layoutOf(parts, 3)).id, 'auto');

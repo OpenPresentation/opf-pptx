@@ -345,7 +345,7 @@ const SOURCE_PREFIX = /^(asset:|data:|https?:|file:|\.\.?\/)/i;
 // Metadata fields that hold content references (OPF 0.15: `id` or `name:id`; for audience and purpose a string that is not
 // a reference is free text). `language` is an engine vocabulary (a BCP-47 tag), not a catalog reference.
 const METADATA_REFERENCES = Object.freeze(['narrative', 'tone', 'purpose', 'audience']);
-const LAYOUT_SCHEMA = 'https://openpresentation.org/schema/opf-layout/v1';
+const LAYOUT_SCHEMA = 'https://openpresentation.org/schema/opf-layout/v2';
 const GROUP_NAME = /^[a-z][a-z0-9-]*$/;
 
 function collectStrings(value, into = new Set()) {

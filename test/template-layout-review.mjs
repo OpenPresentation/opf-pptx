@@ -76,3 +76,67 @@ assert.equal(foreignLayoutReference({type: 'cust', 'p:cSld': {name: 'Second cove
 assert.equal(foreignLayoutReference({type: 'cust', 'p:cSld': {name: 'First cover'}}, competing), 'default:cover');
 assert.equal((await fromPptx(zipSync(foreign))).slides[0].layout, 'auto', 'normal import maps a foreign titleOnly without options');
 assert.equal((await fromPptx(zipSync(foreign), {catalogs: []})).slides[0].layout, 'auto', 'explicitly empty catalogs retain automatic mapping');
+
+const nativeCover = {...foreign};
+nativeCover[layoutPath] = enc.encode(dec.decode(nativeCover[layoutPath]).replace(/type="titleOnly"/, 'type="title"'));
+const normalCover = await fromPptx(zipSync(nativeCover));
+assert.equal(normalCover.slides[0].layout, 'default:cover', 'normal import maps foreign title via gallery2 defaults');
+assert.equal(normalCover.catalogs.default.source, 'https://www.pptx.gallery', 'foreign reference records its selected source');
+assert.equal((await fromPptx(zipSync(nativeCover), {catalogs: []})).slides[0].layout, undefined, 'empty catalogs opt out of foreign built-in mapping');
+
+// Damaged native metadata must never manufacture invalid catalog provenance.
+const {decodeTextTag, encodeTextTag} = await import('../dist/code-provenance.js');
+const {validate} = await import('@openpresentation/opf');
+const tagged = unzipSync(await toPptx({slides: [{layout: 'text', title: 'Probe', text: 'Body'}]}, options));
+for (const [label, mutate] of [
+  ['custom source', tag => ({...tag, group: 'custom', reference: 'custom:text', source: 'https://example.org'})],
+  ['missing external source', tag => { const next = {...tag, group: 'external', reference: 'external:text'}; delete next.source; return next; }],
+  ['invalid external source', tag => ({...tag, group: 'external', reference: 'external:text', source: 'http://example.org'})],
+  ['bare external reference', tag => ({...tag, group: 'acme', reference: 'text', source: 'https://example.org'})],
+  ['mismatched group', tag => ({...tag, reference: 'other:text'})],
+  ['mismatched id', tag => ({...tag, reference: 'default:cover'})],
+]) {
+  const copy = {...tagged};
+  for (const [path, bytes] of Object.entries(copy)) {
+    if (!/^ppt\/tags\//.test(path)) continue;
+    const xml = dec.decode(bytes);
+    copy[path] = enc.encode(xml.replace(/(<p:tag name="OPF_LAYOUT_V1" val=")([^"]+)("\/\>)/g,
+      (_, before, value, after) => before + encodeTextTag(mutate(decodeTextTag(value))) + after));
+  }
+  const diagnostics = [];
+  const imported = await fromPptx(zipSync(copy), {...options, onDiagnostic: item => diagnostics.push(item)});
+  assert.ok(validate(imported).schemaValid, `${label} cannot produce schema-invalid OPF`);
+  assert.ok(diagnostics.some(item => /layout.*tag.*damaged/i.test(item.message)), `${label} reports damaged native metadata`);
+}
+const {applyTemplateLayouts} = await import('../dist/template-layouts.js');
+for (const existing of [false, {source: 'pkg:trusted'}]) {
+  const imported = {catalogs: {default: existing}, slides: [{title: 'Probe'}]};
+  const diagnostics = [];
+  applyTemplateLayouts(imported, [{tag: {v: 1, id: 'text', group: 'default', reference: 'default:text', source: 'pkg:other', hash: 'x', regions: {}}}], () => undefined, item => diagnostics.push(item));
+  assert.deepEqual(imported.catalogs.default, existing, 'native tags preserve opt-out and valid source provenance');
+  assert.equal(imported.slides[0].layout, undefined);
+  assert.equal(diagnostics[0].code, 'invalid-layout-provenance');
+}
+const optedOut = unzipSync(await toPptx({catalogs: {default: false, custom: {layouts: {text: layouts.text}}}, slides: [{layout: 'custom:text', title: 'Opt out', text: 'Body'}]}, {...options, catalogs: []}));
+for (const [path, bytes] of Object.entries(optedOut)) {
+  if (!/^ppt\/tags\//.test(path)) continue;
+  optedOut[path] = enc.encode(dec.decode(bytes).replace(/(<p:tag name="OPF_LAYOUT_V1" val=")([^"]+)("\/\>)/g,
+    (_, before, value, after) => before + encodeTextTag({...decodeTextTag(value), group: 'default', reference: 'default:text', source: 'https://example.org'}) + after));
+}
+const optOutDiagnostics = [];
+const optOutImport = await fromPptx(zipSync(optedOut), {catalogs: [], onDiagnostic: item => optOutDiagnostics.push(item)});
+assert.equal(optOutImport.catalogs.default, false, 'damaged native tags cannot replace document default:false');
+assert.equal(optOutImport.slides[0].layout, 'custom:text', 'valid authored layout survives conflicting native provenance');
+assert.ok(validate(optOutImport).schemaValid);
+assert.ok(optOutDiagnostics.some(item => item.code === 'invalid-layout-provenance'));
+// A damaged layout tag on an untagged native slide must not reopen the document's default catalog either.
+const foreignOptOut = {...optedOut};
+foreignOptOut['ppt/slides/slide1.xml'] = enc.encode(dec.decode(foreignOptOut['ppt/slides/slide1.xml']).replace(/<p:custDataLst>[\s\S]*?<\/p:custDataLst>/g, ''));
+for (const [path, bytes] of Object.entries(foreignOptOut)) {
+  if (!/^ppt\/tags\//.test(path)) continue;
+  foreignOptOut[path] = enc.encode(dec.decode(bytes).replace(/(<p:tag name="OPF_LAYOUT_V1" val=")([^"]+)("\/\>)/g,
+    (_, before, value, after) => before + encodeTextTag({...decodeTextTag(value), source: 'http://invalid.example'}) + after));
+}
+const foreignOptOutImport = await fromPptx(zipSync(foreignOptOut));
+assert.equal(foreignOptOutImport.catalogs.default, false, 'foreign fallback preserves default:false after tag rejection');
+assert.ok(validate(foreignOptOutImport).schemaValid);
