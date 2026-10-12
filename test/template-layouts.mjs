@@ -265,8 +265,8 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
 // catalog's in catalog order and then the embedded custom templates by id, used or not. A second script profile (its own slide
 // master, opf-pptx#168) gets the same set.
 {
-  const custom = {'zz-notes': {name: 'Notes', areas: ['title', 'notes'], rows: ['auto', 1], regions: {notes: {accepts: ['text', 'list']}}},
-    'aa-split': {name: 'Split', areas: ['title title', 'start end'], rows: ['auto', 1], regions: {start: {accepts: ['text']}, end: {accepts: ['image']}}}};
+  const custom = {'zz-notes': {name: 'Notes', areas: [['title'], ['notes']], rows: ['auto', 1], regions: {notes: {accepts: ['text', 'list']}}},
+    'aa-split': {name: 'Split', areas: [['title', 'title'], ['start', 'end']], rows: ['auto', 1], regions: {start: {accepts: ['text']}, end: {accepts: ['image']}}}};
   const deck = {name: 'One template', language: 'ja', catalogs: {custom: {layouts: custom}, gallery: {source: defaultCatalog.source}}, slides: [{layout: 'pillars', title: '日本語の見出し', blocks: [{text: 'ひらがな'}]},
     {title: '日本語の見出し', text: 'カタカナ', design: {fontScheme: 'gallery:ms-mincho'}}]};
   const catalogs = [gallery2, defaultCatalog];
@@ -321,7 +321,7 @@ assert.deepEqual(diagnostics.filter(item => /layout|region|packaging/.test(item.
 
 // ---- 3. A region pin round-trips (OPF_SLIDE_V1 records it); a custom template is one more layout.
 const roadmap = {name: 'Roadmap review', catalogs: {custom: {layouts: {'roadmap-split': {name: 'Roadmap split', summary: 'A roadmap with notes over metrics beside it.',
-  areas: ['title title', 'timeline notes', 'timeline metrics'], columns: [2, 1], rows: ['auto', 1, 1],
+  areas: [['title', 'title'], ['timeline', 'notes'], ['timeline', 'metrics']], columns: [2, 1], rows: ['auto', 1, 1],
   regions: {timeline: {accepts: ['timeline'], role: 'primary', flow: 'none'}, notes: {accepts: ['text', 'list'], role: 'secondary', flow: 'column'}, metrics: {accepts: ['metric', 'text'], role: 'supporting', flow: 'grid'}}}}}},
   slides: [{layout: 'roadmap-split', title: '2027 roadmap', blocks: [{timeline: {events: [{when: 'Q1', what: 'Pilot'}, {when: 'Q2', what: 'Launch'}]}},
     {metric: {value: 12, label: 'Pilot customers'}}, {metric: {value: '94%', label: 'Retention'}}, {items: ['Hiring two engineers', 'Security review in Q1']},
