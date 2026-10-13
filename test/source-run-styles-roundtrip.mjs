@@ -54,7 +54,7 @@ for(const mode of ['missing','tampered']){
  const result=await fromPptx(zipSync(entries));
  assert.ok(textRuns(result).some(run=>run.fontSize===23.04),`${mode} provenance keeps fitted native size23.04`);
 }
-for(const invalid of [{fontSize:-1},{color:42},{fontFamily:{}},{unexpected:true}]){
+for(const invalid of [{fontSize:-1},{color:42},{color:'var:brand'},{keepColor:false},{fontFamily:{}},{unexpected:true}]){
  const entries=unzipSync(reportedBytes);let changed=false;
  for(const path of Object.keys(entries).filter(path=>/ppt\/tags\/.*\.xml$/.test(path))){
   const xml=strFromU8(entries[path]);if(!/OPF_SLIDE_V1/i.test(xml))continue;

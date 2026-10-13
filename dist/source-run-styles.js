@@ -1,9 +1,10 @@
 // Full provenance stores style spans, never source words. Native edits win.
 const keys = ['fontSize', 'fontFamily', 'color'];
+const literalColor = value => typeof value === 'string' && /^#(?:[a-f0-9]{3}|[a-f0-9]{6}|[a-f0-9]{8})$/i.test(value);
 export function sourceRunStyles(value) {
   if (!Array.isArray(value) || !value.length) return undefined;
   const spans = value.map(run => typeof run === 'string' ? {length: run.length, string: true} : {
-    length: run.text.length, ...Object.fromEntries(keys.filter(key => run[key] !== undefined).map(key => [key, run[key]]))
+    length: run.text.length, ...(run.color !== undefined && !literalColor(run.color) ? {keepColor: true} : {}), ...Object.fromEntries(keys.filter(key => run[key] !== undefined && (key !== 'color' || literalColor(run.color))).map(key => [key, run[key]]))
   });
   if (spans.some(span => !span.length)) return undefined;
   try { validateSourceRunStyles(spans); } catch { return undefined; }
@@ -13,12 +14,13 @@ export function validateSourceRunStyles(spans) {
   if (!Array.isArray(spans) || !spans.length || spans.length > 10000) throw Error('Invalid source style spans.');
   let length = 0;
   for (const span of spans) {
-    if (!span || typeof span !== 'object' || Array.isArray(span) || Object.keys(span).some(key => !['length', 'string', ...keys].includes(key))
+    if (!span || typeof span !== 'object' || Array.isArray(span) || Object.keys(span).some(key => !['length', 'string', 'keepColor', ...keys].includes(key))
       || !Number.isSafeInteger(span.length) || span.length < 1 || (length += span.length) > 1000000
+      || (span.keepColor !== undefined && (span.keepColor !== true || span.color !== undefined))
       || (span.string !== undefined && span.string !== true)
       || (span.fontSize !== undefined && (!Number.isFinite(span.fontSize) || span.fontSize <= 0))
       || (span.fontFamily !== undefined && (typeof span.fontFamily !== 'string' || !span.fontFamily || span.fontFamily.length > 256))
-      || (span.color !== undefined && (typeof span.color !== 'string' || !span.color || span.color.length > 256))) throw Error('Invalid source style span.');
+      || (span.color !== undefined && !literalColor(span.color))) throw Error('Invalid source style span.');
   }
 }
 export function restoreSourceRunStyles(value, spans, intact) {
@@ -32,7 +34,7 @@ export function restoreSourceRunStyles(value, spans, intact) {
       const run = runs[runIndex], take = Math.min(left, run.text.length - offset);
       if (!take) { runIndex++; offset = 0; continue; }
       const piece = {...run, text: run.text.slice(offset, offset + take)};
-      for (const key of keys) if (intact[key]) { if (span[key] === undefined) delete piece[key]; else piece[key] = span[key]; }
+      for (const key of keys) if (intact[key] && !(key === 'color' && span.keepColor)) { if (span[key] === undefined) delete piece[key]; else piece[key] = span[key]; }
       pieces.push(piece); left -= take; offset += take;
     }
     for (const piece of pieces) {

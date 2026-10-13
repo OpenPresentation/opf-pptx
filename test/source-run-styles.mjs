@@ -41,3 +41,7 @@ for(const [key,attribute] of [['fontSize','sz'],['fontFamily','a:latin'],['color
  const moved={r:[{rPr:{}},{rPr:{[attribute]:native.r[0].rPr[attribute]}}]};
  assert.notEqual(nativeRunStyleEvidence(first,hash)[key],nativeRunStyleEvidence(moved,hash)[key],`${key} moved between runs`);
 }
+const referenced = sourceRunStyles([{text:'Word',color:'var:brand'}]);
+assert.deepEqual(referenced,[{length:4,keepColor:true}]);
+assert.deepEqual(restoreSourceRunStyles([{text:'Word',color:'#AA0000'}],referenced,{color:true}),[{text:'Word',color:'#AA0000'}]);
+for(const forged of [[{length:4,color:'var:brand'}],[{length:4,color:'accent2'}],[{length:4,keepColor:false}],[{length:4,keepColor:true,color:'#FFFFFF'}]])assert.throws(()=>validateSourceRunStyles(forged));
