@@ -11,7 +11,7 @@ if(Test-Path -LiteralPath $planRoot) { throw 'Preserve the existing plan control
 $tokens=$null; $parseErrors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($ScriptPath,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
-$names=@('Test-Integer','Require-Property','Assert-String','Read-AndValidateActionPlan','Invoke-FurnitureCom','Set-FurnitureTextStyle','Get-ExactShape','Read-FurnitureTextFont')
+$names=@('Test-Integer','Require-Property','Assert-String','Read-AndValidateActionPlan','Invoke-FurnitureCom','Set-FurnitureTextStyle','Get-ExactShape','Read-FurnitureProperty','Read-FurnitureTextFont')
 foreach($name in $names) {
     $functionAst=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
     if($null -eq $functionAst) { throw "Missing reviewed function: $name" }
@@ -130,12 +130,20 @@ foreach($spec in @(@{name='mixed-name';field='Name';value='';expected='name'},@{
 $beforeCalls=$script:events.Count
 if((Read-FurnitureTextFont $null '' 'font-empty').status -cne 'no-text' -or $script:events.Count -ne $beforeCalls) { throw 'Empty text performed property reads' }
 $fontCases.Add([ordered]@{name='empty-no-calls';passed=$true})
-$throwingFont=[pscustomobject]@{Size=18;Bold=0;Italic=0}
-$throwingFont | Add-Member -MemberType ScriptProperty -Name Name -Value { throw 'Deliberate descriptor property failure' }
-$throwingShape=[pscustomobject]@{TextFrame2=[pscustomobject]@{TextRange=[pscustomobject]@{Font=$throwingFont}}}
-$rejected=$false;try { $null=Read-FurnitureTextFont $throwingShape 'Visible' 'font-property-failure' } catch { $rejected=$true }
-if(-not $rejected -or -not $script:officeOperationsStopped -or $script:cleanupConfirmed) { throw 'Font property failure did not retain the COM latch' }
-$fontCases.Add([ordered]@{name='property-failure-latched';passed=$true})
+foreach($field in @('TextFrame2','TextRange','Font','Name','Size','Bold','Italic')) {
+    $font=[pscustomobject]@{Name='Roboto';Size=18;Bold=0;Italic=0}
+    $range=[pscustomobject]@{Font=$font};$frame=[pscustomobject]@{TextRange=$range};$shape=[pscustomobject]@{TextFrame2=$frame}
+    $target=switch($field) { 'TextFrame2' {$shape}; 'TextRange' {$frame}; 'Font' {$range}; default {$font} }
+    $target.PSObject.Properties.Remove($field)
+    $target | Add-Member -MemberType ScriptProperty -Name $field -Value { throw 'Deliberate descriptor property failure' }
+    $script:officeOperationsStopped=$false;$script:cleanupConfirmed=$true
+    $rejected=$false;try { $null=Read-FurnitureTextFont $shape 'Visible' 'font-property-failure' } catch { $rejected=$true }
+    if(-not $rejected -or -not $script:officeOperationsStopped -or $script:cleanupConfirmed) { throw "Font $field property failure did not retain the COM latch" }
+    $eventCount=$script:events.Count;$script:laterFontRead=$false
+    try { Invoke-FurnitureCom 'forbidden-later-font-read' {$script:laterFontRead=$true} } catch { }
+    if($script:laterFontRead -or $script:events.Count -ne $eventCount) { throw 'A later read ran after the getter failure' }
+    $fontCases.Add([ordered]@{name="property-$field-failure-latched";passed=$true})
+}
 $script:officeOperationsStopped=$false; $script:cleanupConfirmed=$true
 
 $shapes=[pscustomobject]@{Count=2;Values=@([pscustomobject]@{Name='Exact'},[pscustomobject]@{Name='Other'})}

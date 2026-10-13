@@ -207,15 +207,26 @@ function Read-NativeTags($Tags,[string]$Prefix) {
     return ,$items
 }
 # Whole-range reported descriptors only; no per-character or physical glyph-file assertion.
+function Read-FurnitureProperty($Object,[string]$Property,[string]$Stage) {
+    $value=Invoke-FurnitureCom $Stage {
+        if($null -eq $Object) { return $null }
+        $member=$Object.PSObject.Properties[$Property]
+        if($null -eq $member) { return $null }
+        # Explicit getter invocation retains the adapted COM property path and
+        # makes getter failures terminating instead of silently returning null.
+        return ,$member.get_Value()
+    }
+    return ,$value
+}
 function Read-FurnitureTextFont($Shape,[string]$Text,[string]$Prefix) {
     if([string]::IsNullOrEmpty($Text)) { return [ordered]@{status='no-text';scope='No nonempty text range was observed.'} }
-    $frame=Invoke-FurnitureCom "$Prefix.textFrame2.get" { return ,$Shape.TextFrame2 }
-    $range=Invoke-FurnitureCom "$Prefix.textRange2.get" { return ,$frame.TextRange }
-    $font=Invoke-FurnitureCom "$Prefix.font2.get" { return ,$range.Font }
-    $name=Invoke-FurnitureCom "$Prefix.font2.name.get" { $font.Name }
-    $size=Invoke-FurnitureCom "$Prefix.font2.size.get" { $font.Size }
-    $bold=Invoke-FurnitureCom "$Prefix.font2.bold.get" { $font.Bold }
-    $italic=Invoke-FurnitureCom "$Prefix.font2.italic.get" { $font.Italic }
+    $frame=Read-FurnitureProperty $Shape 'TextFrame2' "$Prefix.textFrame2.get"
+    $range=Read-FurnitureProperty $frame 'TextRange' "$Prefix.textRange2.get"
+    $font=Read-FurnitureProperty $range 'Font' "$Prefix.font2.get"
+    $name=Read-FurnitureProperty $font 'Name' "$Prefix.font2.name.get"
+    $size=Read-FurnitureProperty $font 'Size' "$Prefix.font2.size.get"
+    $bold=Read-FurnitureProperty $font 'Bold' "$Prefix.font2.bold.get"
+    $italic=Read-FurnitureProperty $font 'Italic' "$Prefix.font2.italic.get"
     $unavailable=@()
     if($name -isnot [string] -or [string]::IsNullOrWhiteSpace($name)) { $unavailable+='name' }
     $numericSize=$size -is [single] -or $size -is [double] -or $size -is [int] -or $size -is [long] -or $size -is [decimal]
