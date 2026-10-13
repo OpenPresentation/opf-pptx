@@ -879,7 +879,7 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
     }
   }
   const listRecord = slideListRecord(entries, slidePath, slideRoot, relationships);
-  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items, listRecord.breaks, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`}), listRecord.runs))
+  const content = mergeAdjacentBulletShapes(mergeOpfListShapes(items, listRecord.breaks, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`}), listRecord.runs, listRecord.roles))
     .map((item) => ({payload: payloadFromSlideItem(item, diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${slideIndex}`})), bounds: item.visualBounds ?? item.bounds, sources: item.sources ?? []}))
     .filter((entry) => entry.payload);
   const blocks = content.map((entry) => entry.payload);
@@ -1332,7 +1332,7 @@ function joinRich(a, b) {
 // `runs` (opf-pptx#212) holds the look export wrote on every run of a list ({text, description?}): a run value still equal to
 // it is inherited formatting, not authored run style, and is removed (as for a tagged heading), so an untouched round trip
 // adds no explicit sizes, families or colours; a value edited in PowerPoint differs and is kept. Without it runs are as read.
-function mergeOpfListShapes(items, breaks = null, report = () => {}, runs = null) {
+function mergeOpfListShapes(items, breaks = null, report = () => {}, runs = null, roles = null) {
   const lists = new Map();
   for (const item of items) {
     const match = /^OPF list (.+) line (\d+)$/.exec(item.name ?? '');
@@ -1345,6 +1345,10 @@ function mergeOpfListShapes(items, breaks = null, report = () => {}, runs = null
   for (const [path, entries] of lists) {
     entries.sort((a, b) => a.line - b.line);
     if (!entries[0].item.paragraphs[0].bullet) continue;
+    const expectedRoles = roles?.get(path);
+    const validRoles = expectedRoles && expectedRoles.length === entries.length && entries.every(({item, line}, index) => line === index && Boolean(item.paragraphs[0].bullet) === expectedRoles[index][2]);
+    const lineRoles = validRoles ? expectedRoles : null;
+    if (expectedRoles && !validRoles) report({code: 'list-line-role-changed', message: `The line topology of ${path} changed; list roles were not restored.`});
     const look = runs?.get(path), textLook = cleanBase(look?.text), descriptionLook = cleanBase(look?.description);
     // The line's runs without the inherited look, or the paragraph's own richText when there is no record for this kind of line.
     // Each run is cleaned on its own and none merge, so the runs stay the slots the run colour record counts (src/run-colors.js);
@@ -1374,7 +1378,7 @@ function mergeOpfListShapes(items, breaks = null, report = () => {}, runs = null
       const join = (a, b) => gap === undefined ? joinRich(a, b) : joinWrappedText([a, b], [gap]);
       if (paragraph.bullet) { paragraphs.push({...paragraph, richText: own(paragraph, textLook)}); size = paragraph.maxFontSize; }
       else if (paragraph.text === '') { /* a blank line of the entry: no text, no description */ }
-      else if (paragraph.maxFontSize < size - 0.01) {
+      else if (lineRoles ? lineRoles[line][1] === 'description' : paragraph.maxFontSize < size - 0.01) {
         const text = own(paragraph, descriptionLook) ?? paragraph.text;
         if (current.description === undefined) current.description = text;
         else { current.description = join(current.description, text); applied.add(line); }

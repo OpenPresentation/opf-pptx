@@ -1,7 +1,7 @@
 import {nativeRunStyleEvidence, hasSourceRunStyles} from './source-run-styles.js';
 import {XMLParser} from 'fast-xml-parser';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
-import {contentTopology, rebuildContent, validateTopology, listLineBreaks, validateListBreaks, validateListRuns, MAX_LIST_PATHS} from './content-topology.js';
+import {contentTopology, rebuildContent, validateTopology, listLineBreaks, validateListBreaks, validateListRuns, listLineRoles, validateListRoles, MAX_LIST_PATHS} from './content-topology.js';
 import {runColorRecord, validateRunColors} from './run-colors.js';
 import {validateCatalogRecord} from '@openpresentation/opf';
 import {parseReference, resolveReference, resolveSocialProfile} from '@openpresentation/opf/composition';
@@ -316,6 +316,11 @@ function styleSignature(tree) {
   return canonical({faces: [...faces].sort(), colors: [...colors].sort()});
 }
 
+function nativeListIdentity(entries, path) {
+  const tree = parser.parse(dec.decode(entries[path]))?.['p:sld']?.['p:cSld']?.['p:spTree'];
+  return hash(canonical(array(tree?.['p:sp']).filter(node => /^OPF list /.test(node?.['p:nvSpPr']?.['p:cNvPr']?.name ?? '')).map(node => [node['p:nvSpPr']['p:cNvPr'].name, box(node?.['p:spPr']?.['a:xfrm'])])));
+}
+
 function nativeSlide(entries, path, includeRunStyles = true) {
   const root = parser.parse(dec.decode(entries[path]))?.['p:sld'];
   const cSld = root?.['p:cSld'], tree = cSld?.['p:spTree'];
@@ -547,6 +552,8 @@ export function recordContentTopology(provenance, slide, index, items) {
   const omittedLists = [];
   const lists = listLineBreaks(items, (path, reason) => omittedLists.push([path, reason]));
   if (lists) provenance.slides[index].lists = lists;
+  const roles = listLineRoles(items, (path, reason) => omittedLists.push([path, reason]));
+  if (roles) provenance.slides[index].listRoles = roles;
   if (omittedLists.length) provenance.slides[index].omittedLists = omittedLists;
 }
 
@@ -711,7 +718,7 @@ function storable(entries, provenance) {
     const result = {v: 1, slide: index};
     if (record.omittedContent) omit(`slides.${index}.content`, record.omittedContent);
     for (const [path, reason] of record.omittedLists ?? []) omit(path, reason);
-    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'lists', 'listRuns']) {
+    for (const key of ['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'lists', 'listRuns', 'listRoles']) {
       if (record[key] === undefined) continue;
       const value = prepare(`slides.${index}.${key}`, record[key]);
       if (value !== undefined) result[key] = value;
@@ -748,7 +755,7 @@ function storable(entries, provenance) {
   }
   for (const [index, record] of slides.entries()) {
     while (tagChars(record) > budget) {
-      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'lists', 'listRuns', 'layoutRecord'].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
+      const candidates = [...['id', 'beat', ...SLIDE_STRUCTURE, ...SLIDE_METADATA, 'content', 'colors', 'lists', 'listRuns', 'listRoles', 'layoutRecord'].filter(key => record[key] !== undefined).map(key => ({key, size: sizeOf(record[key])})),
         ...Object.keys(record.design ?? {}).map(key => ({key, design: true, size: sizeOf(record.design[key])}))];
       if (!candidates.length) break;
       const largest = candidates.sort((a, b) => b.size - a.size)[0];
@@ -798,7 +805,7 @@ export function attachDocumentProvenance(entries, provenance) {
 
   for (const [index, path] of paths.entries()) {
     const slideHashes = mediaHashes(prepared.slides[index], entries);
-    const record = toStoredShape({...prepared.slides[index], ...(Object.keys(slideHashes).length ? {mediaHash: slideHashes} : {}), native: nativeSlide(entries, path, hasSourceRunStyles(prepared.slides[index].content))}, SLIDE_SUPPLEMENT);
+    const record = toStoredShape({...prepared.slides[index], ...(Object.keys(slideHashes).length ? {mediaHash: slideHashes} : {}), native: {...nativeSlide(entries, path, hasSourceRunStyles(prepared.slides[index].content)), ...(prepared.slides[index].listRoles ? {listIdentity: nativeListIdentity(entries, path)} : {})}}, SLIDE_SUPPLEMENT);
     const tag = `<p:tag name="${SLIDE_TAG}" val="${encodeTextTag(record)}"/>`;
     let xml = dec.decode(entries[path]);
     const slideRels = relsPath(path);
@@ -889,6 +896,7 @@ function validateSlide(stored) {
   if (value.colors !== undefined) validateRunColors(value.colors);
   if (value.lists !== undefined) validateListBreaks(value.lists);
   if (value.listRuns !== undefined) validateListRuns(value.listRuns);
+  if (value.listRoles !== undefined) { validateListRoles(value.listRoles); if (!/^[a-f0-9]{14}$/.test(value.native.listIdentity ?? '')) throw Error('Invalid native list identity.'); }
   validateOmitted(value.omitted);
   return value;
 }
@@ -934,6 +942,8 @@ function pruneDangling(value, dangling, path, removed) {
  *   unreadable, or its arrangement changed since export (the lines are then no longer the exported ones);
  * - `runs` (opf-pptx#212): the look export wrote on every run of each list, Map(list path -> {text, description?}), or null. It
  *   does not depend on the arrangement: import compares each run value with it, so an edited value is still observed.
+ * - `roles`: bounded line identities for lists with descriptions, only when native structure and named line positions/order
+ *   still match. No words or style values are stored; those always come from the current native paragraphs.
  * Any damage is reported later by restoreDocumentProvenance.
  */
 export function slideListRecord(entries, path, root, rels) {
@@ -943,7 +953,8 @@ export function slideListRecord(entries, path, root, rels) {
     const record = validateSlide(found.value);
     const runs = record.listRuns === undefined ? null : new Map(record.listRuns);
     const breaks = record.lists === undefined || record.native.structure !== nativeSlide(entries, path).structure ? null : new Map(record.lists.map(([list, lines]) => [list, new Map(lines)]));
-    return {breaks, runs};
+    const roles = record.listRoles === undefined || record.native.structure !== nativeSlide(entries, path).structure || record.native.listIdentity !== nativeListIdentity(entries, path) ? null : new Map(record.listRoles);
+    return {breaks, runs, roles};
   } catch {
     return {breaks: null, runs: null};
   }

@@ -370,6 +370,43 @@ export function listLineBreaks(items, omit = () => {}) {
   return lists.length && lists.length <= MAX_LIST_PATHS && total <= MAX_LIST_BREAKS ? lists : undefined;
 }
 
+// Line identity only: no source words or formatting. Each row is [entry, role, first].
+export function listLineRoles(items, omit = () => {}) {
+  const lists = [];
+  for (const item of items ?? []) {
+    if (!['items', 'bullets'].includes(item?.field) || !Array.isArray(item?.text?.listEntries)) continue;
+    if (!item.text.listEntries.some(entry => entry.description?.richLines?.length)) continue;
+    const lines = [];
+    item.text.listEntries.forEach((entry, index) => {
+      for (const [role, text] of [['text', entry.text], ['description', entry.description]])
+        text?.richLines?.forEach((_, line) => lines.push([index, role, role === 'text' && line === 0]));
+    });
+    if (lines.length) lists.push([item.path, lines]);
+  }
+  if (!lists.length) return undefined;
+  try { return validateListRoles(lists); } catch {
+    for (const [path] of lists) omit(path, 'list line roles exceed the bounded record or cannot be recorded exactly');
+    return undefined;
+  }
+}
+
+export function validateListRoles(value) {
+  if (!Array.isArray(value) || !value.length || value.length > MAX_LIST_PATHS) throw Error('Invalid list roles.');
+  const paths = new Set(); let total = 0;
+  for (const row of value) {
+    if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string' || !LIST_PATH.test(row[0]) || paths.has(row[0]) || !Array.isArray(row[1]) || !row[1].length) throw Error('Invalid list roles path.');
+    paths.add(row[0]); let entry = -1, description = false;
+    for (const line of row[1]) {
+      if (!Array.isArray(line) || line.length !== 3 || !Number.isSafeInteger(line[0]) || !['text', 'description'].includes(line[1]) || typeof line[2] !== 'boolean') throw Error('Invalid list role.');
+      if (line[2]) { if (line[0] !== entry + 1 || line[1] !== 'text') throw Error('Invalid list entry.'); entry++; description = false; }
+      else if (line[0] !== entry || entry < 0 || (description && line[1] === 'text')) throw Error('Invalid list continuation.');
+      if (line[1] === 'description') description = true;
+      if (++total > MAX_LIST_BREAKS) throw Error('Too many list roles.');
+    }
+  }
+  return value;
+}
+
 /** Throws when `value` is not a well-formed `lists` record (untrusted input). Returns it otherwise. */
 export function validateListBreaks(value) {
   if (!Array.isArray(value) || !value.length || value.length > MAX_LIST_PATHS) throw Error('Invalid list breaks record.');
