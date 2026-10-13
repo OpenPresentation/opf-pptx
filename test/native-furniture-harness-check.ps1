@@ -11,7 +11,7 @@ if(Test-Path -LiteralPath $planRoot) { throw 'Preserve the existing plan control
 $tokens=$null; $parseErrors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($ScriptPath,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
-$names=@('Test-Integer','Require-Property','Assert-String','Read-AndValidateActionPlan','Invoke-FurnitureCom')
+$names=@('Test-Integer','Require-Property','Assert-String','Read-AndValidateActionPlan','Invoke-FurnitureCom','Set-FurnitureTextStyle','Get-ExactShape')
 foreach($name in $names) {
     $functionAst=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
     if($null -eq $functionAst) { throw "Missing reviewed function: $name" }
@@ -47,6 +47,20 @@ Accept-Plan 'multi-empty-alt' '[{"op":"set-alt","slideIndex":2,"shapeName":"Pict
     param($items) if($items[0].alt -cne '') { throw 'Empty set-alt payload was not preserved' }
 }
 
+Accept-Plan 'style-size' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":36}]' 1
+Accept-Plan 'style-color' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","color":"12ABEF"}]' 1
+Accept-Plan 'style-both' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":24.5,"color":"f0f0f0"}]' 1
+Reject-Plan 'style-empty' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape"}]'
+Reject-Plan 'style-string-size' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":"36"}]'
+Reject-Plan 'style-bool-size' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":true}]'
+Reject-Plan 'style-zero' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":0}]'
+Reject-Plan 'style-too-big' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":97}]'
+Reject-Plan 'style-overflow' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":1e309}]'
+Reject-Plan 'style-reference-color' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","color":"primary"}]'
+Reject-Plan 'style-hash-color' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","color":"#FF0000"}]'
+Reject-Plan 'style-short-color' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","color":"#FFF"}]'
+Reject-Plan 'style-extra-key' '[{"op":"set-text-style","slideIndex":1,"shapeName":"Exact shape","fontSize":36,"fontFamily":"Arial"}]'
+
 Reject-Plan 'null-entry' '[null]'
 Reject-Plan 'malformed-json' '['
 Reject-Plan 'non-list-root' '{"op":"move-slide","slideIndex":1,"toIndex":1}'
@@ -65,6 +79,45 @@ Reject-Plan 'twenty-one-actions' (ConvertTo-Json -InputObject $twentyOne -Depth 
 $script:officeOperationsStopped=$false; $script:cleanupConfirmed=$true
 $script:events=New-Object 'System.Collections.Generic.List[string]'
 function Write-FurnitureStage([string]$Name,[string]$Status,[string]$ErrorMessage=$null) { $script:events.Add($Name+':'+$Status) }
+# Pure object mocks: no COM class/application is constructed.
+$font=[pscustomobject]@{Size=18;Color=[pscustomobject]@{RGB=0};Name='Untouched family';Bold=0}
+$range=[pscustomobject]@{Text='about it';Font=$font}
+$shape=[pscustomobject]@{HasTextFrame=-1;TextFrame=[pscustomobject]@{TextRange=$range}}
+$action=[pscustomobject]@{fontSize=36;color='12ABEF'}
+$observed=Set-FurnitureTextStyle $shape $action 'mock-style'
+if($font.Size -ne 36 -or $font.Color.RGB -ne 15706898 -or $observed.textBefore -cne 'about it' -or $observed.textAfter -cne 'about it' -or $font.Name -cne 'Untouched family' -or $font.Bold -ne 0) { throw 'Style mock changed wrong properties or returned wrong RGB/words' }
+Set-FurnitureTextStyle $shape ([pscustomobject]@{fontSize=24}) 'mock-size-only' | Out-Null
+if($font.Color.RGB -ne 15706898) { throw 'Size-only action changed color' }
+Set-FurnitureTextStyle $shape ([pscustomobject]@{color='FF0000'}) 'mock-color-only' | Out-Null
+if($font.Size -ne 24 -or $font.Color.RGB -ne 255) { throw 'Color-only action changed size or RGB channel order' }
+$missingTextRejected=$false
+try { Set-FurnitureTextStyle ([pscustomobject]@{HasTextFrame=0}) $action 'mock-no-text' | Out-Null } catch { $missingTextRejected=$true }
+if(-not $missingTextRejected) { throw 'Shape without text was accepted' }
+function Reject-StyleMock($MockShape,$MockAction,[string]$Name) {
+    $rejected=$false; try { Set-FurnitureTextStyle $MockShape $MockAction $Name | Out-Null } catch { $rejected=$true }
+    if(-not $rejected) { throw "$Name was not rejected" }
+}
+$badFont=[pscustomobject]@{Color=[pscustomobject]@{RGB=0}}
+$badFont | Add-Member -MemberType ScriptProperty -Name Size -Value {18} -SecondValue {param($value)}
+Reject-StyleMock ([pscustomobject]@{HasTextFrame=-1;TextFrame=[pscustomobject]@{TextRange=[pscustomobject]@{Text='about it';Font=$badFont}}}) ([pscustomobject]@{fontSize=36}) 'mock-size-readback'
+$badColor=[pscustomobject]@{}
+$badColor | Add-Member -MemberType ScriptProperty -Name RGB -Value {0} -SecondValue {param($value)}
+Reject-StyleMock ([pscustomobject]@{HasTextFrame=-1;TextFrame=[pscustomobject]@{TextRange=[pscustomobject]@{Text='about it';Font=[pscustomobject]@{Size=18;Color=$badColor}}}}) ([pscustomobject]@{color='FF0000'}) 'mock-color-readback'
+$script:changedWordsRange=[pscustomobject]@{Text='about it';Font=$null}
+$mutatingFont=[pscustomobject]@{Color=[pscustomobject]@{RGB=0}}
+$mutatingFont | Add-Member -MemberType ScriptProperty -Name Size -Value {36} -SecondValue {param($value) $script:changedWordsRange.Text='UNEXPECTED words'}
+$script:changedWordsRange.Font=$mutatingFont
+Reject-StyleMock ([pscustomobject]@{HasTextFrame=-1;TextFrame=[pscustomobject]@{TextRange=$script:changedWordsRange}}) ([pscustomobject]@{fontSize=36}) 'mock-changed-words'
+
+$shapes=[pscustomobject]@{Count=2;Values=@([pscustomobject]@{Name='Exact'},[pscustomobject]@{Name='Other'})}
+$shapes | Add-Member -MemberType ScriptMethod -Name Item -Value {param($index) return $this.Values[$index-1]}
+$slide=[pscustomobject]@{Shapes=$shapes}
+if((Get-ExactShape $slide 'Exact' 'mock-target').Name -cne 'Exact') { throw 'Exact target not selected' }
+foreach($name in @('Missing','exact')) { $rejected=$false; try { $null=Get-ExactShape $slide $name 'mock-target' } catch { $rejected=$true }; if(-not $rejected) { throw 'Non-exact target accepted' } }
+$shapes.Values[1].Name='Exact'; $rejected=$false
+try { $null=Get-ExactShape $slide 'Exact' 'mock-duplicate' } catch { $rejected=$true }
+if(-not $rejected) { throw 'Duplicate target accepted' }
+
 $empty=New-Object 'System.Collections.Generic.List[string]'
 $populated=New-Object 'System.Collections.Generic.List[string]'; $populated.Add('first'); $populated.Add('second')
 $observedEmpty=Invoke-FurnitureCom 'empty' { return ,$empty }
@@ -80,12 +133,12 @@ if($script:unexpectedCall) { throw 'Operation ran after the failure latch' }
 
 [ordered]@{
     passed=$true
-    scope='Windows PowerShell 5.1 parse; AST-only action-plan validation; empty/single/multi list behavior; invalid-plan rejection; collection identity and fail-closed wrapper. No Office object was constructed.'
+    scope='Windows PowerShell 5.1 parse; pure size/color edit and exact-target mocks; readback/text-change refusal;  AST-only action-plan validation; empty/single/multi list behavior; invalid-plan rejection; collection identity and fail-closed wrapper. No Office object was constructed.'
     powershell=$PSVersionTable.PSVersion.ToString()
     verifierSha256=(Get-FileHash -LiteralPath $ScriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
     checkerSha256=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    accepted=3
-    rejected=13
+    accepted=6
+    rejected=23
     cases=@($cases.ToArray())
     events=@($script:events.ToArray())
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportFull -Encoding UTF8

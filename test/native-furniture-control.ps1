@@ -29,7 +29,7 @@ function Read-AndValidateActionPlan([string]$Path) {
     $parsed=$raw | ConvertFrom-Json
     $items=@($parsed)
     if($items.Count -gt 20) { throw 'ActionPlan cannot contain more than 20 actions' }
-    $operations=@('set-text','set-alt','delete-shape','duplicate-shape','set-tag','delete-tag','move-slide')
+    $operations=@('set-text-style','set-text','set-alt','delete-shape','duplicate-shape','set-tag','delete-tag','move-slide')
     for($index=0;$index -lt $items.Count;$index++) {
         $action=$items[$index]; $context="Action $($index+1)"
         if($null -eq $action -or $action -isnot [pscustomobject]) { throw "$context must be an object" }
@@ -45,6 +45,16 @@ function Read-AndValidateActionPlan([string]$Path) {
         }
         switch($op) {
             'set-text' { $text=Require-Property $action 'text' $context; Assert-String $text 'text' $context; $allowed+='text' }
+            'set-text-style' {
+                $hasSize=$null -ne $action.PSObject.Properties['fontSize']; $hasColor=$null -ne $action.PSObject.Properties['color']
+                if(-not $hasSize -and -not $hasColor) { throw "$context requires fontSize or color" }
+                if($hasSize) {
+                    $size=$action.fontSize
+                    if(($size -isnot [int] -and $size -isnot [long] -and $size -isnot [double] -and $size -isnot [decimal]) -or [double]::IsNaN([double]$size) -or [double]::IsInfinity([double]$size) -or $size -lt 1 -or $size -gt 96) { throw "$context fontSize must be a finite number from 1 through 96 points" }
+                    $allowed+='fontSize'
+                }
+                if($hasColor) { if($action.color -isnot [string] -or $action.color -cnotmatch '^[0-9A-Fa-f]{6}$') { throw "$context color must be six hex digits RRGGBB" }; $allowed+='color' }
+            }
             'set-alt' { $alt=Require-Property $action 'alt' $context; Assert-String $alt 'alt' $context; $allowed+='alt' }
             'duplicate-shape' { $newName=Require-Property $action 'newName' $context; Assert-String $newName 'newName' $context 255 $false; $allowed+='newName' }
             'set-tag' {
@@ -138,7 +148,7 @@ $report=[ordered]@{
     source=[ordered]@{path=$sourcePath;sha256=$sourceHash;openedPath=$sourceSnapshot;openedSha256=(Get-FurnitureSha256 $sourceSnapshot)}
     saved=[ordered]@{path=$savedPath;sha256=$null}
     reopened=[ordered]@{path=$savedPath;sha256=$null}
-    actionPlan=[ordered]@{path=$request.actionPlan.path;sha256=$request.actionPlan.sha256;snapshotPath=$planSnapshot;snapshotSha256=(Get-FurnitureSha256 $planSnapshot);actions=$actions;completed=@()}
+    actionPlan=[ordered]@{path=$request.actionPlan.path;sha256=$request.actionPlan.sha256;snapshotPath=$planSnapshot;snapshotSha256=(Get-FurnitureSha256 $planSnapshot);actions=$actions;completed=@();styleEdits=@()}
     phases=[ordered]@{original=$null;edited=$null;reopened=$null}
     inputs=[ordered]@{verifier=$request.verifier;processHelper=$request.processHelper}
     environment=[ordered]@{hostVersion=$PSVersionTable.PSVersion.ToString();windowsProductName=$os.ProductName;windowsDisplayVersion=$os.DisplayVersion;windowsBuild="$($os.CurrentBuild).$($os.UBR)";powerPointVersion=$null;powerPointExecutable=$null;powerPointBuild=$null;powerPointExecutableSha256=$null}
@@ -223,6 +233,35 @@ function Get-ActionTags($Presentation,$Action,[string]$Prefix) {
     $shape=Get-ExactShape $slide $Action.shapeName $Prefix
     return ,(Invoke-FurnitureCom "$Prefix.shape.tags.get" { return ,$shape.Tags })
 }
+# Operates on an already uniquely selected shape. Each property write/read is logged by the existing fail-closed wrapper.
+function Set-FurnitureTextStyle($Shape,$Action,[string]$Prefix) {
+    $has=Invoke-FurnitureCom "$Prefix.hasTextFrame.get" { $Shape.HasTextFrame }
+    if($has -eq 0) { throw "$Prefix selected shape has no text frame" }
+    $frame=Invoke-FurnitureCom "$Prefix.textFrame.get" { return ,$Shape.TextFrame }
+    $range=Invoke-FurnitureCom "$Prefix.textRange.get" { return ,$frame.TextRange }
+    $before=Invoke-FurnitureCom "$Prefix.text.before.get" { $range.Text }
+    $font=Invoke-FurnitureCom "$Prefix.font.get" { return ,$range.Font }
+    $evidence=[ordered]@{textBefore=$before;textAfter=$null}
+    if($null -ne $Action.PSObject.Properties['fontSize']) {
+        Invoke-FurnitureCom "$Prefix.font.size.set" { $font.Size=[double]$Action.fontSize }
+        $observed=Invoke-FurnitureCom "$Prefix.font.size.get" { $font.Size }
+        if([double]$observed -ne [double]$Action.fontSize) { throw "$Prefix fontSize readback differs from requested value" }
+        $evidence.fontSize=[double]$observed
+    }
+    if($null -ne $Action.PSObject.Properties['color']) {
+        $hex=$Action.color
+        $rgb=[Convert]::ToInt32($hex.Substring(0,2),16) + 256*[Convert]::ToInt32($hex.Substring(2,2),16) + 65536*[Convert]::ToInt32($hex.Substring(4,2),16)
+        $color=Invoke-FurnitureCom "$Prefix.font.color.get" { return ,$font.Color }
+        Invoke-FurnitureCom "$Prefix.font.color.rgb.set" { $color.RGB=$rgb }
+        $observed=Invoke-FurnitureCom "$Prefix.font.color.rgb.get" { $color.RGB }
+        if([int]$observed -ne $rgb) { throw "$Prefix color readback differs from requested value" }
+        $evidence.color=$Action.color.ToUpperInvariant()
+    }
+    $after=Invoke-FurnitureCom "$Prefix.text.after.get" { $range.Text }
+    if($after -cne $before) { throw "$Prefix style action changed native words" }
+    $evidence.textAfter=$after
+    return $evidence
+}
 function Apply-FurnitureAction($Presentation,$Action,[int]$Number) {
     $prefix="action-$Number-$($Action.op)"
     if($Action.op -eq 'move-slide') { $slide=Get-ExactSlide $Presentation ([int]$Action.slideIndex) $prefix; Invoke-FurnitureCom "$prefix.moveTo" { $slide.MoveTo([int]$Action.toIndex) }; return }
@@ -235,6 +274,7 @@ function Apply-FurnitureAction($Presentation,$Action,[int]$Number) {
     }
     $shape=Get-ExactShape $slide $Action.shapeName $prefix
     switch($Action.op) {
+        'set-text-style' { $evidence=Set-FurnitureTextStyle $shape $Action $prefix; $report.actionPlan.styleEdits+=@([ordered]@{index=$Number;slideIndex=$Action.slideIndex;shapeName=$Action.shapeName;observed=$evidence}) }
         'set-text' { $has=Invoke-FurnitureCom "$prefix.hasTextFrame.get" { $shape.HasTextFrame }; if($has -eq 0) { throw "$prefix selected shape has no text frame" }; $frame=Invoke-FurnitureCom "$prefix.textFrame.get" { $shape.TextFrame }; $range=Invoke-FurnitureCom "$prefix.textRange.get" { $frame.TextRange }; Invoke-FurnitureCom "$prefix.text.set" { $range.Text=$Action.text } }
         'set-alt' { Invoke-FurnitureCom "$prefix.alternativeText.set" { $shape.AlternativeText=$Action.alt } }
         'delete-shape' { Invoke-FurnitureCom "$prefix.delete" { $shape.Delete() } }

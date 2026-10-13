@@ -1,0 +1,27 @@
+// Source policy plus the maintained AST-only mock checker on Windows. No Office object is constructed.
+import assert from 'node:assert/strict';
+import {readFileSync, mkdtempSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {scanPowerShellSource} from './powershell-scan.mjs';
+const worker = new URL('native-furniture-control.ps1', import.meta.url);
+const checker = new URL('native-furniture-harness-check.ps1', import.meta.url);
+for (const file of [worker, checker]) {
+  const result = scanPowerShellSource(readFileSync(file,'utf8'));
+  assert.deepEqual(result.issues, [], `${file}: modeled source-policy syntax`);
+}
+if (process.platform === 'win32') {
+  const output = mkdtempSync(path.join(tmpdir(), 'opf-style-'));
+  const ps = path.join(process.env.WINDIR, 'System32/WindowsPowerShell/v1.0/powershell.exe');
+  const env = {...process.env};
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key];
+  const result = spawnSync(ps, ['-NoProfile','-NonInteractive','-File',fileURLToPath(checker),'-ScriptPath',fileURLToPath(worker),'-ReportPath',path.join(output,'report.json')], {encoding:'utf8',timeout:30000,windowsHide:true,env});
+  assert.equal(result.status, 0, result.error?.message ?? result.stdout + result.stderr);
+  const report = JSON.parse(readFileSync(path.join(output,'report.json'),'utf8').replace(/^\uFEFF/,''));
+  assert.equal(report.passed,true); assert.equal(report.accepted,6); assert.equal(report.rejected,23);
+  console.log('Native style harness controls: Windows AST-only validation and object mocks PASS; no Office.');
+} else {
+  console.log('Native style harness source policy PASS; Windows PowerShell AST/parser/object mocks NOT RUN on this host.');
+}
