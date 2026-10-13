@@ -1,3 +1,4 @@
+import {sourceRunStyles, validateSourceRunStyles, restoreSourceRunStyles} from './source-run-styles.js';
 // Content topology (spec-gap closure P1): the structure of a slide's content
 // survives a PPTX round trip through the OPF_SLIDE_V1 record.
 //
@@ -286,6 +287,7 @@ export function contentTopology(slide, items, slideIndex, report = () => {}) {
     const box = leafBox(path);
     if (box) leaf.box = box;
     if (block.bullets !== undefined && block.items === undefined && ['list', 'text'].includes(kind)) leaf.bullets = true;
+    if (kind === 'text') { const styles = sourceRunStyles(block.text); if (styles) leaf.sourceStyles = styles; }
     if (kind === 'text' && wrapped.has(`${path}.text`)) Object.assign(leaf, wrapped.get(`${path}.text`));
     return leaf;
   };
@@ -302,7 +304,8 @@ export function contentTopology(slide, items, slideIndex, report = () => {}) {
     const fields = ROOT_PAYLOAD_FIELDS.filter(name => slide[name] !== undefined).map(field => {
       const box = boxes.get(`${base}.${field}`);
       const lines = field === 'text' ? wrapped.get(`${base}.text`) : undefined;
-      return box ? {field, box: [box.x, box.y, box.width, box.height].map(round1), ...lines} : {field};
+      const sourceStyles = field === 'text' ? sourceRunStyles(slide.text) : undefined;
+      return box ? {field, ...(sourceStyles ? {sourceStyles} : {}), box: [box.x, box.y, box.width, box.height].map(round1), ...lines} : {field, ...(sourceStyles ? {sourceStyles} : {})};
     });
     if (!fields.length) return undefined;
     if (fields.length === 1) return {form: 'root', ...fields[0]};
@@ -429,9 +432,9 @@ const validWrapOf = value => validLines(value.lines) && validWrap(value.wrap) &&
 export const wrapOf = node => node.wrap ?? (node.lines === undefined ? undefined : {lines: node.lines});
 /** The leaf fields that record `wrapped` ({lines, gaps?} from wrappedLines). */
 const wrapRecord = wrapped => wrapped.gaps ? {wrap: wrapped} : {lines: wrapped.lines};
-const validField = value => object(value) && ROOT_PAYLOAD_FIELDS.includes(value.field) && validBox(value.box) && validWrapOf(value);
+const validField = value => { if (value?.sourceStyles !== undefined) validateSourceRunStyles(value.sourceStyles); return object(value) && ROOT_PAYLOAD_FIELDS.includes(value.field) && validBox(value.box) && validWrapOf(value); };
 /** The root payload leaves of a root-form record: [{field, box?}]. */
-export const rootFields = topology => topology.fields ?? [{field: topology.field, box: topology.box, lines: topology.lines, wrap: topology.wrap}];
+export const rootFields = topology => topology.fields ?? [{field: topology.field, box: topology.box, lines: topology.lines, wrap: topology.wrap, sourceStyles: topology.sourceStyles}];
 
 /** Throws when `value` is not a well-formed topology record. Returns it otherwise. */
 export function validateTopology(value) {
@@ -456,6 +459,7 @@ export function validateTopology(value) {
     if (item.comp !== undefined) throw Error('A content leaf has no composition.');
     if (!validBox(item.box)) throw Error('Invalid content box.');
     if (item.bullets !== undefined && (item.bullets !== true || !['list', 'text'].includes(item.k))) throw Error('Invalid bullets flag.');
+    if (item.sourceStyles !== undefined) validateSourceRunStyles(item.sourceStyles);
     if (!validWrapOf(item)) throw Error('Invalid wrapped line record.');
   };
   switch (value.form) {
@@ -517,7 +521,7 @@ const textRuns = value => typeof value === 'string' || (Array.isArray(value) && 
  * {reason} when a block matches no leaf or several blocks land on one leaf.
  * Leaves with no block are dropped: empty payloads export nothing.
  */
-export function rebuildContent(topology, blocks, bounds, placed) {
+export function rebuildContent(topology, blocks, bounds, placed, intactStyles = {}) {
   if (!Array.isArray(blocks) || !Array.isArray(bounds) || blocks.length !== bounds.length) return {reason: 'the imported blocks carry no native bounds'};
   const leaves = [];
   const collect = item => {
@@ -571,6 +575,7 @@ export function rebuildContent(topology, blocks, bounds, placed) {
   const payloadOf = leaf => {
     if (!leaf.matches.length) return undefined;
     const payload = clone(leaf.payload ?? blocks[leaf.matches[0]]);
+    if (leaf.kind === 'text' && leaf.node.sourceStyles) payload.text = restoreSourceRunStyles(payload.text, leaf.node.sourceStyles, intactStyles);
     // The imported block always names its type; the authored one may have left it implicit.
     if (!leaf.node.typed) delete payload.type;
     // The imported block names every list `items`; a payload authored as `bullets` takes its key back (a bullet has no description).

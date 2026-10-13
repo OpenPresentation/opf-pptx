@@ -1,3 +1,4 @@
+import {nativeRunStyleEvidence, hasSourceRunStyles} from './source-run-styles.js';
 import {XMLParser} from 'fast-xml-parser';
 import {decodeTextTag, encodeTextTag} from './code-provenance.js';
 import {contentTopology, rebuildContent, validateTopology, listLineBreaks, validateListBreaks, validateListRuns, MAX_LIST_PATHS} from './content-topology.js';
@@ -315,7 +316,7 @@ function styleSignature(tree) {
   return canonical({faces: [...faces].sort(), colors: [...colors].sort()});
 }
 
-function nativeSlide(entries, path) {
+function nativeSlide(entries, path, includeRunStyles = true) {
   const root = parser.parse(dec.decode(entries[path]))?.['p:sld'];
   const cSld = root?.['p:cSld'], tree = cSld?.['p:spTree'];
   const rels = relationships(entries, path);
@@ -327,6 +328,7 @@ function nativeSlide(entries, path) {
   const background = backgroundObjects.length ? {bg: cSld?.['p:bg'] ?? null, objects: backgroundObjects} : cSld?.['p:bg'] ?? null;
   return {
     structure: hash(structure(tree)),
+    ...(includeRunStyles ? {runStyles: nativeRunStyleEvidence(withoutExtensions(tree ?? null), hash)} : {}),
     background: hash(canonical(withResolvedRelationships(withoutExtensions(background), rels, entries))),
     style: hash(styleSignature(withoutExtensions(tree ?? null)))
   };
@@ -796,7 +798,7 @@ export function attachDocumentProvenance(entries, provenance) {
 
   for (const [index, path] of paths.entries()) {
     const slideHashes = mediaHashes(prepared.slides[index], entries);
-    const record = toStoredShape({...prepared.slides[index], ...(Object.keys(slideHashes).length ? {mediaHash: slideHashes} : {}), native: nativeSlide(entries, path)}, SLIDE_SUPPLEMENT);
+    const record = toStoredShape({...prepared.slides[index], ...(Object.keys(slideHashes).length ? {mediaHash: slideHashes} : {}), native: nativeSlide(entries, path, hasSourceRunStyles(prepared.slides[index].content))}, SLIDE_SUPPLEMENT);
     const tag = `<p:tag name="${SLIDE_TAG}" val="${encodeTextTag(record)}"/>`;
     let xml = dec.decode(entries[path]);
     const slideRels = relsPath(path);
@@ -872,6 +874,7 @@ function validateDocument(stored) {
 
 function validateSlide(stored) {
   if (!object(stored) || stored.v !== 1 || !Number.isSafeInteger(stored.slide) || stored.slide < 0) throw Error('Unsupported slide provenance version.');
+  if (stored.native?.runStyles !== undefined && (!object(stored.native.runStyles) || Object.keys(stored.native.runStyles).length !== 3 || !['fontSize', 'fontFamily', 'color'].every(key => /^[a-f0-9]{14}$/.test(stored.native.runStyles[key])))) throw Error('Invalid native run style evidence.');
   if (!object(stored.native) || typeof stored.native.structure !== 'string' || typeof stored.native.background !== 'string' || typeof stored.native.style !== 'string') throw Error('Missing slide native evidence.');
   if (stored.design !== undefined && !object(stored.design)) throw Error('Invalid slide design record.');
   for (const key of SLIDE_SUPPLEMENT.design) if (object(stored.design) && stored.design[key] !== undefined) throw Error(`Supplement field design.${key} stored in the legacy section.`);
@@ -1025,7 +1028,7 @@ export function restoreDocumentProvenance(imported, {entries, presentationRoot, 
       return false;
     }
     let placedPaths;
-    const result = rebuildContent(record.content, imported.slides[index]?.blocks ?? [], slides[index]?.contentBounds ?? [], paths => { placedPaths = paths; });
+    const result = rebuildContent(record.content, imported.slides[index]?.blocks ?? [], slides[index]?.contentBounds ?? [], paths => { placedPaths = paths; }, Object.fromEntries(['fontSize', 'fontFamily', 'color'].map(key => [key, record.native.runStyles?.[key] !== undefined && record.native.runStyles[key] === observed.runStyles?.[key]])));
     if (result.reason) {
       report({code: 'content-structure-changed', path: `slides.${index}`, message: `The slide's content no longer matches its stored structure (${result.reason}), so the authored groups, regions and block ids of slides.${index} were not restored; the imported slide keeps its flat blocks.${typeNote}`});
       return false;
