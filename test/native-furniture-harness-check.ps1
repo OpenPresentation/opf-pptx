@@ -11,7 +11,7 @@ if(Test-Path -LiteralPath $planRoot) { throw 'Preserve the existing plan control
 $tokens=$null; $parseErrors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseFile($ScriptPath,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
-$names=@('Test-Integer','Require-Property','Assert-String','Read-AndValidateActionPlan','Invoke-FurnitureCom','Set-FurnitureTextStyle','Get-ExactShape')
+$names=@('Test-Integer','Require-Property','Assert-String','Read-AndValidateActionPlan','Invoke-FurnitureCom','Set-FurnitureTextStyle','Get-ExactShape','Read-FurnitureTextFont')
 foreach($name in $names) {
     $functionAst=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
     if($null -eq $functionAst) { throw "Missing reviewed function: $name" }
@@ -109,6 +109,35 @@ $mutatingFont | Add-Member -MemberType ScriptProperty -Name Size -Value {36} -Se
 $script:changedWordsRange.Font=$mutatingFont
 Reject-StyleMock ([pscustomobject]@{HasTextFrame=-1;TextFrame=[pscustomobject]@{TextRange=$script:changedWordsRange}}) ([pscustomobject]@{fontSize=36}) 'mock-changed-words'
 
+# Read-only whole-range font mocks. All font calls use the same failure latch as Office calls.
+$fontCases=New-Object 'System.Collections.Generic.List[object]'
+$descriptorFont=[pscustomobject]@{Name='Roboto ExtraBold';Size=[single]57;Bold=0;Italic=0}
+$descriptorShape=[pscustomobject]@{TextFrame2=[pscustomobject]@{TextRange=[pscustomobject]@{Font=$descriptorFont}}}
+$descriptor=Read-FurnitureTextFont $descriptorShape '52' 'font-uniform'
+if($descriptor.status -cne 'uniform' -or $descriptor.name -cne 'Roboto ExtraBold' -or $descriptor.sizePoints -ne 57 -or $descriptor.bold -ne 0 -or $descriptor.italic -ne 0 -or $descriptor.unavailableFields.Count -ne 0) { throw 'Uniform font descriptor differs' }
+$fontCases.Add([ordered]@{name='uniform';passed=$true})
+$descriptorFont.Bold=-1; $descriptorFont.Italic=-1
+$descriptor=Read-FurnitureTextFont $descriptorShape 'Styled' 'font-bold-italic'
+if($descriptor.status -cne 'uniform' -or $descriptor.bold -ne -1 -or $descriptor.italic -ne -1) { throw 'Bold/italic tri-state changed' }
+$fontCases.Add([ordered]@{name='bold-italic';passed=$true})
+foreach($spec in @(@{name='mixed-name';field='Name';value='';expected='name'},@{name='mixed-size';field='Size';value=-2;expected='sizePoints'},@{name='nonfinite-size';field='Size';value=[double]::NaN;expected='sizePoints'},@{name='mixed-bold';field='Bold';value=-2;expected='bold'},@{name='unavailable-italic';field='Italic';value=$null;expected='italic'})) {
+    $font=[pscustomobject]@{Name='Roboto';Size=18;Bold=0;Italic=0};$font.($spec.field)=$spec.value
+    $shape=[pscustomobject]@{TextFrame2=[pscustomobject]@{TextRange=[pscustomobject]@{Font=$font}}}
+    $observed=Read-FurnitureTextFont $shape 'Visible' $spec.name
+    if($observed.status -cne 'mixed-or-unavailable' -or $observed.unavailableFields.Count -ne 1 -or $observed.unavailableFields[0] -cne $spec.expected) { throw 'Mixed/unavailable descriptor was silently accepted' }
+    $fontCases.Add([ordered]@{name=$spec.name;passed=$true})
+}
+$beforeCalls=$script:events.Count
+if((Read-FurnitureTextFont $null '' 'font-empty').status -cne 'no-text' -or $script:events.Count -ne $beforeCalls) { throw 'Empty text performed property reads' }
+$fontCases.Add([ordered]@{name='empty-no-calls';passed=$true})
+$throwingFont=[pscustomobject]@{Size=18;Bold=0;Italic=0}
+$throwingFont | Add-Member -MemberType ScriptProperty -Name Name -Value { throw 'Deliberate descriptor property failure' }
+$throwingShape=[pscustomobject]@{TextFrame2=[pscustomobject]@{TextRange=[pscustomobject]@{Font=$throwingFont}}}
+$rejected=$false;try { $null=Read-FurnitureTextFont $throwingShape 'Visible' 'font-property-failure' } catch { $rejected=$true }
+if(-not $rejected -or -not $script:officeOperationsStopped -or $script:cleanupConfirmed) { throw 'Font property failure did not retain the COM latch' }
+$fontCases.Add([ordered]@{name='property-failure-latched';passed=$true})
+$script:officeOperationsStopped=$false; $script:cleanupConfirmed=$true
+
 $shapes=[pscustomobject]@{Count=2;Values=@([pscustomobject]@{Name='Exact'},[pscustomobject]@{Name='Other'})}
 $shapes | Add-Member -MemberType ScriptMethod -Name Item -Value {param($index) return $this.Values[$index-1]}
 $slide=[pscustomobject]@{Shapes=$shapes}
@@ -133,7 +162,8 @@ if($script:unexpectedCall) { throw 'Operation ran after the failure latch' }
 
 [ordered]@{
     passed=$true
-    scope='Windows PowerShell 5.1 parse; pure size/color edit and exact-target mocks; readback/text-change refusal;  AST-only action-plan validation; empty/single/multi list behavior; invalid-plan rejection; collection identity and fail-closed wrapper. No Office object was constructed.'
+    textFontControls=$fontCases
+    scope='Windows PowerShell 5.1 parse; pure uniform/mixed/unavailable whole-range font descriptors and error latch; size/color edit and exact-target mocks; readback/text-change refusal;  AST-only action-plan validation; empty/single/multi list behavior; invalid-plan rejection; collection identity and fail-closed wrapper. No Office object was constructed.'
     powershell=$PSVersionTable.PSVersion.ToString()
     verifierSha256=(Get-FileHash -LiteralPath $ScriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
     checkerSha256=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()

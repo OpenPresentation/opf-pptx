@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$InputPresentation,
     [string]$ActionPlan='',
     [ValidateRange(5,60)][int]$TimeoutSeconds=45,
-    [switch]$Worker
+    [switch]$Worker,
+    [switch]$CaptureTextFonts
 )
 $ErrorActionPreference='Stop'
 
@@ -99,6 +100,7 @@ if(-not $Worker) {
     if($null -ne $planPath) { Copy-Item -LiteralPath $planPath -Destination $planSnapshot }
     else { ConvertTo-Json -InputObject @() | Set-Content -LiteralPath $planSnapshot -Encoding UTF8 }
     $request=[ordered]@{
+        captureTextFonts=[bool]$CaptureTextFonts
         source=[ordered]@{path=$inputPath;sha256=(Get-FurnitureSha256 $inputPath);snapshotPath=$presentationSnapshot;snapshotSha256=(Get-FurnitureSha256 $presentationSnapshot)}
         actionPlan=[ordered]@{path=$planPath;sha256=$(if($null -eq $planPath){$null}else{Get-FurnitureSha256 $planPath});snapshotPath=$planSnapshot;snapshotSha256=(Get-FurnitureSha256 $planSnapshot);count=$plan.Count}
         verifier=[ordered]@{path=$PSCommandPath;sha256=(Get-FurnitureSha256 $PSCommandPath);snapshotPath=$verifierSnapshot;snapshotSha256=(Get-FurnitureSha256 $verifierSnapshot)}
@@ -106,7 +108,9 @@ if(-not $Worker) {
     }
     $request | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $outputRoot 'request.json') -Encoding UTF8
     . (Join-Path $PSScriptRoot 'native-process.ps1')
-    $result=Invoke-OpfNativeWorker -ScriptPath $PSCommandPath -WorkerArguments @('-OutputDirectory',$outputRoot,'-InputPresentation',$presentationSnapshot,'-ActionPlan',$planSnapshot,'-Worker') -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds
+    $workerArguments=@('-OutputDirectory',$outputRoot,'-InputPresentation',$presentationSnapshot,'-ActionPlan',$planSnapshot,'-Worker')
+    if($CaptureTextFonts) { $workerArguments+='-CaptureTextFonts' }
+    $result=Invoke-OpfNativeWorker -ScriptPath $PSCommandPath -WorkerArguments $workerArguments -OutputDirectory $outputRoot -TimeoutSeconds $TimeoutSeconds
     $lastDurable=$null
     if(Test-Path -LiteralPath (Join-Path $outputRoot 'progress.json')) { try { $lastDurable=Get-Content -LiteralPath (Join-Path $outputRoot 'progress.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch { } }
     if($null -eq $lastDurable -and (Test-Path -LiteralPath (Join-Path $outputRoot 'stages.jsonl'))) {
@@ -130,6 +134,7 @@ if(-not $Worker) {
 
 $root=(Resolve-Path -LiteralPath $OutputDirectory).Path
 $request=Get-Content -LiteralPath (Join-Path $root 'request.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if($request.captureTextFonts -isnot [bool] -or $request.captureTextFonts -ne [bool]$CaptureTextFonts) { throw 'Font observation option differs from validated request' }
 $sourcePath=$request.source.path; $sourceHash=$request.source.sha256; $sourceSnapshot=(Resolve-Path -LiteralPath $request.source.snapshotPath).Path
 $planSnapshot=(Resolve-Path -LiteralPath $request.actionPlan.snapshotPath).Path; $actions=Read-AndValidateActionPlan $planSnapshot
 $savedPath=Join-Path $root 'native-furniture-control.pptx'
@@ -145,6 +150,7 @@ $script:ownedPresentationPath=$null; $script:presentation=$null
 $os=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $report=[ordered]@{
     schemaVersion=1
+    captureTextFonts=[bool]$CaptureTextFonts
     source=[ordered]@{path=$sourcePath;sha256=$sourceHash;openedPath=$sourceSnapshot;openedSha256=(Get-FurnitureSha256 $sourceSnapshot)}
     saved=[ordered]@{path=$savedPath;sha256=$null}
     reopened=[ordered]@{path=$savedPath;sha256=$null}
@@ -200,6 +206,26 @@ function Read-NativeTags($Tags,[string]$Prefix) {
     for($index=1;$index -le $count;$index++) { $name=Invoke-FurnitureCom "$Prefix.name-$index.get" { $Tags.Name($index) }; $value=Invoke-FurnitureCom "$Prefix.value-$index.get" { $Tags.Value($index) }; $items+=@([ordered]@{index=$index;name=$name;value=$value}) }
     return ,$items
 }
+# Whole-range reported descriptors only; no per-character or physical glyph-file assertion.
+function Read-FurnitureTextFont($Shape,[string]$Text,[string]$Prefix) {
+    if([string]::IsNullOrEmpty($Text)) { return [ordered]@{status='no-text';scope='No nonempty text range was observed.'} }
+    $frame=Invoke-FurnitureCom "$Prefix.textFrame2.get" { return ,$Shape.TextFrame2 }
+    $range=Invoke-FurnitureCom "$Prefix.textRange2.get" { return ,$frame.TextRange }
+    $font=Invoke-FurnitureCom "$Prefix.font2.get" { return ,$range.Font }
+    $name=Invoke-FurnitureCom "$Prefix.font2.name.get" { $font.Name }
+    $size=Invoke-FurnitureCom "$Prefix.font2.size.get" { $font.Size }
+    $bold=Invoke-FurnitureCom "$Prefix.font2.bold.get" { $font.Bold }
+    $italic=Invoke-FurnitureCom "$Prefix.font2.italic.get" { $font.Italic }
+    $unavailable=@()
+    if($name -isnot [string] -or [string]::IsNullOrWhiteSpace($name)) { $unavailable+='name' }
+    $numericSize=$size -is [single] -or $size -is [double] -or $size -is [int] -or $size -is [long] -or $size -is [decimal]
+    if(-not $numericSize -or [double]::IsNaN([double]$size) -or [double]::IsInfinity([double]$size) -or $size -le 0) { $unavailable+='sizePoints' }
+    foreach($entry in @(@{name='bold';value=$bold},@{name='italic';value=$italic})) {
+        if(-not (Test-Integer $entry.value) -or $entry.value -notin @(-1,0)) { $unavailable+=$entry.name }
+    }
+    $status=if($unavailable.Count -eq 0){'uniform'}else{'mixed-or-unavailable'}
+    return [ordered]@{status=$status;name=$name;sizePoints=$size;bold=$bold;italic=$italic;unavailableFields=$unavailable;scope='Whole TextFrame2 range reported name/size/bold/italic; not character-level font selection, glyph-file identity or baseline measurement.'}
+}
 function Read-FurnitureState($Presentation,[string]$Phase) {
     $slides=Invoke-FurnitureCom "$Phase.slides.get" { return ,$Presentation.Slides }; $slideCount=Invoke-FurnitureCom "$Phase.slides.count.get" { $slides.Count }
     if($slideCount -lt 1 -or $slideCount -gt 3) { throw "Presentation must contain 1 through 3 slides; observed $slideCount" }
@@ -219,7 +245,9 @@ function Read-FurnitureState($Presentation,[string]$Phase) {
             if($hasTextFrame -ne 0) { $frame=Invoke-FurnitureCom "$Phase.slide-$slideIndex.shape-$shapeIndex.textFrame.get" { $shape.TextFrame }; $range=Invoke-FurnitureCom "$Phase.slide-$slideIndex.shape-$shapeIndex.textRange.get" { $frame.TextRange }; $text=Invoke-FurnitureCom "$Phase.slide-$slideIndex.shape-$shapeIndex.text.get" { $range.Text } }
             $alt=Invoke-FurnitureCom "$Phase.slide-$slideIndex.shape-$shapeIndex.alternativeText.get" { $shape.AlternativeText }
             $shapeTagsObject=Invoke-FurnitureCom "$Phase.slide-$slideIndex.shape-$shapeIndex.tags.get" { return ,$shape.Tags }; $shapeTags=Read-NativeTags $shapeTagsObject "$Phase.slide-$slideIndex.shape-$shapeIndex.tags"
-            $shapeRecords+=@([ordered]@{index=$shapeIndex;id=$id;name=$name;type=$type;left=$left;top=$top;width=$width;height=$height;rotation=$rotation;hasTextFrame=$hasTextFrame;text=$text;alternativeText=$alt;tags=$shapeTags})
+            $shapeRecord=[ordered]@{index=$shapeIndex;id=$id;name=$name;type=$type;left=$left;top=$top;width=$width;height=$height;rotation=$rotation;hasTextFrame=$hasTextFrame;text=$text;alternativeText=$alt;tags=$shapeTags}
+            if($CaptureTextFonts) { $shapeRecord.textFont=Read-FurnitureTextFont $shape $text "$Phase.slide-$slideIndex.shape-$shapeIndex" }
+            $shapeRecords+=@($shapeRecord)
         }
         $png=Join-Path $root "$Phase-slide-$('{0:D2}' -f $slideIndex).png"; Invoke-FurnitureCom "$Phase.slide-$slideIndex.export.png" { $slide.Export($png,'PNG',1280,720) }
         $rasters+=@([ordered]@{slideIndex=$slideIndex;path=$png;sha256=(Get-FurnitureSha256 $png)})
