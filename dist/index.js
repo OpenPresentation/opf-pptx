@@ -2675,7 +2675,9 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     labels: !chartOptions?.dataLabels?.content?.includes('percent'), scatter: chartData.type === 'scatter'};
   context.chartHeadings.set(objectName,{heading:chartData.type === 'scatter' ? undefined : chartData.heading,labelColor,spec:chartData.spec,textSize,
     options:chartOptions,kind:chartTargetFor(chart.type)?.kind,pointCount:chartData.pointCount,numberFormats});
-  recordPayloadData(context, objectName, 'chart', presentation, path);
+  // Synthetic row-number categories are a native adaptation, not an authored
+  // data column. Full provenance restores the source form only on unchanged caches.
+  recordPayloadData(context, objectName, 'chart', presentation, path, undefined, {rowNumbers: chart.data?.columns?.length === 1 && chartData.adaptations?.some(entry => entry.adaptation === 'row-numbers') === true});
   context.chartFonts.set(objectName,{heading:context.fonts.heading,body:context.fonts.body});
   // FA-09: the chart's text alternative (the frame's descr; the empty string is PowerPoint's decorative marker), applied before the chartex frame copies the head.
   if (typeof chart.alt === 'string') context.frameAlts.set(objectName, chart.alt);
@@ -2779,11 +2781,11 @@ function comboChart(chartData, options, {palette, chartOptions, labelColor, font
 // RR-54: a chart or table that uses a dataset, DataColumn objects, a mapping, a data source or number formats records its
 // authored data form on its native frame (src/data-provenance.js), in `full` provenance mode only. `path` is the composed
 // item's path ("slides.0.blocks.1.chart"), which names the authored value (composition hands over the inline copy).
-function recordPayloadData(context, objectName, kind, presentation, path, layout) {
+function recordPayloadData(context, objectName, kind, presentation, path, layout, chartRecordOptions) {
   if (context.provenanceMode !== 'full' || !context.dataRecords || !presentation) return;
   let authored = presentation;
   for (const key of String(path).split('.')) authored = authored !== null && typeof authored === 'object' ? authored[Array.isArray(authored) ? Number(key) : key] : undefined;
-  const record = kind === 'chart' ? chartDataRecord(authored, presentation.datasets) : tableDataRecord(authored, layout);
+  const record = kind === 'chart' ? chartDataRecord(authored, presentation.datasets, chartRecordOptions) : tableDataRecord(authored, layout);
   if (record) {
     context.dataRecords.set(objectName, record);
     context.dataRecordPaths.set(objectName, String(path));

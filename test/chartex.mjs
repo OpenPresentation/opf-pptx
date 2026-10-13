@@ -261,11 +261,11 @@ for (const [type, data, expectedType = type] of [
   assert.deepEqual(await importedChart(bytes), {type: expectedType, data}, `${type}: round trip`);
   checks++;
 }
-// A single value column for the other constructs is plotted against row numbers, so it re-imports with a Row column (reported as row-numbers).
+// Row numbers are still plotted and reported, while full provenance restores the authored single column.
 {
   const {bytes, diagnostics} = await exportDeck([{title: 'funnel', chart: {type: 'funnel', data: singleData}}]);
   assert.deepEqual(diagnostics.map((diagnostic) => diagnostic.adaptation), ['row-numbers']);
-  assert.deepEqual(await importedChart(bytes), {type: 'funnel', data: {columns: ['Row', 'Sample'], rows: singleData.rows.map((row, index) => [String(index + 1), row[0]])}});
+  assert.deepEqual(await importedChart(bytes), {type: 'funnel', data: singleData});
 }
 // Several charts in one deck: numbered parts, distinct uniqueIds, each frame wrapped, and the whole export deterministic.
 {
