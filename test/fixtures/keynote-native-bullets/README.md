@@ -1,0 +1,7 @@
+# Project-authored Keynote native-body bullet control
+
+These exact retained bytes are the root session's Keynote 15.1.1 no-op export of the MIT-licensed synthetic 17-slide Arial qualification fixture. The fixture tooling is commit `8ee257f55c0396b81892337b15bf86805e2730ad`; the normally npm-packed local PPTX prototype is commit `9f159655df6aa5972a8663b94f5d73142a2c07b8`. Root imported its native-body output, saved a fresh Keynote document and exported this PPTX on 2026-10-15. The file contains project-authored text, notes and synthetic image/chart/table controls; no font programs are bundled. `manifest.json` binds the exact retained bytes. Never regenerate this fixture to make a test pass.
+
+K17 retains one actual Body, three authored paragraphs, current bold text, and character bullets inherited from the master body style. Its local paragraph and shape list styles no longer repeat the bullet marker. This is current native inheritance evidence, never an instruction to recover cached source words. The maintained test mutates these same archive bytes to check current edits, clearing/deletion and explicit overrides without Keynote, PowerPoint, fonts or network access.
+
+This source-candidate fixture does not establish registry adoption, physical font selection, raster/geometry parity or general native acceptance. Its 17 stripped literal footers, 17 removed notes-page number fields and other importer adaptations remain separate findings.
