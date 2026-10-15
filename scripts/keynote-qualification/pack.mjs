@@ -489,6 +489,26 @@ export function importedFurnitureFindings(imported, source, baseline) {
   return failures;
 }
 
+/** Words alone do not prove the opted-in native bullet body survived as a list. */
+export function nativeBodyNoopListFindings(imported, source, {fixture, mode, route} = {}) {
+  if (fixture !== 'body-17' || mode !== 'native' || route !== 'no-op') return [];
+  const entryText = item => {
+    if (typeof item === 'string') return item;
+    if (Array.isArray(item)) return item.every(run => typeof run === 'string' || run && typeof run.text === 'string') ? inlineText(item) : undefined;
+    if (item && typeof item === 'object' && item.text !== undefined && item.description === undefined && item.start === undefined && (item.level === undefined || item.level === 0)) return entryText(item.text);
+    return undefined;
+  };
+  const authored = source.slides.find(slide => slide.title?.startsWith('K17'));
+  const expected = authored?.items?.map(entryText);
+  assert.ok(expected?.length === 3 && expected.every(value => typeof value === 'string'), 'K17 source must remain exactly three flat authored entries');
+  const slide = imported.slides?.find(slide => currentSlideText(slide).match(/\bK\d{2}\b/)?.[0] === 'K17');
+  const lists = slide ? [...(Array.isArray(slide.items) && (slide.type === undefined || slide.type === 'list') ? [slide] : []), ...array(slide.blocks).filter(block => block?.type === 'list' && Array.isArray(block.items))] : [];
+  if (lists.length !== 1) return ['K17: native body no-op requires one semantic flat list with three current entries; words in a text block are insufficient'];
+  const [list] = lists, actual = list.items.map(entryText);
+  if (list.numbering !== undefined || actual.some(value => typeof value !== 'string') || !isDeepStrictEqual(actual, expected)) return ['K17: native body no-op semantic flat list must retain exactly three flat current entries in source order and words'];
+  return [];
+}
+
 export async function inspectNative({suite: directory, consumer, input, route, output}) {
   const {root, suite} = await verifySeal(directory); assert.ok(Object.hasOwn(routes, route), 'Unknown route');
   const engine = await installed(consumer), target = await fresh(output, [root, engine.consumer]);
@@ -498,7 +518,11 @@ export async function inspectNative({suite: directory, consumer, input, route, o
   const failures = nativeFindings(inspection, route, baseline, bodyFixture);
   const diagnostics = [], imported = await engine.pptx.fromPptx(bytes, {catalogs: [engine.gallery], onDiagnostic: value => diagnostics.push(value)});
   failures.push(...importedFindings(imported, route, bodyFixture));
-  if (route === 'no-op') failures.push(...importedFurnitureFindings(imported, JSON.parse(await readFile(path.join(root, 'sources/deck.opf.json'))), baseline));
+  if (route === 'no-op') {
+    const source = JSON.parse(await readFile(path.join(root, 'sources/deck.opf.json')));
+    failures.push(...importedFurnitureFindings(imported, source, baseline));
+    failures.push(...nativeBodyNoopListFindings(imported, source, {fixture: suite.fixture, mode: suite.mode, route}));
+  }
   if (route === 'content-edits') {
     const replacement = hash(await readFile(path.join(root, 'assets/replacement.png'))), actual = inspection.slides.find(slide => slide.marker === 'K08');
     if (!actual?.pictures.some(picture => picture.sha256 === replacement)) failures.push('replace-image: replacement media bytes missing from current slide');
