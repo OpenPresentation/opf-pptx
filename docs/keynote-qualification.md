@@ -56,10 +56,29 @@ For no-op comparisons, paragraph/run words remain in XML order. Literal furnitur
 
 The retained project-authored Keynote 15.1.1 no-op pair in `test/fixtures/keynote-noop/` demonstrates why this matters: body/notes words remain intact, slide-number fields survive without cached text, all sixteen notes-page number fields disappear, and literal footers lose their `ftr` role. The current importer returns those literal footers as content blocks; inspection reports that real import gap separately. Native footer visibility and layering remain separate UI findings even when literal footer words compare equal. The original scratch inspection's 32 text-comparison failures are preserved unchanged.
 
+## Literal-footer binding causal control
+
+The maintained preparation command uses the original sealed sixteen-case baseline and its exact installed runtime. It prepares the two archive variants without calling the OPF exporter or changing a package runtime or default:
+
+```sh
+node scripts/keynote-qualification/cli.mjs footer-controls --suite /absolute/baseline16 --consumer /absolute/baseline-consumer --output /absolute/new-footer-controls
+node scripts/keynote-qualification/cli.mjs footer-verify --suite /absolute/new-footer-controls
+node scripts/keynote-qualification/cli.mjs footer-copy --suite /absolute/new-footer-controls --variant native-footer --output /absolute/new-A-attempt
+node scripts/keynote-qualification/cli.mjs footer-copy --suite /absolute/new-footer-controls --variant ordinary-footer --output /absolute/new-B-attempt
+```
+
+A (`native-footer`) is an exact archive-byte copy of the sealed baseline. B (`ordinary-footer`) removes only the actual slide-local `<p:ph type="ftr" .../>` token from each of the sixteen exact `OPF furniture N part 0 line 0` literal footer objects. Missing/renamed/duplicate targets, extra footer bindings, live fields in the target, mismatched literal words, unexpected order or unsupported input suites refuse preparation. Exactly sixteen removals are required.
+
+`part-differences.json` proves the token edit against every uncompressed part's size and SHA-256. All other XML and binary part bytes remain exact, including the object's current text, geometry, styles, locks, paint order, live slide-number fields, tags, relationships, layouts/master placeholders and `p:hf` flags. B is ZIP-recompressed, so its archive metadata, compressed bytes and archive hash may differ independently of the proved part edit. A is never recompressed. The control's `suite.json` seals both variants and the proof, records baseline/source/runtime identities and retains `nativeAcceptance: false`. The original seal is verified before and after preparation. Existing outputs and copies are never overwritten.
+
+B deliberately retains even the OPF manifest's native-placeholder marker to keep this a single-variable binding test; it is not a production export option or an import-recovery implementation. Root must review preparation before opening the two fresh copies. In each copy, observe literal footer visibility and object order on K08 and the simpler K02, observe their live numbers separately, capture evidence, save a fresh `working.key`, export a fresh `native-export.pptx`, and reopen both. Compare actual UI results; a static token difference does not establish the cause of the footer's visibility change. Preserve any failure. Use the normal `inspect --suite /absolute/baseline16 --consumer /absolute/baseline-consumer --input /absolute/new-A-attempt/native-export.pptx --route no-op --output /absolute/new-A-inspection` command (and a fresh B inspection) for the actual native outputs. Imported furniture classification and notes-page number loss remain separate findings.
+
 ## Portable checks
 
 ```sh
 node test/keynote-qualification.mjs
+node test/keynote-noop-semantics.mjs
+node test/keynote-footer-controls.mjs
 node --check scripts/keynote-qualification/cli.mjs
 node --check scripts/keynote-qualification/pack.mjs
 ```

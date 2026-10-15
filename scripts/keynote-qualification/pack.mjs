@@ -34,9 +34,9 @@ async function tree(directory, relative = '') {
   return result.sort((a, b) => a.path.localeCompare(b.path, 'en'));
 }
 
-export async function verifySeal(suiteDirectory) {
+async function verifyFileSeal(suiteDirectory, kind) {
   const root = await realpath(suiteDirectory), suite = JSON.parse(await readFile(path.join(root, 'suite.json')));
-  assert.equal(suite.schemaVersion, 1); assert.equal(suite.kind, 'keynote-qualification');
+  assert.equal(suite.schemaVersion, 1); assert.equal(suite.kind, kind);
   for (const file of suite.files) {
     assert.ok(safe(file.path), 'Unsafe sealed file path');
     const absolute = path.join(root, file.path);
@@ -50,6 +50,8 @@ export async function verifySeal(suiteDirectory) {
   assert.deepEqual(actual, suite.files, 'Suite has missing, extra or changed files');
   return {root, suite};
 }
+export const verifySeal = directory => verifyFileSeal(directory, 'keynote-qualification');
+export const verifyFooterControls = directory => verifyFileSeal(directory, 'keynote-footer-binding-controls');
 
 export async function installed(consumerDirectory) {
   const consumer = await realpath(consumerDirectory), require = createRequire(path.join(consumer, 'package.json'));
@@ -307,6 +309,102 @@ export async function prepareCopy({suite: directory, route, output}) {
   await writeFile(path.join(target, 'result.json'), json(outcomeTemplate(route, bodyFixture)), {flag: 'wx'});
   await writeFile(path.join(target, 'attempt.json'), json({route, mode: suite.mode ?? 'baseline', fixture: suite.fixture ?? 'baseline-16', suite: root, suiteSha256: hash(await readFile(path.join(root, 'suite.json'))), originalSha256: hash(await readFile(path.join(root, 'inputs/deck.pptx'))), inputSha256: hash(await readFile(path.join(target, 'editable.pptx'))), instructions: definitions[route], nativeAcceptance: false}), {flag: 'wx'});
   return target;
+}
+
+/** Prove the one-variable change at uncompressed part bytes, independently of ZIP recompression. */
+export function verifyFooterPartChanges(before, after, removals) {
+  assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort(), 'Footer control part inventory changed');
+  assert.equal(removals.length, 16, 'Footer control requires exactly sixteen token removals');
+  assert.equal(new Set(removals.map(item => item.part)).size, 16, 'Exactly one literal footer binding per slide is required');
+  const proof = [];
+  for (const part of Object.keys(before).sort()) {
+    const removal = removals.find(item => item.part === part);
+    if (removal) {
+      assert.match(part, /^ppt\/slides\/slide\d+\.xml$/);
+      assert.match(removal.shapeName, /^OPF furniture \d+ part 0 line 0$/);
+      assert.match(removal.token, /^<p:ph\b[^>]*\btype="ftr"[^>]*\/>$/);
+      const original = new TextDecoder('utf-8', {fatal: true}).decode(before[part]);
+      assert.ok([...original.matchAll(/<p:sp\b[^>]*>[\s\S]*?<\/p:sp>/g)].some(match => match[0].includes(`name="${removal.shapeName}"`) && match[0].includes(removal.token)), `${part}: token is not attached to the exact footer object`);
+      assert.equal(original.split(removal.token).length - 1, 1, `${part}: target token must be unique`);
+      assert.deepEqual(Buffer.from(after[part]), Buffer.from(original.replace(removal.token, '')), `${part}: bytes beyond the one footer token changed`);
+    } else assert.deepEqual(Buffer.from(after[part]), Buffer.from(before[part]), `${part}: non-target part changed`);
+    proof.push({part, changed: Boolean(removal), before: {bytes: before[part].length, sha256: hash(before[part])}, after: {bytes: after[part].length, sha256: hash(after[part])}, ...(removal ? {removed: removal} : {})});
+  }
+  assert.equal(proof.filter(item => item.changed).length, 16);
+  return proof;
+}
+
+export function footerControlVariant(bytes, engine, {literal}) {
+  assert.ok(typeof literal === 'string' && literal.trim() && !/[\r\n]|\{\{/.test(literal), 'The control requires one literal footer line');
+  const original = inspectArchive(bytes, engine), before = engine.fflate.unzipSync(bytes), after = {...before}, removals = [];
+  assert.equal(original.slides.length, 16, 'Footer controls require the original sixteen-case baseline');
+  const parser = new engine.xml.XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false});
+  for (const [index, slide] of original.slides.entries()) {
+    assert.equal(slide.marker, `K${String(index + 1).padStart(2, '0')}`, 'Footer controls require the original presentation order');
+    const shapeName = `OPF furniture ${index} part 0 line 0`, xml = new TextDecoder('utf-8', {fatal: true}).decode(before[slide.part]);
+    assert.deepEqual(Buffer.from(xml), Buffer.from(before[slide.part]), 'Source XML must round-trip byte-exact UTF-8');
+    const shapes = [...xml.matchAll(/<p:sp\b[^>]*>[\s\S]*?<\/p:sp>/g)].map(match => match[0]);
+    const matches = shapes.filter(shape => parser.parse(shape)['p:sp']?.['p:nvSpPr']?.['p:cNvPr']?.name === shapeName);
+    assert.equal(matches.length, 1, `${slide.marker}: expected unique exact literal footer object name`);
+    const [shape] = matches, parsed = parser.parse(shape)['p:sp'], tokens = [...shape.matchAll(/<p:ph\b[^>]*\/>/g)].map(match => match[0]);
+    assert.equal(tokens.length, 1, `${slide.marker}: expected exactly one actual placeholder token`);
+    assert.equal(parsed['p:nvSpPr']?.['p:nvPr']?.['p:ph']?.type, 'ftr', `${slide.marker}: target must be an actual ftr placeholder`);
+    assert.equal(deep(parser.parse(xml), 'p:ph').filter(ph => ph.type === 'ftr').length, 1, `${slide.marker}: unexpected extra footer binding`);
+    assert.equal(deep(parsed, 'a:fld').length, 0, `${slide.marker}: literal footer must not hold a live field`);
+    assert.equal(array(parsed['p:txBody']?.['a:p']).length, 1, `${slide.marker}: literal footer must be one paragraph`);
+    assert.equal(texts(parsed).join(''), literal, `${slide.marker}: current literal footer differs from source`);
+    const token = tokens[0];
+    after[slide.part] = Buffer.from(xml.replace(shape, shape.replace(token, '')));
+    removals.push({part: slide.part, shapeName, token});
+  }
+  const parts = verifyFooterPartChanges(before, after, removals);
+  // Only B is recompressed. Part bytes, rather than ZIP container metadata, establish the causal invariant.
+  const variant = engine.fflate.zipSync(after, {level: 6, mtime: new Date('2026-10-15T00:00:00Z')});
+  verifyFooterPartChanges(before, engine.fflate.unzipSync(variant), removals);
+  const observed = inspectArchive(variant, engine);
+  assert.equal(observed.slides.length, original.slides.length); assert.equal(observed.nativeChartCount, original.nativeChartCount); assert.equal(observed.nativeTableCount, original.nativeTableCount);
+  assert.deepEqual(observed.slides.map(slide => slide.textSemantics.fields), original.slides.map(slide => slide.textSemantics.fields), 'Live slide fields changed');
+  assert.deepEqual(observed.slides.map(slide => slide.notesSemantics), original.slides.map(slide => slide.notesSemantics), 'Speaker notes or generated notes fields changed');
+  return {bytes: variant, proof: {scope: 'Uncompressed package part bytes; B ZIP metadata/compression may differ.', expectedRemovals: 16, actualRemovals: removals.length, changedParts: 16, unchangedParts: parts.length - 16, parts}};
+}
+
+export async function prepareFooterControls({suite: directory, consumer, output}) {
+  assert.equal(process.versions.node.split('.')[0], '24', 'Qualification requires Node 24');
+  const {root: baseline, suite} = await verifySeal(directory);
+  assert.ok(!suite.fixture || suite.fixture === 'baseline-16', 'Footer controls require the original sixteen-case baseline');
+  assert.ok(!suite.mode || suite.mode === 'baseline', 'Footer controls do not modify measured/native body comparison suites');
+  const engine = await installed(consumer);
+  assert.deepEqual(packageIdentity(engine.packages), packageIdentity(suite.runtime.packages), 'Footer controls require the sealed baseline installed runtime');
+  const source = JSON.parse(await readFile(path.join(baseline, 'sources/deck.opf.json')));
+  assert.equal(source.slides.length, 16); assert.ok(source.slides.every(slide => slide.design?.footer === undefined), 'Per-slide footer overrides are outside this causal fixture');
+  const input = await readFile(path.join(baseline, 'inputs/deck.pptx')), variant = footerControlVariant(input, engine, {literal: source.design?.footer?.left?.text});
+  const target = await fresh(output, [baseline, engine.consumer]);
+  await mkdir(path.join(target, 'variants'));
+  await writeFile(path.join(target, 'variants/native-footer.pptx'), input, {flag: 'wx'});
+  await writeFile(path.join(target, 'variants/ordinary-footer.pptx'), variant.bytes, {flag: 'wx'});
+  assert.deepEqual(await readFile(path.join(target, 'variants/native-footer.pptx')), input, 'A must be an exact archive byte copy');
+  await writeFile(path.join(target, 'part-differences.json'), json(variant.proof), {flag: 'wx'});
+  const git = args => execFileSync('git', args, {cwd: repository, encoding: 'utf8', stdio: 'pipe'}).trim();
+  const result = {schemaVersion: 1, kind: 'keynote-footer-binding-controls', nativeAcceptance: false, registryAcceptance: false,
+    baseline: {directory: baseline, suiteSha256: hash(await readFile(path.join(baseline, 'suite.json'))), inputSha256: hash(input)},
+    source: {revision: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']) !== '', files: await Promise.all(['scripts/keynote-qualification/pack.mjs', 'scripts/keynote-qualification/cli.mjs', 'test/keynote-footer-controls.mjs', 'docs/keynote-qualification.md'].map(async file => ({path: file, sha256: hash(await readFile(path.join(repository, file)))})))},
+    runtime: {node: process.version, consumer: engine.consumer, packages: engine.packages},
+    variants: {'native-footer': {file: 'variants/native-footer.pptx', bytes: input.length, sha256: hash(input), exactInputArchive: true}, 'ordinary-footer': {file: 'variants/ordinary-footer.pptx', bytes: variant.bytes.length, sha256: hash(variant.bytes), zipRecompressed: true, onlyUncompressedPartChange: 'Remove exactly sixteen slide-local literal ftr placeholder tokens'}}, files: await tree(target)};
+  await writeFile(path.join(target, 'suite.json'), json(result), {flag: 'wx'});
+  await verifySeal(baseline); await verifyFooterControls(target); return result;
+}
+
+export async function prepareFooterCopy({suite: directory, variant, output}) {
+  const {root, suite} = await verifyFooterControls(directory);
+  assert.ok(['native-footer', 'ordinary-footer'].includes(variant), 'Unknown footer variant');
+  const selected = suite.variants[variant], target = await fresh(output, [root]);
+  assert.equal(selected.file, `variants/${variant}.pptx`);
+  assert.equal(hash(await readFile(path.join(root, selected.file))), selected.sha256, 'Selected footer variant hash differs');
+  await copyFile(path.join(root, selected.file), path.join(target, 'editable.pptx'), constants.COPYFILE_EXCL);
+  const actions = ['Observe literal footer visibility and object order on K08 and K02; capture screenshots.', 'Observe live slide numbers 8 and 2 separately from literal footer text.', 'Save a fresh working.key, export a fresh native-export.pptx, reopen both, and retain every failure.'];
+  await writeFile(path.join(target, 'attempt.json'), json({variant, suite: root, suiteSha256: hash(await readFile(path.join(root, 'suite.json'))), inputSha256: selected.sha256, actions, nativeAcceptance: false}), {flag: 'wx'});
+  await writeFile(path.join(target, 'result.json'), json({...outcomeTemplate('no-op'), variant, actions: actions.map((operation, index) => ({id: index + 1, operation, status: 'not-run', evidence: [], observations: []}))}), {flag: 'wx'});
+  await verifyFooterControls(root); return target;
 }
 
 export function nativeFindings(inspection, route, baseline, bodyFixture = false) {
