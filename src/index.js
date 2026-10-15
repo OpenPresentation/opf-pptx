@@ -1537,6 +1537,15 @@ function chartFromRelationship(entries, slidePath, relationships, relId, report)
   if (chartNode.type === 'scatter') return withOptions(scatterFromSeries(entries, relationship.path, series, budget, cachePath, {codes: valueCodes, xCode, report}));
   const labels = cachedValues(series[0]?.["c:cat"], cachePath(0, 'c:cat'), budget);
   const names = series.map((entry, index) => firstCachedValue(entry?.["c:tx"], cachePath(index, 'c:tx'), budget) ?? `Series ${index + 1}`);
+  // RR-86: explicit current line paint has no per-series OPF field. Report the native locator without
+  // inferring semantic highlight, rewriting the theme or claiming that these colors differ visually.
+  for (const [index, entry] of series.entries()) {
+    const line = comboSeries ? comboSeries[index].role === 'line' : asArray(plotArea['c:lineChart']).includes(chartNode.node);
+    const solid = line && entry?.['c:spPr']?.['a:ln']?.['a:solidFill'];
+    if (solid && ['a:srgbClr', 'a:schemeClr', 'a:sysClr', 'a:prstClr', 'a:scrgbClr', 'a:hslClr'].some(color => Object.hasOwn(solid, color))) {
+      report?.({option: `series.${index}.line.color`, message: `Line series '${names[index]}' has explicit native solid paint that is not retained as per-series formatting in OPF; imported chart colors follow its design and semantic highlight.`});
+    }
+  }
   const values = series.map((entry, index) => {
     const role = entry?.["c:val"] !== undefined ? 'c:val' : 'c:yVal';
     return cachedValues(entry?.[role], cachePath(index, role), budget, strictCacheValue(budget));
