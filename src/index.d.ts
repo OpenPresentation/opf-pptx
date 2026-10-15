@@ -135,6 +135,14 @@ export interface ToPptxOptions {
    */
   provenance?: "full" | "references-only" | false;
   /**
+   * Literal footer text: "native" (default) keeps the first eligible one-line footer text bound to PowerPoint's Footer
+   * placeholder. "shape" omits only that slide-local ftr binding, retaining its measured editable text shape, locks,
+   * formatting, geometry, paint order and provenance. It stays on the slide, including when repeated. Live slide-number
+   * and date fields/placeholders, master/layout footer placeholders and flags remain unchanged. The literal shape then
+   * has no native Footer-dialog ownership; this does not guarantee viewer parity or restore tags another application strips.
+   */
+  footerText?: "native" | "shape";
+  /**
    * Values for the deck's template variables, keyed by variable id (core `resolveVariables`). A deck that uses content
    * variables, or is marked `template: true`, is resolved to a concrete deck first; the PPTX holds the resolved text.
    * A template exports with each unfilled variable's example (diagnostic `variable-example-used`); a normal deck with an
