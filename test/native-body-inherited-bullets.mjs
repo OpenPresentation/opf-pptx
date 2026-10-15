@@ -28,8 +28,10 @@ const {deck, diagnostics} = await read();
 assert.deepEqual(entries(deck).items.map(plain), ['KN_ORIGINAL_FLAT_LIST', 'Bold flat item', 'Final flat item.']);
 assert.equal(entries(deck).items[1][0].bold, true);
 assert.equal(entries(deck).numbering, undefined, 'Character bullets never become numbered entries');
-// Exact pre-change imports from prototype 9f159655 under the frozen dependency graph.
-assert.equal(hash(JSON.stringify({...deck, slides: deck.slides.slice(0, 16)})), '4cff892fba61504c203ff5209431e893ee2adbed0f489b2ba291cd9958c882f5');
+// Exact reviewed post-style import; no typography fields are normalized away.
+// The companion inherited-style test asserts every current Body default and
+// the complete import fingerprint. c529 retains its pre-style fingerprint.
+assert.equal(hash(JSON.stringify({...deck, slides: deck.slides.slice(0, 16)})), '3d200b5d813053b878e0091e21876f842e74a72278d81b5b52a40c6a4b65da8f');
 assert.equal(hash(JSON.stringify(diagnostics)), '56a11e5a7201b9f8ab0a1d285fce7ecaaa4448422aa3364b3525d96f29660fe9');
 assert.equal(diagnostics.length, 20, 'Existing footer/crop/table adaptations remain explicit');
 const changed = (transform = value => value, edit = () => {}) => {
@@ -91,4 +93,4 @@ await noList(changed(undefined, parts => {
   const value = strFromU8(parts[layout]), placeholder = value.match(/<p:sp>[\s\S]*?<\/p:sp>/g).find(shape => shape.includes('<p:ph type="body" idx="1"/>'));
   parts[layout] = strToU8(value.replace('</p:spTree>', placeholder + '</p:spTree>'));
 }));
-console.log('Retained Keynote master bullets: K17 semantic items/current styles, paragraph/shape/layout/master precedence, explicit cancellation, levels/numbers, edits/add/delete/clear, mixed diagnostics and missing/ambiguous bindings pass; other16 imports and20 diagnostics exact.');
+console.log('Retained Keynote master bullets: K17 semantic items/current styles, paragraph/shape/layout/master precedence, explicit cancellation, levels/numbers, edits/add/delete/clear, mixed diagnostics and missing/ambiguous bindings pass; reviewed other16 import and20 diagnostic fingerprints exact.');
