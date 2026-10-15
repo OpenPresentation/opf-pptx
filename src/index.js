@@ -37,7 +37,7 @@ import {gallery} from '@openpresentation/gallery';
 import {applyTemplateLayouts, deckTemplates, foreignLayoutReference, placeholderRegion, readLayoutTag, slideTemplate, writeTemplateLayouts} from './template-layouts.js';
 import {importImageOrientation} from './image-import.js';
 import {extractSignals, normalizeSignalOptions, themeFactsFor} from './import-signals.js';
-import {recordableImageSource, placeImages, importImages, importImagePlaceholders, isImagePlaceholderGroup, imageName, imageOverlayName, imagePlaceholderGroupName, backgroundImageName, backgroundOverlayName, IMAGE_TREATMENT_KEYS, BACKGROUND_IMAGE_KEYS, IMAGE_PLACEHOLDER_TAG} from './image-provenance.js';
+import {recordableImageSource, placeImages, importImages, importImagePlaceholders, isImagePlaceholderGroup, samePictureAspect, imageName, imageOverlayName, imagePlaceholderGroupName, backgroundImageName, backgroundOverlayName, IMAGE_TREATMENT_KEYS, BACKGROUND_IMAGE_KEYS, IMAGE_PLACEHOLDER_TAG} from './image-provenance.js';
 import {dedupeMedia, mediaKey} from './media-dedupe.js';
 import {placeWatermarks, importWatermark, importTextWatermark, tagTextWatermarks, watermarkName, watermarkTextName, watermarkBox, watermarkOpacity} from './watermark-provenance.js';
 import {placeLogos, importLogo, importLogoPlaceholders, logoName, LOGO_TAG} from './logo-provenance.js';
@@ -1237,13 +1237,12 @@ function nativePictureStretch(picture,bytes,bounds,svg) {
   if(!bounds||!(bounds.w>0&&bounds.h>0)||!metadata||!(metadata.width>0&&metadata.height>0)||metadata.orientation>1) return false;
   if(stretch===undefined||fill?.['a:tile']!==undefined||Number(transform?.rot??0)!==0) return false;
   if([crop,rect].some(value=>value&&['l','r','t','b'].some(key=>Number(value[key]??0)!==0)))return false;
-  // Compare dimensions in native EMUs, without a new geometry tolerance.
+  // Compare the current raster and current native frame, including only the
+  // exporter's representable rounding cells (not a visual geometry tolerance).
   const ext=transform?.['a:ext'];
   const cx=Number(ext?.cx),cy=Number(ext?.cy);
   if(!Number.isFinite(cx)||!Number.isFinite(cy))return false;
-  // Equal-aspect dimensions can round by one EMU when serialized. A dimension
-  // reproduced by rounding the intrinsic ratio is still the same aspect.
-  return Math.round(cx*metadata.height/metadata.width)!==cy&&Math.round(cy*metadata.width/metadata.height)!==cx;
+  return !samePictureAspect(cx,cy,metadata.width,metadata.height);
 }
 
 // Provenance may rebuild flat blocks into groups or scalar fields. Remove only
