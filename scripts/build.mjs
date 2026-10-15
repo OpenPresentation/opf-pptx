@@ -26,6 +26,7 @@ await copyFile(new URL('src/run-colors.js', root), new URL('run-colors.js', dist
 await copyFile(new URL('src/sections.js', root), new URL('sections.js', dist));
 await copyFile(new URL('src/furniture-fields.js', root), new URL('furniture-fields.js', dist));
 await copyFile(new URL('src/native-furniture.js', root), new URL('native-furniture.js', dist));
+await copyFile(new URL('src/native-footer-classification.js', root), new URL('native-footer-classification.js', dist));
 await copyFile(new URL('src/master-furniture.js', root), new URL('master-furniture.js', dist));
 await copyFile(new URL('src/template-layouts.js', root), new URL('template-layouts.js', dist));
 await copyFile(new URL('src/chart-workbook.js', root), new URL('chart-workbook.js', dist));
