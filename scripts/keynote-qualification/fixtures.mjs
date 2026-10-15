@@ -58,12 +58,32 @@ export const routes = {
   ]},
 };
 
-export function outcomeTemplate(route) {
-  if (!Object.hasOwn(routes, route)) throw new Error(`Unknown qualification route: ${route}`);
+// Explicit paired fixture only. The original sourceDeck and sealed 16-case
+// baseline remain unchanged; measured/native modes share this exact source.
+export function bodyDeck(image) {
+  const deck = sourceDeck(image);
+  deck.name = 'Keynote native body comparison';
+  deck.slides[5] = {...deck.slides[5], layout: 'list', items: Array.from({length: 14}, (_, index) => `Agenda item ${index + 1} with a few more words`)};
+  deck.slides.push({layout: 'list', title: 'K17 Flat bullet body', items: ['KN_ORIGINAL_FLAT_LIST', [{text: 'Bold flat item', bold: true}], 'Final flat item.'], notes: 'K17 speaker notes: preserve this sentence.'});
+  return deck;
+}
+
+export function qualificationRoutes(bodyFixture = false) {
+  const result = structuredClone(routes);
+  if (bodyFixture) {
+    for (const route of Object.values(result)) route.expectedSlides++;
+    result['content-edits'].actions.push({id: 'flat-list', slide: 'K17', operation: 'Replace KN_ORIGINAL_FLAT_LIST with KN_EDIT_FLAT_LIST; append KN_NEW_FLAT_ITEM using Return within this same body.', marker: 'KN_EDIT_FLAT_LIST', secondMarker: 'KN_NEW_FLAT_ITEM', oldMarker: 'KN_ORIGINAL_FLAT_LIST', observe: 'One meaningful native body; real bullet controls, added semantic item, wrapping and preserved bold flat item.'});
+  }
+  return result;
+}
+
+export function outcomeTemplate(route, bodyFixture = false) {
+  const definitions = qualificationRoutes(bodyFixture);
+  if (!Object.hasOwn(definitions, route)) throw new Error(`Unknown qualification route: ${route}`);
   return {route, application: {name: 'Keynote', version: null, os: null}, directions: {
     'opf-to-pptx-to-keynote': {status: 'not-run', observations: []},
     'keynote-save-and-reopen': {status: 'not-run', observations: []},
     'keynote-to-pptx': {status: 'not-run', observations: []},
     'keynote-pptx-to-opf': {status: 'not-run', observations: []},
-  }, actions: routes[route].actions.map(action => ({id: action.id, status: 'not-run', evidence: [], observations: []})), nativeAcceptance: false};
+  }, actions: definitions[route].actions.map(action => ({id: action.id, status: 'not-run', evidence: [], observations: []})), nativeAcceptance: false};
 }

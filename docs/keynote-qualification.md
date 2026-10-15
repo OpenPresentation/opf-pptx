@@ -2,6 +2,8 @@
 
 This is a versioned, project-authored baseline pack for the existing PPTX exporter and importer. It generates 16 OPF slides, a PPTX, SVG previews, edit actions and a sealed identity manifest. It does not change export defaults, implement native paragraph/list-body export, produce `.key` files, automate Keynote or establish native acceptance. The opt-in body prototype follows review of this baseline. Direct `.key` generation and advanced effects remain deferred.
 
+An explicit `generate --mode measured|native` selects a separate paired **17-case** fixture for the [unmerged native-body prototype](https://github.com/OpenPresentation/opf-pptx/pull/269). Both modes use exactly the same source: K06 is a real multicolumn flat list and K17 is a supported flat-bullet body. All other original slides stay unchanged. Omitting `--mode` keeps the original 16-case source. Existing sealed suites and attempts are never rewritten.
+
 Use Node 24 and a genuine installed consumer containing matching `@openpresentation/opf`, `opf-render`, `opf-pptx` and `gallery` packages plus the renderer's pinned font peers. The generator records actual installed versions and runtime hashes rather than assuming a release number; generate the accepted baseline again against the final coordinated registry graph. Source, installed-package, registry provenance and native claims remain separate.
 
 ```sh
@@ -59,3 +61,62 @@ node --check scripts/keynote-qualification/pack.mjs
 ```
 
 The tests cover the action/source contract, placeholder and relationship inspection, presentation order independent of part numbering, fresh-copy protection and sealed-file tamper rejection. They use no native application, network or machine fonts. Normal test discovery includes the test automatically. Generated decks and native outputs stay outside tracked source; the fixture generator and actions are maintained here, with no transfer ZIP as a distribution requirement.
+
+## Local prototype comparison
+
+Use a **new normal npm consumer**, with the local prototype packed from clean commit `9f159655df6aa5972a8663b94f5d73142a2c07b8`. Its package version remains `0.20.2`; that version string is not proof of prototype capability. Core `0.20.1`, renderer `0.20.0`, Gallery `3.0.0` and the renderer's exact Google font-peer versions are declared in `scripts/keynote-qualification/candidate-consumer.json`. Install those packages normally from their registry versions plus the ordinary local PPTX tarball. Do not use source aliases, links, version rewrites or edited package metadata.
+
+Under Node 24, with `run` pointing to a new external canonical directory and `runtime` pointing to the clean reviewed prototype checkout:
+
+```sh
+mkdir "$run"
+npm --prefix "$runtime" --cache "$run/npm-cache" ci
+# Run pack from the runtime checkout; its normal prepack build must leave Git clean.
+(cd "$runtime" && npm --cache "$run/npm-cache" pack --pack-destination "$run" --json > "$run/npm-pack.json")
+mkdir "$run/consumer"
+cp scripts/keynote-qualification/candidate-consumer.json "$run/consumer/package.json"
+(cd "$run/consumer" && npm --cache "$run/npm-cache" install --ignore-scripts --no-audit --no-fund)
+node scripts/keynote-qualification/cli.mjs candidate --source "$runtime" --revision 9f159655df6aa5972a8663b94f5d73142a2c07b8 --tarball "$run/openpresentation-opf-pptx-0.20.2.tgz" --consumer "$run/consumer" --output "$run/candidate.json"
+node scripts/keynote-qualification/cli.mjs generate --consumer "$run/consumer" --output "$run-measured" --mode measured --candidate "$run/candidate.json"
+node scripts/keynote-qualification/cli.mjs generate --consumer "$run/consumer" --output "$run-native" --mode native --candidate "$run/candidate.json"
+```
+
+The candidate command checks a clean exact Git head, byte-compares every installed PPTX runtime/vendor file and package manifest to that commit, verifies normal installation and exact control/font pins, and matches the lockfile integrity to the tarball. It writes a fresh receipt with source revision, archive SHA-256/SHA-512, runtime files and consumer lock identity. Generation checks that receipt again. Suites embed the receipt but retain `registryAcceptance: false` and `nativeAcceptance: false`.
+
+Native generation also fails closed unless K02, K03, K05, K07 and K17 contain exactly one actual `body` placeholder holding all source characters in the authored paragraph count, with native wrapping and no autofit. It requires measured output and path-specific `unsupported-list`/`multi-column` fallback diagnostics on K04/K06. An old public exporter silently ignoring `bodyText`, a per-line fake body, partial source text or missing fallback is refused. K17's action replaces a flat entry and inserts a new semantic item with Return; K04/K06 remain explicit unsupported-body controls. These are archive capability checks, separate from actual Keynote controls and edits.
+
+Use `copy` separately for each route and mode. Attempt files record mode, fixture and exact suite hash. Paired content routes expect 17 slides; the new-slide route expects 18. Do not open either candidate in a native application before root reviews its identities, capability reports and preview evidence.
+
+## Reproduce on Windows from Git
+
+The root session owns native PowerPoint actions. The following commands only prepare local artifacts. Use Node 24 and a short, **new** path such as `C:/opf-work/rr86-body-01`; do not alter native fonts. Check out the reviewed qualification-extension branch/commit in a separate short-path repository, then run these PowerShell commands from it:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$run = 'C:/opf-work/rr86-body-01'
+New-Item -ItemType Directory -Path $run | Out-Null
+git clone --config core.autocrlf=false https://github.com/OpenPresentation/opf-pptx.git "$run/runtime"
+if ($LASTEXITCODE) { throw 'Clone failed' }
+git -C "$run/runtime" checkout --detach 9f159655df6aa5972a8663b94f5d73142a2c07b8
+if ($LASTEXITCODE) { throw 'Candidate checkout failed' }
+Push-Location "$run/runtime"
+npm --cache "$run/npm-cache" ci
+if ($LASTEXITCODE) { throw 'Candidate install failed' }
+npm --cache "$run/npm-cache" pack --pack-destination "$run" --json | Set-Content -Encoding utf8 "$run/npm-pack.json"
+if ($LASTEXITCODE) { throw 'Pack failed' }
+Pop-Location
+New-Item -ItemType Directory -Path "$run/consumer" | Out-Null
+Copy-Item scripts/keynote-qualification/candidate-consumer.json "$run/consumer/package.json"
+Push-Location "$run/consumer"
+npm --cache "$run/npm-cache" install --ignore-scripts --no-audit --no-fund
+if ($LASTEXITCODE) { throw 'Consumer install failed' }
+Pop-Location
+node scripts/keynote-qualification/cli.mjs candidate --source "$run/runtime" --revision 9f159655df6aa5972a8663b94f5d73142a2c07b8 --tarball "$run/openpresentation-opf-pptx-0.20.2.tgz" --consumer "$run/consumer" --output "$run/candidate.json"
+if ($LASTEXITCODE) { throw 'Candidate identity refused' }
+node scripts/keynote-qualification/cli.mjs generate --consumer "$run/consumer" --output "$run-measured" --mode measured --candidate "$run/candidate.json"
+if ($LASTEXITCODE) { throw 'Measured suite refused' }
+node scripts/keynote-qualification/cli.mjs generate --consumer "$run/consumer" --output "$run-native" --mode native --candidate "$run/candidate.json"
+if ($LASTEXITCODE) { throw 'Native capability refused' }
+```
+
+The runtime clone keeps tracked text as LF so the source receipt can compare package bytes with Git objects without normalization. Each OS records its own installed runtime, tarball, font and generator hashes. This recipe does not establish cross-platform byte equality, native font selection or native acceptance. Preserve failed preparation attempts and use a fresh numbered directory for a new attempt.
