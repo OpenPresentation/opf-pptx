@@ -220,6 +220,9 @@ export async function toPptx(input, options = {}) {
   if (options.provenance !== undefined && !['full', 'references-only', false].includes(options.provenance)) {
     throw new OPFPptxError('invalid-provenance-option', "provenance must be 'full', 'references-only' or false.", {path: 'options.provenance'});
   }
+  if (options.footerText !== undefined && !['native', 'shape'].includes(options.footerText)) {
+    throw new OPFPptxError('invalid-footer-text-option', "footerText must be 'native' or 'shape'.", {path: 'options.footerText'});
+  }
   // OPF 0.15 (FA-23): the host's registered catalogs (core `Catalog[]`, matched by `source`, never fetched) reach every core
   // call that resolves a reference. Strict export (`strictReferences`, default `strictAssets`) fails on a reference that
   // resolves nowhere instead of composing automatically or drawing with the engine default.
@@ -275,6 +278,7 @@ export async function toPptx(input, options = {}) {
   context.furnitureManifests = new Map();
   context.nativeFurniture = new Map();
   context.nativeFurnitureBands = new Map();
+  context.footerText = options.footerText ?? 'native';
   // RR-72: each slide's furniture parts and the object names of their shapes, for the slide master and layouts.
   context.furnitureParts = [];
   // RR-81: the 0.19 template each slide uses (its native slide layout) and the objects bound to a region placeholder.
@@ -4089,7 +4093,7 @@ async function normalizePptxZip(raw, context) {
   attachFurnitureFields(entries,context.furnitureFields);
   attachFurnitureTags(entries,context.furnitureTags,context.furnitureManifests);
   // RR-11: the recorded footer shapes become PowerPoint's date, footer and slide-number placeholders.
-  context.nativePlaceholders = attachNativePlaceholders(entries,context.nativeFurniture,context.nativeFurnitureBands);
+  context.nativePlaceholders = attachNativePlaceholders(entries,context.nativeFurniture,context.nativeFurnitureBands,context.footerText);
   // The "Image unavailable" panel of an unresolved logo: identity only, so import does not read it as content.
   attachTextTags(entries,context.logoPlaceholderTags,LOGO_TAG,'opfLogoPlaceholder','logo placeholder');
   // opf-pptx#221: the image block of an unavailable-image placeholder, on its panel (full provenance).
