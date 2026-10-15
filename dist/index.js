@@ -1,4 +1,5 @@
 import {nativeBodyReader, joinNativeParagraphs} from './body-text-import.js';
+import {addNativeBody, nativeBodyDefaults, planNativeBody} from './native-body.js';
 import {autoNumScheme, deriveListNumbering, withDisplayedNumbers} from './numbered-list.js';
 import {isFaceStyleSuffix} from './font-weights.js';
 import {importTableFrames} from './table-import.js';
@@ -221,6 +222,9 @@ function checkCatalogs(entry, catalogs) {
 }
 
 export async function toPptx(input, options = {}) {
+  if (options.bodyText !== undefined && !['measured', 'native'].includes(options.bodyText)) {
+    throw new OPFPptxError('invalid-body-text-mode', 'bodyText must be measured or native.', {path: 'options.bodyText'});
+  }
   if (options.imageFormat !== undefined && !['compatible', 'preserve'].includes(options.imageFormat)) {
     throw new OPFPptxError('invalid-image-format', 'imageFormat must be compatible or preserve.', {path: 'options.imageFormat'});
   }
@@ -275,6 +279,7 @@ export async function toPptx(input, options = {}) {
   context.provenanceMode = options.provenance ?? "full";
   context.headingTags = new Map();
   context.plainTextTags = new Map();
+  context.nativeBodies = new Map();
   context.timelineTags = new Map();
   context.quoteTags = new Map();
   context.quotePhotos = new Map();
@@ -873,8 +878,10 @@ function importSlide(entries, slidePath, slideIndex, presentationDimensions, opt
   for (const item of items) if (item.readNativeBody) {
     const current = item.readNativeBody();
     if (current) {
-      item.paragraphs = current.map((paragraph, index) => ({...item.paragraphs[index], ...paragraph}));
+      item.paragraphs = withDisplayedNumbers(current.map((paragraph, index) => ({...item.paragraphs[index], ...paragraph})));
       item.text = current.map(paragraph => paragraph.text).join('\n');
+      if (item.paragraphs.some(paragraph => paragraph.bullet) && item.paragraphs.some(paragraph => !paragraph.bullet))
+        options.onDiagnostic?.({code: 'mixed-body-paragraphs', path: `slides.${slideIndex}`, message: 'A native body mixes bulleted and plain paragraphs; current text is retained as list entries because OPF has no mixed-paragraph body model.'});
     }
   }
   const listRecord = slideListRecord(entries, slidePath, slideRoot, relationships);
@@ -1327,7 +1334,7 @@ function takeTitleItem(items, dimensions, inferHeadings) {
 
   const titleLimit = dimensions.heightInches * 0.28;
   const candidateIndex = items.findIndex((item) => {
-    if (item.heading || item.kind !== "text" || !item.text || item.paragraphs.some(p=>p.bullet)) return false;
+    if (item.heading || item.placeholder === 'body' || item.kind !== "text" || !item.text || item.paragraphs.some(p=>p.bullet)) return false;
     const y = item.bounds?.y ?? 0;
     return y <= titleLimit && (item.maxFontSize >= 20 || /^title\b/i.test(item.name ?? ""));
   });
@@ -1343,7 +1350,7 @@ function takeSubtitleItem(items, titleItem, dimensions, inferHeadings) {
   const titleBottom = (titleItem.bounds?.y ?? 0) + (titleItem.bounds?.h ?? 0);
   const subtitleLimit = Math.min(dimensions.heightInches * 0.34, 1.45);
   const candidateIndex = items.findIndex((item) => {
-    if (item.heading || item.kind !== "text" || !item.text || item.paragraphs.some(p=>p.bullet)) return false;
+    if (item.heading || item.placeholder === 'body' || item.kind !== "text" || !item.text || item.paragraphs.some(p=>p.bullet)) return false;
     const y = item.bounds?.y ?? 0;
     const h = item.bounds?.h ?? 0;
     return y >= titleBottom - 0.05
@@ -2134,9 +2141,12 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
   for (const item of geometry.items) if (item.listColumns?.length > 1 && item.text?.listEntries) item.text = {...item.text, listEntries: item.listColumns.flatMap(column => column.text?.listEntries ?? [])};
   // RR-81: a slide on a 0.19 template uses that template's native slide layout (src/template-layouts.js), whose placeholders
   // core composes with this slide's options (canvas, the deck's header and footer, direction) and its placed-image bands.
-  const template = slideTemplate(slideContext.core);
+  let template = slideTemplate(slideContext.core);
+  const automatic = opfSlide.layout === undefined || opfSlide.layout === 'auto';
+  const nativeBody = options.bodyText === 'native' ? planNativeBody(opfSlide, geometry, {automatic, report: options.onDiagnostic}) : undefined;
+  if (template && nativeBody) template = {...template, key: `${template.key}\u0000native-body:${nativeBody.region}`, nativeBodyRegion: nativeBody.region};
   if (template) context.templateSlides[slideIndex] = {template, areaOptions: {...composeOptions, placements: placedImageBands(opfSlide)}};
-  else if (opfSlide.layout === undefined || opfSlide.layout === 'auto') context.automaticSlides[slideIndex] = {areaOptions: composeOptions, title: geometry.items.find(item => item.field === 'title')};
+  else if (automatic) context.automaticSlides[slideIndex] = {areaOptions: composeOptions, title: geometry.items.find(item => item.field === 'title'), ...(nativeBody ? {nativeBody} : {})};
   // The default footer band (date left, text center, number right): where a footer added natively lands (RR-11).
   if (slideIndex === 0) context.defaultFooterOptions = composeOptions;
   slideContext.zoneBand = zoneBands(composeOptions);
@@ -2157,7 +2167,7 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
 
   for (const diagnostic of geometry.diagnostics) options.onDiagnostic?.(diagnostic);
   // The content topology (groups, regions, root form, block ids) with the leaf boxes this geometry draws.
-  recordContentTopology(context.documentProvenance, opfSlide, slideIndex, geometry.items);
+  recordContentTopology(context.documentProvenance, opfSlide, slideIndex, nativeBody ? geometry.items.map(item => item === nativeBody.item ? {...item, box: nativeBody.box, text: undefined} : item) : geometry.items);
   // Paint order, as in the preview (FA-22 contract): canvas colour, the background picture and its overlay, design.watermark,
   // the logo, then the items in core's order: the headings, the placed image blocks at their bands, then the flowed body.
   if (geometry.backgroundImage) await addBackgroundImage(slide, presentation, geometry.backgroundImage, slideIndex, slideContext, context, options);
@@ -2189,7 +2199,11 @@ async function addSlide(pptx, presentation, authoredSlide, slideIndex, context, 
         rectRadius:8*Math.min(widthInches,heightInches)/720,
         fill:paint(surface),line:{...paint(`#${itemContext.colors.border}`),width:.75},objectName:`OPF card ${item.path}`});
     }
-    if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
+    if (nativeBody?.item === item) {
+      const body = addNativeBody(slide, nativeBody, itemContext, options, {textBoxOptions, nativeFontOptions, exportColor, nativeColor, linkColor, langOptions, solidColorXml});
+      context.nativeBodies.set(body.objectName, body.defaults);
+      context.placeholderBindings.set(body.objectName, {slide: slideIndex, region: nativeBody.region, object: 'body'});
+    } else if(['text','title','subtitle','tag'].includes(item.field)&&(item.text?.placement||item.text?.sourceLines)&&!item.text.richLines) {
       addMeasuredPayloadText(slide,item.value,item.box,itemContext,options,{path:item.path,fit:item.text,textStyle:item.textStyle,sourceText:item.field==='text'&&!!item.text.sourceLines,align:item.alignment,diagnosticsHandled:true,heading:['title','subtitle','tag'].includes(item.field)?item.field:undefined,color:item.field==='tag'?tagColor(itemContext):itemContext.textColor});
     } else if (["title", "subtitle", "tag"].includes(item.field) && !item.text?.richLines) {
       // Estimated-font headings use one native text box, which still needs a
@@ -4503,6 +4517,7 @@ function normalizePartBytes(path, bytes, context, renameMaps, entries, imageMeta
         const content=body.replace(/<a:pPr\b[^>]*(?:\/>|>[\s\S]*?<\/a:pPr>)/g,node=>{properties ||= node;return '';});
         return `<a:p>${properties}${content}</a:p>`;
       });
+      xml = nativeBodyDefaults(xml, context.nativeBodies);
     }
     // theme1.xml: FF-24 colors and names above, then FF-07 fonts here; they touch disjoint elements.
     if (context.scriptFonts) xml = partScriptFonts(path, xml, context.scriptFonts, context.partSlides.get(path) ?? 0);

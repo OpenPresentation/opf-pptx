@@ -82,6 +82,12 @@ export function nativeBodyReader(slidePath, archive, relationships, report, extr
       const content = paragraph['a:p'], pPr = drawingObject(child(content, 'a:pPr'));
       const level = Number(nodes(content, 'a:pPr')[0]?.[':@']?.lvl ?? 0) + 1;
       const defaults = mergeNativeRunProperties(listStyle['a:defPPr']?.['a:defRPr'], listStyle[`a:lvl${level}pPr`]?.['a:defRPr'], pPr['a:defRPr']);
+      // A paragraph typed into a native body can inherit its bullet from the
+      // shape's own list style. A local buNone explicitly cancels that default.
+      const bulletProperties = [pPr, listStyle[`a:lvl${level}pPr`], listStyle['a:defPPr']]
+        .find(properties => properties && ['a:buNone', 'a:buChar', 'a:buBlip', 'a:buAutoNum'].some(key => Object.hasOwn(properties, key)));
+      const membership = bulletProperties ? {bullet: !Object.hasOwn(bulletProperties, 'a:buNone'), level: level - 1,
+        ...(bulletProperties['a:buAutoNum'] ? {autoNum: {type: bulletProperties['a:buAutoNum'].type, startAt: bulletProperties['a:buAutoNum'].startAt}} : {})} : {};
       const runs = [];
       let runIndex = 0;
       for (const node of content) {
@@ -95,7 +101,7 @@ export function nativeBodyReader(slidePath, archive, relationships, report, extr
         const style = bodyRunStyle(properties, context, relationships, (code, message) => { if (!(phrase && code === 'unsupported-body-font')) report({code,message,path}); }, phrase ? {...extras, deckLang: undefined} : extras);
         if (current) runs.push(Object.keys(style).length ? {text:current,...style} : current);
       }
-      return {text:runs.map(run => typeof run === 'string' ? run : run.text).join(''), richText:value(runs)};
+      return {text:runs.map(run => typeof run === 'string' ? run : run.text).join(''), richText:value(runs), ...membership};
     });
   };
 }
