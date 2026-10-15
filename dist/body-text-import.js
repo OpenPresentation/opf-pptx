@@ -13,6 +13,35 @@ const text = tree => (tree ?? []).map(node => node['#text'] ?? '').join('');
 const shapes = tree => [...nodes(tree, 'p:sp').map(node => node['p:sp']), ...nodes(tree, 'p:grpSp').flatMap(node => shapes(node['p:grpSp']))];
 const LATIN_ONLY = /^[\p{Script=Latin}\p{N}\p{P}\p{S}\p{Z}]*$/u;
 const value = runs => runs.some(run => typeof run !== 'string') ? runs : runs.join('');
+const array = value => value === undefined ? [] : Array.isArray(value) ? value : [value];
+const bulletKeys = ['a:buNone', 'a:buChar', 'a:buBlip', 'a:buAutoNum'];
+
+// Only current, unambiguous body-placeholder bindings can inherit membership.
+// Ordinary text boxes never become lists merely because the master has bullets.
+function bodyBulletStyles(shape, context, archive, slidePath) {
+  const ph = drawingObject(child(shape, 'p:nvSpPr'))['p:nvPr']?.['p:ph'];
+  if (!ph || Array.isArray(ph) || ph.type !== 'body') return [];
+  const placeholder = (root, reference) => {
+    const candidates = array(root?.['p:cSld']?.['p:spTree']?.['p:sp']).filter(shape => {
+      const current = shape['p:nvSpPr']?.['p:nvPr']?.['p:ph'];
+      return current && !Array.isArray(current) && current.type === 'body' && String(current.idx ?? '0') === String(reference.idx ?? '0');
+    });
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
+  const related = (part, type) => [...archive.relationships(part).values()].filter(rel => rel.type.endsWith('/' + type));
+  const layouts = related(slidePath, 'slideLayout');
+  if (layouts.length !== 1 || layouts[0].targetMode === 'External') return [];
+  const masters = related(layouts[0].path, 'slideMaster');
+  if (masters.length !== 1 || masters[0].targetMode === 'External') return [];
+  const layout = context.chain.find(part => part.path === layouts[0].path)?.root;
+  const master = context.chain.find(part => part.path === masters[0].path)?.root;
+  if (!layout || !master) return [];
+  const layoutShape = placeholder(layout, ph);
+  if (!layoutShape) return [];
+  const masterShape = placeholder(master, layoutShape['p:nvSpPr']['p:nvPr']['p:ph']);
+  if (!masterShape) return [];
+  return [layoutShape['p:txBody']?.['a:lstStyle'], masterShape?.['p:txBody']?.['a:lstStyle'], master['p:txStyles']?.['p:bodyStyle']];
+}
 export const joinNativeParagraphs = paragraphs => value(paragraphs.flatMap((paragraph, index) => [
   ...(index ? ['\n'] : []), ...(Array.isArray(paragraph.richText) ? paragraph.richText : [paragraph.richText ?? paragraph.text])
 ]));
@@ -68,12 +97,14 @@ function bodyRunStyle(properties, context, relationships, report, extras = {}) {
 }
 
 export function nativeBodyReader(slidePath, archive, relationships, report, extras = {}) {
-  let bodies, context;
+  let bodies, context, inheritedBullets;
   return index => {
     if (!bodies) {
       const tree = archive.part(slidePath, parser);
-      bodies = shapes(child(child(child(tree, 'p:sld'), 'p:cSld'), 'p:spTree')).map(shape => child(shape, 'p:txBody'));
+      const currentShapes = shapes(child(child(child(tree, 'p:sld'), 'p:cSld'), 'p:spTree'));
+      bodies = currentShapes.map(shape => child(shape, 'p:txBody'));
       context = readSlideTheme(slidePath, archive);
+      inheritedBullets = currentShapes.map(shape => bodyBulletStyles(shape, context, archive, slidePath));
     }
     const body = bodies[index];
     if (!body) return undefined;
@@ -82,10 +113,13 @@ export function nativeBodyReader(slidePath, archive, relationships, report, extr
       const content = paragraph['a:p'], pPr = drawingObject(child(content, 'a:pPr'));
       const level = Number(nodes(content, 'a:pPr')[0]?.[':@']?.lvl ?? 0) + 1;
       const defaults = mergeNativeRunProperties(listStyle['a:defPPr']?.['a:defRPr'], listStyle[`a:lvl${level}pPr`]?.['a:defRPr'], pPr['a:defRPr']);
-      // A paragraph typed into a native body can inherit its bullet from the
-      // shape's own list style. A local buNone explicitly cancels that default.
-      const bulletProperties = [pPr, listStyle[`a:lvl${level}pPr`], listStyle['a:defPPr']]
-        .find(properties => properties && ['a:buNone', 'a:buChar', 'a:buBlip', 'a:buAutoNum'].some(key => Object.hasOwn(properties, key)));
+      // Membership alone follows native paragraph/shape/layout/master precedence.
+      // Run typography remains on its existing path. A local buNone cancels all
+      // inherited bullets; missing bindings never recover stored source words.
+      const inherited = Number.isInteger(level) && level >= 1 && level <= 9 ? inheritedBullets[index] : [];
+      const bulletProperties = [pPr, listStyle[`a:lvl${level}pPr`], listStyle['a:defPPr'],
+        ...inherited.flatMap(style => [style?.[`a:lvl${level}pPr`], style?.['a:defPPr']])]
+        .find(properties => properties && !Array.isArray(properties) && bulletKeys.some(key => Object.hasOwn(properties, key)));
       const membership = bulletProperties ? {bullet: !Object.hasOwn(bulletProperties, 'a:buNone'), level: level - 1,
         ...(bulletProperties['a:buAutoNum'] ? {autoNum: {type: bulletProperties['a:buAutoNum'].type, startAt: bulletProperties['a:buAutoNum'].startAt}} : {})} : {};
       const runs = [];
