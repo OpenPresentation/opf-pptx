@@ -93,13 +93,15 @@ assert.deepEqual(inspection.slides[1].notes, ['KN_EDIT_NOTES']);
 assert.throws(() => inspectArchive(archive({...parts, 'ppt/slides/_rels/slide1.xml.rels': relationships([['chart', 'chart', '../missing.xml']])}), engine), /Missing relationship target/);
 assert.throws(() => inspectArchive(archive({...parts, 'ppt/slides/slide2.xml': '<p:sld>'}), engine), /Invalid XML/);
 
-const observed = {nativeChartCount: 2, nativeTableCount: 2, slides: deck.slides.map(slide => ({marker: slide.title.slice(0, 3), text: [slide.title], notes: [slide.notes], charts: []}))};
+const semantic = text => ({objects: [{name: 'authored', placeholderRole: null, paragraphs: [text], fields: {}}], fields: {}});
+const observed = {nativeChartCount: 2, nativeTableCount: 2, slides: deck.slides.map(slide => ({marker: slide.title.slice(0, 3), text: [slide.title], notes: [slide.notes], charts: [], textSemantics: semantic(slide.title), notesSemantics: semantic(slide.notes)}))};
 assert.deepEqual(nativeFindings(observed, 'no-op', observed), []);
 const removed = structuredClone(observed); removed.slides.pop(); removed.nativeChartCount = 0;
 assert.ok(nativeFindings(removed, 'no-op', observed).some(value => value.includes('K16')));
 assert.ok(nativeFindings(removed, 'no-op', observed).some(value => value.includes('native chart')));
 const changed = structuredClone(observed); changed.slides[1].text.push('stale changed text');
-assert.ok(nativeFindings(changed, 'no-op', observed).some(value => value.includes('visible text changed')));
+changed.slides[1].textSemantics.objects[0].paragraphs.push('stale changed text');
+assert.ok(nativeFindings(changed, 'no-op', observed).some(value => value.includes('ordered authored text changed')));
 assert.ok(nativeFindings(observed, 'content-edits', observed).some(value => value.includes('edited notes missing')));
 assert.ok(nativeFindings(observed, 'content-edits', observed).some(value => value.includes('chart series/category/value cache missing')));
 assert.ok(nativeFindings(observed, 'layout-structure', observed).some(value => value.includes('K14 must immediately follow')));

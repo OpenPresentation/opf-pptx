@@ -166,10 +166,63 @@ const deep = (node, key) => {
 };
 const texts = node => deep(node, 'a:t').map(value => typeof value === 'object' ? value['#text'] ?? '' : String(value));
 
+// Keep XML paragraph/run order. Field caches are display values, not authored words.
+const orderedNodes = (entries, tag) => array(entries).flatMap(entry => !entry || typeof entry !== 'object' ? [] : Object.entries(entry).flatMap(([name, children]) => name === tag ? [entry] : name === ':@' ? [] : orderedNodes(children, tag)));
+const orderedWords = entries => array(entries).map(entry => {
+  if (!entry || typeof entry !== 'object') return '';
+  if (Object.hasOwn(entry, 'a:fld')) return '';
+  if (Object.hasOwn(entry, '#text')) return String(entry['#text']);
+  if (Object.hasOwn(entry, 'a:br')) return '\n';
+  return Object.entries(entry).filter(([name]) => name !== ':@').map(([, children]) => orderedWords(children)).join('');
+}).join('');
+const fieldCounts = entries => {
+  const result = {};
+  for (const entry of orderedNodes(entries, 'a:fld')) {const type = entry[':@']?.type ?? '(missing type)'; result[type] = (result[type] ?? 0) + 1;}
+  return result;
+};
+export function textSemantics(entries) {
+  const objects = [];
+  const visit = entries => {
+    for (const entry of array(entries)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const tag = ['p:sp', 'p:graphicFrame', 'p:pic'].find(tag => Object.hasOwn(entry, tag));
+      if (tag) {
+        const children = entry[tag];
+        objects.push({kind: tag, name: orderedNodes(children, 'p:cNvPr')[0]?.[':@']?.name ?? null,
+          placeholderRole: orderedNodes(children, 'p:ph')[0]?.[':@']?.type ?? null,
+          paragraphs: orderedNodes(children, 'a:p').map(paragraph => orderedWords(paragraph['a:p'])), fields: fieldCounts(children)});
+      } else if (Object.hasOwn(entry, 'a:p')) objects.push({kind: 'a:p', name: null, placeholderRole: null, paragraphs: [orderedWords(entry['a:p'])], fields: fieldCounts(entry['a:p'])});
+      else for (const [name, children] of Object.entries(entry)) if (name !== ':@') visit(children);
+    }
+  };
+  visit(entries); return {objects, fields: fieldCounts(entries)};
+}
+
+const furnitureRoles = new Set(['ftr', 'hdr', 'dt', 'sldNum']);
+const normalizedWords = paragraphs => paragraphs.join('\n').replace(/\s+/g, ' ').trim();
+const furnitureKey = object => object.name ?? `placeholder:${object.placeholderRole}`;
+export function compareNoopText(actual, baseline, label) {
+  assert.ok(actual && baseline, 'No-op comparison requires semantic XML inventories');
+  const knownFurniture = new Set(baseline.objects.filter(object => furnitureRoles.has(object.placeholderRole)).map(furnitureKey));
+  const isFurniture = object => furnitureRoles.has(object.placeholderRole) || knownFurniture.has(furnitureKey(object));
+  const body = inventory => normalizedWords(inventory.objects.filter(object => !isFurniture(object)).flatMap(object => object.paragraphs));
+  const literal = inventory => inventory.objects.filter(isFurniture).map(object => ({identity: furnitureKey(object), text: normalizedWords(object.paragraphs)})).filter(object => object.text);
+  const failures = [];
+  if (body(actual) !== body(baseline)) failures.push(`${label}: no-op ordered authored text changed`);
+  const before = literal(baseline), after = literal(actual);
+  // Furniture paint order may change; object identity, multiplicity and literal words must not.
+  const identities = new Set([...before, ...after].map(object => object.identity));
+  for (const identity of identities) if (!isDeepStrictEqual(after.filter(object => object.identity === identity), before.filter(object => object.identity === identity))) failures.push(`${label}: no-op literal furniture changed (${identity})`);
+  if (!isDeepStrictEqual(actual.fields, baseline.fields)) failures.push(`${label}: no-op dynamic field types/counts changed`);
+  return failures;
+}
+
 export function inspectArchive(bytes, engine) {
   const parts = engine.fflate.unzipSync(bytes), {XMLParser, XMLValidator} = engine.xml;
   const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false});
+  const orderedParser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false, preserveOrder: true});
   const xml = name => {assert.ok(parts[name], `Missing part: ${name}`); const value = engine.fflate.strFromU8(parts[name]); assert.equal(XMLValidator.validate(value), true, `Invalid XML: ${name}`); return parser.parse(value);};
+  const semantics = name => textSemantics(orderedParser.parse(engine.fflate.strFromU8(parts[name])));
   const relations = source => {
     const file = path.posix.join(path.posix.dirname(source), '_rels', path.posix.basename(source) + '.rels');
     if (!parts[file]) return [];
@@ -201,7 +254,7 @@ export function inspectArchive(bytes, engine) {
     });
     const notes = links.find(rel => rel.Type.endsWith('/notesSlide'))?.part;
     const pictures = deep(content, 'p:pic').map(picture => {const blip = deep(picture, 'a:blip')[0], part = links.find(rel => rel.Id === blip?.['r:embed'])?.part; return {part, sha256: part ? hash(parts[part]) : null, crop: deep(picture, 'a:srcRect')};});
-    return {number: index + 1, part: file, text, marker: text.join(' ').match(/\bK\d{2}\b/)?.[0] ?? null, shapes, pictures, charts, tables: deep(content, 'a:tbl').map(table => ({rows: array(table['a:tr']).map(row => array(row['a:tc']).map(texts))})), notes: notes ? texts(xml(notes)) : []};
+    return {number: index + 1, part: file, text, marker: text.join(' ').match(/\bK\d{2}\b/)?.[0] ?? null, shapes, pictures, charts, tables: deep(content, 'a:tbl').map(table => ({rows: array(table['a:tr']).map(row => array(row['a:tc']).map(texts))})), notes: notes ? texts(xml(notes)) : [], textSemantics: semantics(file), notesSemantics: notes ? semantics(notes) : {objects: [], fields: {}}};
   });
   const layouts = Object.keys(parts).filter(name => /^ppt\/(?:slideLayouts|slideMasters)\/[^/]+\.xml$/.test(name)).sort().map(part => ({part, placeholders: deep(xml(part), 'p:ph')}));
   return {slides, layouts, nativeChartCount: slides.reduce((count, slide) => count + slide.charts.length, 0), nativeTableCount: slides.reduce((count, slide) => count + slide.tables.length, 0), archiveParts: Object.keys(parts).length};
@@ -277,11 +330,12 @@ export function nativeFindings(inspection, route, baseline, bodyFixture = false)
   }
   if (route === 'layout-structure') check(inspection.slides.findIndex(slide => slide.marker === 'K14') === inspection.slides.findIndex(slide => slide.marker === 'K15') + 1, 'K14 must immediately follow K15');
   if (route === 'no-op' && baseline) {
-    const normalized = lines => lines.join(' ').replace(/\s+/g, ' ').trim();
     for (const source of baseline.slides) {
       const actual = inspection.slides.find(slide => slide.marker === source.marker);
-      check(actual && normalized(actual.text) === normalized(source.text), `${source.marker}: no-op visible text changed (whitespace-normalized comparison)`);
-      check(actual && normalized(actual.notes) === normalized(source.notes), `${source.marker}: no-op notes changed (whitespace-normalized comparison)`);
+      if (actual) {
+        failures.push(...compareNoopText(actual.textSemantics, source.textSemantics, source.marker));
+        failures.push(...compareNoopText(actual.notesSemantics, source.notesSemantics, `${source.marker} notes`));
+      }
     }
   }
   return failures;
@@ -323,20 +377,41 @@ export function importedFindings(imported, route, bodyFixture = false) {
   return failures;
 }
 
+export function importedFurnitureFindings(imported, source, baseline) {
+  const failures = [];
+  for (const original of baseline.slides) {
+    const authored = source.slides.find(slide => slide.title?.startsWith(original.marker));
+    const current = imported.slides?.find(slide => currentSlideText(slide).match(/\bK\d{2}\b/)?.[0] === original.marker);
+    for (const object of original.textSemantics.objects.filter(object => furnitureRoles.has(object.placeholderRole))) {
+      const literal = normalizedWords(object.paragraphs);
+      // Only diagnose unambiguous fixture furniture. Never delete or classify imported words by matching text.
+      if (literal && !currentSlideText(authored).includes(literal) && currentSlideText(current).includes(literal)) failures.push(`${original.marker}: literal furniture appears in current imported slide content (${furnitureKey(object)})`);
+    }
+  }
+  return failures;
+}
+
 export async function inspectNative({suite: directory, consumer, input, route, output}) {
   const {root, suite} = await verifySeal(directory); assert.ok(Object.hasOwn(routes, route), 'Unknown route');
   const engine = await installed(consumer), target = await fresh(output, [root, engine.consumer]);
   assert.deepEqual(engine.packages.map(({name, version, sha256}) => ({name, version, sha256})), suite.runtime.packages.map(({name, version, sha256}) => ({name, version, sha256})), 'Inspection consumer differs from the sealed installed runtime');
-  const bytes = await readFile(input), inspection = inspectArchive(bytes, engine), baseline = JSON.parse(await readFile(path.join(root, 'inspection/source-archive.json')));
+  const bytes = await readFile(input), inspection = inspectArchive(bytes, engine), baseline = inspectArchive(await readFile(path.join(root, 'inputs/deck.pptx')), engine);
   const bodyFixture = suite.fixture === 'body-17';
   const failures = nativeFindings(inspection, route, baseline, bodyFixture);
   const diagnostics = [], imported = await engine.pptx.fromPptx(bytes, {catalogs: [engine.gallery], onDiagnostic: value => diagnostics.push(value)});
   failures.push(...importedFindings(imported, route, bodyFixture));
+  if (route === 'no-op') failures.push(...importedFurnitureFindings(imported, JSON.parse(await readFile(path.join(root, 'sources/deck.opf.json'))), baseline));
   if (route === 'content-edits') {
     const replacement = hash(await readFile(path.join(root, 'assets/replacement.png'))), actual = inspection.slides.find(slide => slide.marker === 'K08');
     if (!actual?.pictures.some(picture => picture.sha256 === replacement)) failures.push('replace-image: replacement media bytes missing from current slide');
   }
-  const report = {scope: 'Offline inspection of the actual native-exported PPTX; no UI, font, raster or native acceptance claim.', route, input: {file: path.resolve(input), bytes: bytes.length, sha256: hash(bytes)}, packages: engine.packages, inspection, failures, staticAssertionsPassed: failures.length === 0, nativeAcceptance: false};
+  const noOpTopology = route === 'no-op' ? baseline.slides.map(before => {
+    const after = inspection.slides.find(slide => slide.marker === before.marker);
+    const furniture = inventory => inventory.objects.filter(object => before.textSemantics.objects.some(original => furnitureRoles.has(original.placeholderRole) && furnitureKey(original) === furnitureKey(object))).map(({name, placeholderRole}) => ({name, placeholderRole}));
+    const paintOrder = inventory => inventory.objects.map(({kind, name}) => ({kind, name}));
+    return {marker: before.marker, slideFields: {before: before.textSemantics.fields, after: after?.textSemantics.fields ?? null}, notesFields: {before: before.notesSemantics.fields, after: after?.notesSemantics.fields ?? null}, furnitureRoles: {before: furniture(before.textSemantics), after: after ? furniture(after.textSemantics) : []}, objectPaintOrder: {before: paintOrder(before.textSemantics), after: after ? paintOrder(after.textSemantics) : []}};
+  }) : undefined;
+  const report = {scope: 'Offline inspection of the actual native-exported PPTX; no UI, font, raster or native acceptance claim.', route, input: {file: path.resolve(input), bytes: bytes.length, sha256: hash(bytes)}, packages: engine.packages, inspection, ...(noOpTopology ? {noOpTopology} : {}), failures, staticAssertionsPassed: failures.length === 0, nativeAcceptance: false};
   await writeFile(path.join(target, 'inspection.json'), json(report), {flag: 'wx'});
   await writeFile(path.join(target, 'imported.opf.json'), json(imported), {flag: 'wx'});
   await writeFile(path.join(target, 'import-diagnostics.json'), json(diagnostics), {flag: 'wx'});
