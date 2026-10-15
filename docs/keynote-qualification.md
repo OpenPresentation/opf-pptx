@@ -52,6 +52,10 @@ node scripts/keynote-qualification/cli.mjs inspect --suite /absolute/new-keynote
 
 Repeat with the corresponding route for each output. This writes new `inspection.json`, `imported.opf.json` and import diagnostics. It validates XML, package relationship targets, native chart/table presence, slide ordering, marker text, notes and edited chart cache. It retains actual shape/placeholder/paragraph inventories and picture/crop hashes for independent review. Assertions are static and do not establish native geometry, glyph/font, baseline or pixel parity. The output always keeps `nativeAcceptance: false`; the supervisor reviews this inspection together with actual UI evidence and the directional result file.
 
+For no-op comparisons, paragraph/run words remain in XML order. Literal furniture is identified by its baseline placeholder role and exact retained object name, then checked separately for identity, multiplicity and literal text; its paint order is not treated as authored word order. Dynamic field types/counts are checked independently of cached display text. Speaker notes body words remain required, while notes-page generated-field removal is a distinct topology finding. The inspector reparses the sealed input with the current semantic reader, so older sealed inventories need no rewriting. `noOpTopology` records before/after field counts, furniture roles and object paint order; it does not assert visual equivalence.
+
+The retained project-authored Keynote 15.1.1 no-op pair in `test/fixtures/keynote-noop/` demonstrates why this matters: body/notes words remain intact, slide-number fields survive without cached text, all sixteen notes-page number fields disappear, and literal footers lose their `ftr` role. The current importer returns those literal footers as content blocks; inspection reports that real import gap separately. Native footer visibility and layering remain separate UI findings even when literal footer words compare equal. The original scratch inspection's 32 text-comparison failures are preserved unchanged.
+
 ## Portable checks
 
 ```sh
