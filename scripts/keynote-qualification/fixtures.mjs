@@ -1,13 +1,22 @@
 // Project-authored fixtures. Native actions are instructions for the supervisor, never executable document content.
+export const fixtureFontPolicy = {
+  selected: 'Arial', previewAlias: 'Arimo', variants: ['regular', 'bold', 'italic', 'bold-italic'],
+  nativeFileObservations: {
+    scope: 'Root-reported 2026-10-15 preflight facts; generator does not inspect, install or register native fonts.',
+    macOS: {regularSha256: '525979822591a3447cfc49d943d6f7683508e25543407871c0ed8fed05fd2bd9'},
+    windows: {regularSha256: 'b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a'},
+  },
+  limits: 'File presence does not prove identical font versions, physical per-glyph selection, geometry or raster parity. Proprietary Arial files are never bundled.',
+};
 export function sourceDeck(image) {
   const slide = (id, fields) => ({...fields, notes: `${id} speaker notes: preserve this sentence.`});
   return {
     name: 'Keynote qualification', language: 'en-US',
-    design: {fontScheme: 'roboto', dimensions: 'widescreen', footer: {left: {text: 'Keynote qualification'}, right: {text: '{{slide.number}}'}}},
+    design: {fontScheme: {major: 'Arial', minor: 'Arial'}, dimensions: 'widescreen', footer: {left: {text: 'Keynote qualification'}, right: {text: '{{slide.number}}'}}},
     slides: [
       slide('K01', {layout: 'cover', title: 'Title and subtitle', subtitle: 'Native layout baseline'}),
       slide('K02', {layout: 'text', title: 'Paragraph editing', text: 'KN_ORIGINAL_PARAGRAPH. Keep this second sentence.\nA second authored paragraph.'}),
-      slide('K03', {layout: 'text', title: 'Rich text', text: [{text: 'Bold words', bold: true}, ' and ', {text: 'italic words', italic: true}, '\nA second rich paragraph.']}),
+      slide('K03', {layout: 'text', title: 'Rich text', text: [{text: 'Bold words', bold: true}, ' and ', {text: 'italic words', italic: true}, ' and ', {text: 'bold italic words', bold: true, italic: true}, '\nA second rich paragraph.']}),
       slide('K04', {layout: 'text', title: 'List editing', items: ['KN_ORIGINAL_LIST', {text: 'Parent item', description: 'Description remains attached.'}, {text: 'Nested child', level: 1}, 'Final item']}),
       slide('K05', {layout: 'text', title: 'Long paragraph', text: 'A native editor should preserve words, spacing and paragraph boundaries while a user edits the content. '.repeat(10)}),
       slide('K06', {layout: 'text', title: 'Long list', items: ['A list item whose words wrap across more than one visual line while retaining its semantic item boundary. '.repeat(2), 'Second item remains independent.', {text: 'Third item', description: 'The description wraps separately from the item title and remains editable.'}]}),

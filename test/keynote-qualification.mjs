@@ -3,7 +3,7 @@ import {mkdtemp, mkdir, readFile, writeFile, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
-import {sourceDeck, routes, outcomeTemplate} from '../scripts/keynote-qualification/fixtures.mjs';
+import {sourceDeck, routes, outcomeTemplate, fixtureFontPolicy} from '../scripts/keynote-qualification/fixtures.mjs';
 import {hash, inspectArchive, nativeFindings, importedFindings, currentSlideText, verifySeal, prepareCopy} from '../scripts/keynote-qualification/pack.mjs';
 
 const resolver = createRequire(path.join(process.env.OPF_KEYNOTE_TEST_CONSUMER ?? process.cwd(), 'package.json'));
@@ -14,6 +14,10 @@ assert.equal(deck.slides.length, 16);
 assert.deepEqual(deck.slides.map(slide => slide.title.match(/^K\d{2}/)[0]), Array.from({length: 16}, (_, index) => `K${String(index + 1).padStart(2, '0')}`));
 assert.ok(deck.slides.every(slide => slide.notes.includes('preserve this sentence')));
 assert.equal(deck.design.footer.right.text, '{{slide.number}}');
+assert.deepEqual(deck.design.fontScheme, {major: 'Arial', minor: 'Arial'}, 'Both authored title and body select Arial, avoiding Arial Black catalog headings');
+assert.equal(fixtureFontPolicy.previewAlias, 'Arimo');
+assert.equal(fixtureFontPolicy.variants.length, 4);
+assert.ok(deck.slides[2].text.some(run => run.bold && run.italic), 'The rich-text control exercises bold italic as well as individual styles');
 for (const route of Object.keys(routes)) {
   const result = outcomeTemplate(route);
   assert.equal(Object.keys(result.directions).length, 4);
