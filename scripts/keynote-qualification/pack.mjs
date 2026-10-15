@@ -425,6 +425,10 @@ export function nativeFindings(inspection, route, baseline, bodyFixture = false)
     if (action.oldMarker) check(!text.includes(action.oldMarker), `${action.id}: replaced old text remains`);
     if (action.notesMarker) check(slide?.notes.join(' ').includes(action.notesMarker), `${action.id}: edited notes missing`);
     if (action.chartSeries) check(slide?.charts.some(chart => chart.series?.some(series => isDeepStrictEqual(series, action.chartSeries))), `${action.id}: edited native chart series/category/value cache missing or unrelated points changed`);
+    if (Object.hasOwn(editedTableCells, action.id)) {
+      const [row, column] = editedTableCells[action.id];
+      check(slide?.tables?.length === 1 && inlineText(slide.tables[0].rows?.[row + 1]?.[column]).includes(action.marker), `${action.id}: edited marker missing from expected current native table body cell (${row},${column})`);
+    }
   }
   if (route === 'layout-structure') check(inspection.slides.findIndex(slide => slide.marker === 'K14') === inspection.slides.findIndex(slide => slide.marker === 'K15') + 1, 'K14 must immediately follow K15');
   if (route === 'no-op' && baseline) {
@@ -440,13 +444,21 @@ export function nativeFindings(inspection, route, baseline, bodyFixture = false)
 }
 
 const inlineText = value => typeof value === 'string' || typeof value === 'number' ? String(value) : Array.isArray(value) ? value.map(inlineText).join('') : value && typeof value === 'object' ? inlineText(value.text) : '';
+// Read only the current cell's display payload. Style, source/evidence and extension values are not cell words.
+const tableCellText = cell => {
+  const value = cell && typeof cell === 'object' && !Array.isArray(cell) && Object.hasOwn(cell, 'value') ? cell.value : cell;
+  return typeof value === 'boolean' ? String(value) : inlineText(value);
+};
+// Existing maintained actions identify these exact body cells; native XML also includes the header row.
+const editedTableCells = {'table-cell': [0, 0], 'table-style': [0, 1]};
+const currentTables = node => node ? [...(node.table ? [node.table] : []), ...array(node.blocks).flatMap(currentTables)] : [];
 // Only current authored slide fields count. Never search serialized provenance, catalogs, extensions or other slides.
 export function currentSlideText(slide) {
   if (!slide || typeof slide !== 'object') return '';
   const values = ['title', 'subtitle', 'tag', 'text'].map(field => inlineText(slide[field]));
   values.push(...array(slide.items).map(item => typeof item === 'object' && !Array.isArray(item) ? `${inlineText(item.text)} ${inlineText(item.description)}` : inlineText(item)));
   if (slide.metric !== undefined) values.push(typeof slide.metric === 'object' ? ['value', 'unit', 'label', 'description', 'delta', 'trend'].map(field => inlineText(slide.metric[field])).join(' ') : inlineText(slide.metric));
-  if (slide.table) values.push(...[slide.table.columns, ...array(slide.table.rows)].flatMap(row => array(row).map(inlineText)));
+  if (slide.table) values.push(...[slide.table.columns, ...array(slide.table.rows)].flatMap(row => array(row).map(tableCellText)));
   values.push(...array(slide.blocks).map(currentSlideText));
   return values.filter(Boolean).join(' ');
 }
@@ -462,6 +474,10 @@ export function importedFindings(imported, route, bodyFixture = false) {
     if (action.secondMarker && !text.includes(action.secondMarker)) failures.push(`${action.id}: new body missing from the same current imported slide`);
     if (action.oldMarker && text.includes(action.oldMarker)) failures.push(`${action.id}: replaced old text resurrected in current imported slide`);
     if (action.notesMarker && !inlineText(slide?.notes).includes(action.notesMarker)) failures.push(`${action.id}: edited marker missing from current imported notes`);
+    if (Object.hasOwn(editedTableCells, action.id)) {
+      const tables = currentTables(slide), [row, column] = editedTableCells[action.id];
+      if (tables.length !== 1 || !tableCellText(tables[0].rows?.[row]?.[column]).includes(action.marker)) failures.push(`${action.id}: edited marker missing from expected current imported table body cell (${row},${column})`);
+    }
     if (action.chartSeries) {
       const charts = node => node ? [...(node.chart ? [node.chart] : []), ...array(node.blocks).flatMap(charts)] : [];
       const expected = action.chartSeries;
