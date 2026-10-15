@@ -476,7 +476,7 @@ export async function fromPptx(input, options = {}) {
         return match ? shapeBounds(match['p:spPr']?.['a:xfrm']) ?? undefined : undefined;
       } : undefined,
       // RR-11: native footer placeholders resolve their position through the layout and master.
-      path: slidePath, slideWidth: Number(presentationRoot['p:sldSz']?.cx), relationshipsOf: cachedRelationships, readPart: cachedPart,
+      path: slidePath, slideWidth: Number(presentationRoot['p:sldSz']?.cx), slideHeight: Number(presentationRoot['p:sldSz']?.cy), defaultTextStyle: presentationRoot['p:defaultTextStyle'], relationshipsOf: cachedRelationships, readPart: cachedPart,
       paragraphs: nativeShapeParagraphs(decodeText(entries[slidePath])),
       readPicture: picture => importPicture(entries, picture, slidePath, relationships,
         diagnostic => options.onDiagnostic?.({...diagnostic, path: `slides.${index}.design`})),
