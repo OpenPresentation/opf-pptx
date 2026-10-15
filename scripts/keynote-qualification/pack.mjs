@@ -6,7 +6,7 @@ import {lstat, mkdir, readFile, readdir, realpath, writeFile, copyFile, constant
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
-import {sourceDeck, routes, outcomeTemplate} from './fixtures.mjs';
+import {sourceDeck, routes, outcomeTemplate, fixtureFontPolicy} from './fixtures.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
@@ -133,10 +133,15 @@ export async function generate({consumer, output}) {
   const validation = engine.core.validate(source, {catalogs: [engine.gallery], only: ['format', 'references']}); assert.ok(validation.valid, JSON.stringify(validation.findings));
   const diagnostics = [], fonts = await engine.fonts.loadFonts({pack: 'office'});
   await fonts.ensure(source, {renderOptions: {catalogs: [engine.gallery]}, onDiagnostic: value => diagnostics.push(value)});
+  const previewFaces = [400, 700].flatMap(fontWeight => [false, true].map(italic => fonts.registry.resolveFont({fontFamily: fixtureFontPolicy.selected, fontWeight, italic})));
+  assert.ok(previewFaces.every(face => face.requestedFamily === 'Arial' && face.resolvedFamily === 'Arimo'), 'Selected Arial must use the normal licensed Arimo preview alias for all four styles');
   const options = {catalogs: [engine.gallery], fonts, seed: 86, timestamp: '2026-10-15T00:00:00Z', zipDate: '2026-10-15T00:00:00Z', date: '2026-10-15', provenance: 'full', strictAssets: true};
   const bytes = await engine.pptx.toPptx(source, {...options, onDiagnostic: value => diagnostics.push(value)});
   assert.deepEqual(source, before); assert.deepEqual(bytes, await engine.pptx.toPptx(source, options), 'Nondeterministic export');
   const inspection = inspectArchive(bytes, engine); assert.equal(inspection.slides.length, 16); assert.equal(inspection.nativeChartCount, 2); assert.equal(inspection.nativeTableCount, 2);
+  const nativeLatinTypefaces = [...new Set(inspection.slides.flatMap(slide => slide.shapes.flatMap(shape => shape.explicitLatinTypefaces)))].sort();
+  assert.ok(nativeLatinTypefaces.includes('Arial'), 'Native XML must retain selected Arial');
+  assert.ok(!nativeLatinTypefaces.includes('Arimo'), 'Preview alias must not replace selected Arial in native XML');
   const importDiagnostics = [], imported = await engine.pptx.fromPptx(bytes, {catalogs: [engine.gallery], onDiagnostic: value => importDiagnostics.push(value)});
   await put('sources/deck.opf.json', json(source)); await put('inputs/deck.pptx', bytes);
   await put('assets/replacement.png', replacement); await put('assets/original.png', image);
@@ -148,7 +153,7 @@ export async function generate({consumer, output}) {
   const fontFiles = await Promise.all(fonts.fontFiles.map(async file => {const data = await readFile(file); return {file, bytes: data.length, sha256: hash(data)};}));
   const git = args => execFileSync('git', args, {cwd: repository, encoding: 'utf8', stdio: 'pipe'}).trim();
   const sourceFiles = ['scripts/keynote-qualification/fixtures.mjs', 'scripts/keynote-qualification/pack.mjs', 'scripts/keynote-qualification/cli.mjs', 'docs/keynote-qualification.md', 'test/keynote-qualification.mjs', 'test/fixtures/images/README.md', 'test/fixtures/images/wide.png', 'test/fixtures/images/square.png'];
-  const suite = {schemaVersion: 1, kind: 'keynote-qualification', nativeAcceptance: false, registryAcceptance: false, runtime: {node: process.version, consumer: engine.consumer, packages: engine.packages}, source: {revision: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']) !== '', files: await Promise.all(sourceFiles.map(async file => ({path: file, sha256: hash(await readFile(path.join(repository, file)))})))}, exportOptions: {...options, fonts: 'one prepared office handle', catalogs: ['installed @openpresentation/gallery']}, fonts: {manifestSha256: hash(json(fonts.manifest)), files: fontFiles, requested: 'Roboto', nativePhysicalFace: 'unobserved; supervisor verifies in Keynote', installedByGenerator: false}, directions: Object.keys(outcomeTemplate('no-op').directions), files: await tree(root)};
+  const suite = {schemaVersion: 1, kind: 'keynote-qualification', nativeAcceptance: false, registryAcceptance: false, runtime: {node: process.version, consumer: engine.consumer, packages: engine.packages}, source: {revision: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']) !== '', files: await Promise.all(sourceFiles.map(async file => ({path: file, sha256: hash(await readFile(path.join(repository, file)))})))}, exportOptions: {...options, fonts: 'one prepared office handle', catalogs: ['installed @openpresentation/gallery']}, fonts: {manifestSha256: hash(json(fonts.manifest)), files: fontFiles, policy: fixtureFontPolicy, previewFaces, nativeLatinTypefaces, nativePhysicalFace: 'unobserved; supervisor verifies in Keynote', installedByGenerator: false}, directions: Object.keys(outcomeTemplate('no-op').directions), files: await tree(root)};
   await put('suite.json', json(suite)); await verifySeal(root); return suite;
 }
 
