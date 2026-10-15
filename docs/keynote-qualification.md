@@ -108,6 +108,8 @@ The candidate command checks a clean exact Git head, byte-compares every install
 
 Native generation also fails closed unless K02, K03, K05, K07 and K17 contain exactly one actual `body` placeholder holding all source characters in the authored paragraph count, with native wrapping and no autofit. It requires measured output and path-specific `unsupported-list`/`multi-column` fallback diagnostics on K04/K06. An old public exporter silently ignoring `bodyText`, a per-line fake body, partial source text or missing fallback is refused. K17's action replaces a flat entry and inserts a new semantic item with Return; K04/K06 remain explicit unsupported-body controls. These are archive capability checks, separate from actual Keynote controls and edits.
 
+For the explicit `body-17` / `native` suite's **no-op** inspection, K17 must also reimport as one semantic flat list containing its three current entries in the original order and words. A newline text block containing identical words, a missing/mixed/nested/numbered list, wrong entries or a cached list in provenance fails this check. A list on another slide cannot satisfy it. Measured mode, the original sixteen-case baseline and other routes do not inherit this new list guarantee. Existing word, footer and field findings remain separate; a new semantic finding never rewrites an earlier inspection.
+
 Use `copy` separately for each route and mode. Attempt files record mode, fixture and exact suite hash. Paired content routes expect 17 slides; the new-slide route expects 18. Do not open either candidate in a native application before root reviews its identities, capability reports and preview evidence.
 
 ## Reproduce on Windows from Git
