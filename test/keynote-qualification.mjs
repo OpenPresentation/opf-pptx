@@ -3,8 +3,9 @@ import {mkdtemp, mkdir, readFile, writeFile, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
-import {sourceDeck, routes, outcomeTemplate, fixtureFontPolicy} from '../scripts/keynote-qualification/fixtures.mjs';
-import {hash, inspectArchive, nativeFindings, importedFindings, currentSlideText, verifySeal, prepareCopy} from '../scripts/keynote-qualification/pack.mjs';
+import {createHash} from 'node:crypto';
+import {sourceDeck, bodyDeck, routes, qualificationRoutes, outcomeTemplate, fixtureFontPolicy} from '../scripts/keynote-qualification/fixtures.mjs';
+import {hash, inspectArchive, nativeFindings, importedFindings, currentSlideText, verifySeal, prepareCopy, bodyCapability, verifyCandidate} from '../scripts/keynote-qualification/pack.mjs';
 
 const resolver = createRequire(path.join(process.env.OPF_KEYNOTE_TEST_CONSUMER ?? process.cwd(), 'package.json'));
 const dependencies = createRequire(resolver.resolve('@openpresentation/opf-pptx/package.json'));
@@ -27,6 +28,43 @@ for (const route of Object.keys(routes)) {
   for (const action of routes[route].actions) assert.ok(deck.slides.some(slide => slide.title.startsWith(action.slide)));
 }
 assert.throws(() => outcomeTemplate('../escape'), /Unknown qualification route/);
+
+const paired = bodyDeck('data:image/png;base64,AA==');
+assert.equal(paired.slides.length, 17);
+assert.deepEqual(paired.slides.filter((_, index) => index !== 5 && index < 16), deck.slides.filter((_, index) => index !== 5));
+assert.equal(paired.slides[5].layout, 'list'); assert.equal(paired.slides[5].items.length, 14);
+assert.ok(paired.slides[16].title.startsWith('K17'));
+assert.ok(qualificationRoutes(true)['content-edits'].actions.some(action => action.id === 'flat-list' && action.secondMarker));
+assert.equal(qualificationRoutes(true)['layout-structure'].expectedSlides, 18);
+assert.equal(outcomeTemplate('content-edits', true).actions.at(-1).id, 'flat-list');
+assert.equal(sourceDeck('data:image/png;base64,AA==').slides.length, 16, 'Paired fixture never mutates original baseline');
+const inline = value => typeof value === 'string' ? value : Array.isArray(value) ? value.map(inline).join('') : value?.text !== undefined ? inline(value.text) : '';
+const bodyControls = new Set(['K02', 'K03', 'K05', 'K07', 'K17']);
+const capabilityInspection = {slides: paired.slides.map(slide => {
+  const marker = slide.title.slice(0, 3), value = marker === 'K07' ? slide.blocks[0].text : slide.text ?? slide.items;
+  return {marker, shapes: bodyControls.has(marker) ? [{name: 'OPF native body control', placeholder: {type: 'body', idx: '300'},
+    text: [inline(value).replace(/\r\n|\r|\n/g, '')], paragraphs: marker === 'K17' ? slide.items.length : inline(value).split(/\r\n|\r|\n/).length,
+    paragraphProperties: marker === 'K17' ? slide.items.map(() => ({'a:buChar': {char: '•'}})) : [],
+    bodyProperties: {wrap: 'square', 'a:noAutofit': ''}}] : []};
+})};
+const fallbackDiagnostics = [{code: 'native-body-fallback', path: 'slides.3.items', reason: 'unsupported-list'}, {code: 'native-body-fallback', path: 'slides.5.items', reason: 'multi-column'}];
+assert.equal(bodyCapability(capabilityInspection, paired, fallbackDiagnostics, 'native').controls.length, 5);
+const ignored = structuredClone(capabilityInspection); ignored.slides.forEach(slide => {slide.shapes = [];});
+assert.throws(() => bodyCapability(ignored, paired, [], 'native'), /one actual Body placeholder/, 'An old exporter ignoring bodyText fails closed');
+assert.equal(bodyCapability(ignored, paired, [], 'measured').controls.length, 0);
+assert.throws(() => bodyCapability(capabilityInspection, paired, [], 'measured'), /retain measured/);
+const split = structuredClone(capabilityInspection); split.slides[1].shapes.push(structuredClone(split.slides[1].shapes[0]));
+assert.throws(() => bodyCapability(split, paired, fallbackDiagnostics, 'native'), /one actual Body placeholder/, 'Per-line fake bodies are refused');
+const partial = structuredClone(capabilityInspection); partial.slides[1].shapes[0].text = ['only part'];
+assert.throws(() => bodyCapability(partial, paired, fallbackDiagnostics, 'native'), /all current source characters/);
+const soft = structuredClone(capabilityInspection); soft.slides[4].shapes[0].paragraphs++;
+assert.throws(() => bodyCapability(soft, paired, fallbackDiagnostics, 'native'), /authored paragraphs only/);
+const fakeBullets = structuredClone(capabilityInspection); fakeBullets.slides[16].shapes[0].paragraphProperties[1] = {};
+assert.throws(() => bodyCapability(fakeBullets, paired, fallbackDiagnostics, 'native'), /real flat character bullet/);
+assert.throws(() => bodyCapability(capabilityInspection, paired, [], 'native'), /missing unsupported-list fallback/);
+const wrongFallback = structuredClone(fallbackDiagnostics); wrongFallback[1].reason = 'unsupported-list';
+assert.throws(() => bodyCapability(capabilityInspection, paired, wrongFallback, 'native'), /missing multi-column fallback/);
+await assert.rejects(verifyCandidate(undefined, {}), /requires --candidate/);
 
 // Independent XML fixture: presentation order differs from numeric part order; no OPF importer/provenance involved.
 const {strToU8, zipSync} = fflate;
@@ -91,6 +129,28 @@ assert.ok(importedFindings(chartEdited, 'content-edits').some(value => value.sta
 assert.ok(nativeFindings(cacheEdited, 'content-edits', observed).some(value => value.startsWith('chart-data:')));
 
 const temporary = await realpath(await mkdtemp(path.join(tmpdir(), 'keynote-pack-'))), suiteDirectory = path.join(temporary, 'suite');
+// Receipt checks bind every generation to the same installed payload and exact consumer pins.
+const candidateDirectory = path.join(temporary, 'candidate'); await mkdir(candidateDirectory);
+const packed = Buffer.from('candidate tarball control'), manifest = {private: true, dependencies: {'@openpresentation/opf': '0.20.1'}}, lock = Buffer.from('{"lockfileVersion":3}\n');
+await writeFile(path.join(candidateDirectory, 'package.json'), JSON.stringify(manifest));
+await writeFile(path.join(candidateDirectory, 'package-lock.json'), lock);
+const tarball = path.join(temporary, 'candidate.tgz'), candidateFile = path.join(temporary, 'candidate.json'); await writeFile(tarball, packed);
+const receipt = {schemaVersion: 1, kind: 'local-pptx-source-candidate', registryAcceptance: false, nativeAcceptance: false,
+  source: {revision: 'a'.repeat(40), clean: true}, tarball: {file: tarball, bytes: packed.length, sha256: hash(packed), integrity: 'sha512-' + createHash('sha512').update(packed).digest('base64')},
+  consumer: {directory: candidateDirectory, manifestSha256: hash(Buffer.from(JSON.stringify(manifest, null, 2) + '\n')), lockSha256: hash(lock)}, packages: []};
+await writeFile(candidateFile, JSON.stringify(receipt));
+const candidateEngine = {consumer: candidateDirectory, packages: []};
+assert.deepEqual(await verifyCandidate(candidateFile, candidateEngine), receipt);
+await assert.rejects(verifyCandidate(candidateFile, {...candidateEngine, consumer: temporary}), /another consumer/);
+await assert.rejects(verifyCandidate(candidateFile, {...candidateEngine, packages: [{name: 'old-public-exporter'}]}), /runtime differs/);
+await writeFile(path.join(candidateDirectory, 'package-lock.json'), 'changed');
+await assert.rejects(verifyCandidate(candidateFile, candidateEngine), /lockfile changed/);
+await writeFile(path.join(candidateDirectory, 'package-lock.json'), lock);
+await writeFile(path.join(candidateDirectory, 'package.json'), JSON.stringify({...manifest, dependencies: {}}));
+await assert.rejects(verifyCandidate(candidateFile, candidateEngine), /pins changed/);
+await writeFile(path.join(candidateDirectory, 'package.json'), JSON.stringify(manifest));
+await writeFile(tarball, 'changed');
+await assert.rejects(verifyCandidate(candidateFile, candidateEngine), /AssertionError/);
 await mkdir(path.join(suiteDirectory, 'inputs'), {recursive: true});
 const bytes = Buffer.from('sealed input'); await writeFile(path.join(suiteDirectory, 'inputs/deck.pptx'), bytes);
 const suite = {schemaVersion: 1, kind: 'keynote-qualification', files: [{path: 'inputs/deck.pptx', bytes: bytes.length, sha256: hash(bytes)}]};
@@ -108,4 +168,4 @@ await writeFile(path.join(suiteDirectory, 'extra.txt'), 'unsealed');
 await assert.rejects(verifySeal(suiteDirectory), /missing, extra or changed/);
 await writeFile(path.join(suiteDirectory, 'suite.json'), JSON.stringify({...suite, files: [{...suite.files[0], path: '../outside'}]}));
 await assert.rejects(verifySeal(suiteDirectory), /Unsafe sealed file path/);
-console.log('Keynote qualification: 16 source cases, three routes, directional outcomes, independent XML/object/order checks and fresh sealed-copy/tamper controls pass; no native acceptance claimed.');
+console.log('Keynote qualification: unchanged 16-case baseline, paired 17-case body fixture, actual-body/ignored-option/fallback guards, three routes, independent XML/object/order checks and fresh sealed-copy/tamper controls pass; no native acceptance claimed.');
