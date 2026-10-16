@@ -161,3 +161,21 @@ if ($LASTEXITCODE) { throw 'Native capability refused' }
 ```
 
 The runtime clone keeps tracked text as LF so the source receipt can compare package bytes with Git objects without normalization. Each OS records its own installed runtime, tarball, font and generator hashes. This recipe does not establish cross-platform byte equality, native font selection or native acceptance. Preserve failed preparation attempts and use a fresh numbered directory for a new attempt.
+
+## Registry runtime identity (separate from source candidates)
+
+`registry` seals an ordinary installed C0.20.3/R0.20.2/G3 consumer and its **actual registry PPTX version**. It executes the unchanged Core release verifier at independently reviewed revision `041404a0d579c7183461962022e204f7ce8a6012`, after checking its exact five-module closure. Keep a clean separate checkout of that revision; arbitrary verifier revisions or supplied success reports are refused. The command checks normal registry lock identities, one Core/Gallery and all 44 font peers, verifies all four artifacts' tags/main ancestry/SLSA/signatures, and compares installed payloads with exact registry archives **before any consumer runtime import**. Gallery uses its maintained independent release policy: no GitHub release is expected. Network execution needs a separately approved bounded run: at most 20 GitHub reads, 16 direct registry reads, four ordinary script-disabled scratch installs and four signature audits, with no retry loop. GitHub authentication preserves the maintained GH_TOKEN/GITHUB_TOKEN or normal `gh auth token` fallback; credentials and request headers are never recorded. Evidence labels GitHub responses as parsed verifier inputs and registry responses as exact bytes. npm's internal dependency traffic is additional and is not counted as those direct reads.
+
+```sh
+node scripts/keynote-qualification/cli.mjs registry --consumer /absolute/registry-consumer --verifier-source /absolute/clean-reviewed-core --verifier-revision 041404a0d579c7183461962022e204f7ce8a6012 --publisher ACTUAL_PUBLISHED_PPTX_COMMIT --output /absolute/new-registry-identity
+```
+
+Review the resulting `receipt.json` and evidence independently, then pass its accepted SHA-256 explicitly:
+
+```sh
+node scripts/keynote-qualification/cli.mjs generate --consumer /absolute/registry-consumer --mode native --registry /absolute/accepted-registry-identity --registry-sha256 INDEPENDENTLY_ACCEPTED_RECEIPT_SHA256 --output /absolute/new-registry-native-suite
+```
+
+Offline generation proves continued equality to that independently accepted receipt/evidence and actual consumer bytes; it does not freshly authenticate the registry or make a caller-authored receipt true. Keep receipt/evidence archives and the accepted digest. `--registry` and `--candidate` are mutually exclusive. Registry receipts establish only their named four-artifact identity; suites retain `nativeAcceptance: false` and no global acceptance claim. Existing actual Body/paragraph/flat-bullet and fallback checks remain mandatory: genuine published PPTX0.20.3 has no Body capability and must refuse native17 even with a valid registry receipt. Use measured17 for that package. A future RR86 registry native17 run needs its actual published artifact and publisher; it cannot relabel the existing local candidate. No historical suite or recipe is rewritten.
+
+Offline tests use synthetic receipt/transport-result and ignored-option controls only. They do not authenticate a registry artifact or run the new route against published P3. A separately reviewed real registry run and actual published-P3 no-Body refusal remain required before reporting that qualification.
