@@ -79,7 +79,7 @@ export async function installed(consumerDirectory) {
   return {consumer, packages, core, pptx, render, fonts, gallery: gallery.gallery, fflate: pptxRequire('fflate'), xml: pptxRequire('fast-xml-parser')};
 }
 
-const candidatePins = {'@openpresentation/opf': '0.20.1', '@openpresentation/opf-render': '0.20.0', '@openpresentation/gallery': '3.0.0'};
+const candidatePins = {'@openpresentation/opf': '0.20.3', '@openpresentation/opf-render': '0.20.2', '@openpresentation/gallery': '3.0.0'};
 const packageIdentity = packages => packages.map(({name, version, files, sha256}) => ({name, version, files, sha256}));
 const sha512 = bytes => 'sha512-' + createHash('sha512').update(bytes).digest('base64');
 

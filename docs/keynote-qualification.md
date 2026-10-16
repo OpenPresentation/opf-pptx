@@ -91,9 +91,19 @@ node --check scripts/keynote-qualification/pack.mjs
 
 The tests cover the action/source contract, placeholder and relationship inspection, presentation order independent of part numbering, fresh-copy protection and sealed-file tamper rejection. They use no native application, network or machine fonts. Normal test discovery includes the test automatically. Generated decks and native outputs stay outside tracked source; the fixture generator and actions are maintained here, with no transfer ZIP as a distribution requirement.
 
-## Local prototype comparison
+## Merged-source successor preparation
 
-Use a **new normal npm consumer**, with the local prototype packed from clean commit `9f159655df6aa5972a8663b94f5d73142a2c07b8`. Its package version remains `0.20.2`; that version string is not proof of prototype capability. Core `0.20.1`, renderer `0.20.0`, Gallery `3.0.0` and the renderer's exact Google font-peer versions are declared in `scripts/keynote-qualification/candidate-consumer.json`. Install those packages normally from their registry versions plus the ordinary local PPTX tarball. Do not use source aliases, links, version rewrites or edited package metadata.
+The successor is based on actual PPTX release-prep merge `e0a67c6ee9892c58d15131923156b0ecf51ab14e` (PR #276), with the fourteen reviewed RR86 commits replayed separately from the release branch. Its genuine package version is `0.20.3`; that version alone identifies neither the prototype nor a published artifact. This is a **local source candidate**, not evidence of PPTX registry publication or native acceptance.
+
+The current `scripts/keynote-qualification/candidate-consumer.json` pins genuinely verified Core `0.20.3`, renderer `0.20.2` and Gallery `3.0.0`, all 44 exact renderer font peers, and the local `file:../openpresentation-opf-pptx-0.20.3.tgz`. After source and exact snapshot-delta review, use a new normal consumer and ordinary npm pack from the exact clean reviewed candidate commit. Pass that actual commit and tarball to the unchanged `candidate` command, then use its sealed receipt for measured/native generation. Do not substitute the base release SHA for the RR86 candidate SHA or mix the historical recipe below with these inputs.
+
+The candidate still requires contained normal installs, one Core, exact installed runtime/vendor/manifest bytes against Git and tarball integrity against the consumer lock. Actual Body controls and explicit measured fallbacks remain required. Receipts retain `registryAcceptance: false` and `nativeAcceptance: false`. Compare defaults and complete import deltas with a separately packed **merged-source P3 control** on the same genuine dependency graph; it is not a registry-qualified P3 control while publication is pending. No previous fixture, source/native result or failed inspection is relabeled to the successor. Native execution remains separately authorized; Windows remains on human HOLD.
+
+## Historical local prototype comparison (9f / old graph)
+
+These commands describe the retained `9f` experiment. Use the exact historical tooling revision and recipe named by each attempt receipt; later controls require their own recorded tooling revisions, including the K17 semantic no-op guard from `62a2689` and current table-cell inspection from `e470c0a`. Do not attribute those later guarantees to the earlier `8ee257f` paired-suite tooling. The current successor recipe above has different pins and a different tarball. Historical native/fixture bytes and hashes stay unchanged.
+
+Use a **new normal npm consumer**, with the local prototype packed from clean commit `9f159655df6aa5972a8663b94f5d73142a2c07b8`. Its package version remains `0.20.2`; that version string is not proof of prototype capability. Core `0.20.1`, renderer `0.20.0`, Gallery `3.0.0` and the renderer's exact Google font-peer versions were declared in that historical checkout's `scripts/keynote-qualification/candidate-consumer.json`. Install those packages normally from their registry versions plus the ordinary local PPTX tarball. Do not use source aliases, links, version rewrites or edited package metadata.
 
 Under Node 24, with `run` pointing to a new external canonical directory and `runtime` pointing to the clean reviewed prototype checkout:
 
@@ -118,7 +128,7 @@ For the explicit `body-17` / `native` suite's **no-op** inspection, K17 must als
 
 Use `copy` separately for each route and mode. Attempt files record mode, fixture and exact suite hash. Paired content routes expect 17 slides; the new-slide route expects 18. Do not open either candidate in a native application before root reviews its identities, capability reports and preview evidence.
 
-## Reproduce on Windows from Git
+## Historical Windows preparation from Git (9f / old graph)
 
 The root session owns native PowerPoint actions. The following commands only prepare local artifacts. Use Node 24 and a short, **new** path such as `C:/opf-work/rr86-body-01`; do not alter native fonts. Check out the reviewed qualification-extension branch/commit in a separate short-path repository, then run these PowerShell commands from it:
 

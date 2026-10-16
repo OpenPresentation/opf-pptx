@@ -7,10 +7,10 @@
     "node": "24.x"
   },
   "dependencies": {
-    "@openpresentation/opf": "0.20.1",
-    "@openpresentation/opf-render": "0.20.0",
+    "@openpresentation/opf": "0.20.3",
+    "@openpresentation/opf-render": "0.20.2",
     "@openpresentation/gallery": "3.0.0",
-    "@openpresentation/opf-pptx": "file:../openpresentation-opf-pptx-0.20.2.tgz",
+    "@openpresentation/opf-pptx": "file:../openpresentation-opf-pptx-0.20.3.tgz",
     "@expo-google-fonts/arimo": "0.4.3",
     "@expo-google-fonts/caladea": "0.4.2",
     "@expo-google-fonts/cousine": "0.4.3",
