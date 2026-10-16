@@ -68,6 +68,9 @@ import {
   validate
 } from "@openpresentation/opf";
 import {checkFormat, isValidFormat} from "./format-check.js";
+import {OPFPptxError} from './errors.js';
+import {readInputZip} from './input-safety.js';
+export {OPFPptxError} from './errors.js';
 
 export {checkTypefaces, inventoryTypefaces, packageFontsUsed, THEME_SCRIPT_SUPPLEMENTS} from './typeface-inventory.js';
 export {DEFAULT_SIGNAL_LIMITS, SIGNALS_VERSION, isMonospaceFamily} from './import-signals.js';
@@ -90,18 +93,6 @@ export const runtimePolicy = Object.freeze({
   requiredNetworkCalls: false,
   deterministicLocalExecution: true
 });
-
-export class OPFPptxError extends Error {
-  constructor(code, message, details = {}) {
-    super(message);
-    this.name = "OPFPptxError";
-    this.code = code;
-    this.details = details;
-    if (details.findings) this.findings = details.findings;
-    if (details.diagnostics) this.diagnostics = details.diagnostics;
-    if (details.path) this.path = details.path;
-  }
-}
 
 const FIXED_TIMESTAMP = "1980-01-01T00:00:00Z";
 // fflate derives the DOS zip date from local-time fields, so build this from
@@ -642,8 +633,9 @@ function readPptxZip(input) {
   }
 
   try {
-    return unzipSync(bytes);
+    return readInputZip(bytes);
   } catch (error) {
+    if (error instanceof OPFPptxError) throw error;
     throw new OPFPptxError("invalid-pptx", "PPTX input is not a readable ZIP archive.", {
       cause: errorMessage(error)
     });
