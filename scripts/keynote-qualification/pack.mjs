@@ -7,6 +7,7 @@ import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {sourceDeck, bodyDeck, routes, qualificationRoutes, outcomeTemplate, fixtureFontPolicy} from './fixtures.mjs';
+import {verifyRegistryRuntime} from './registry-runtime.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
@@ -262,12 +263,15 @@ export function inspectArchive(bytes, engine) {
   return {slides, layouts, nativeChartCount: slides.reduce((count, slide) => count + slide.charts.length, 0), nativeTableCount: slides.reduce((count, slide) => count + slide.tables.length, 0), archiveParts: Object.keys(parts).length};
 }
 
-export async function generate({consumer, output, mode, candidate}) {
+export async function generate({consumer, output, mode, candidate, registry, 'registry-sha256': registrySha256}) {
   assert.equal(process.versions.node.split('.')[0], '24', 'Qualification requires Node 24');
   assert.ok(mode === undefined || ['measured', 'native'].includes(mode), 'Mode must be measured or native');
   assert.ok(!candidate || mode, 'A candidate receipt requires an explicit measured/native mode');
+  assert.ok(!(candidate && registry), 'Candidate and registry identities are mutually exclusive');
+  assert.equal(Boolean(registry), Boolean(registrySha256), 'Registry identity requires its independently accepted digest');
+  const registryRuntime = registry ? await verifyRegistryRuntime({registry, 'registry-sha256': registrySha256, consumer}) : undefined;
   const bodyFixture = mode !== undefined, definitions = qualificationRoutes(bodyFixture);
-  const engine = await installed(consumer), receipt = candidate || mode === 'native' ? await verifyCandidate(candidate, engine) : undefined;
+  const engine = await installed(consumer), receipt = candidate || (mode === 'native' && !registryRuntime) ? await verifyCandidate(candidate, engine) : undefined;
   const root = await fresh(output, [engine.consumer]);
   const put = async (name, bytes) => {assert.ok(safe(name)); await mkdir(path.dirname(path.join(root, name)), {recursive: true}); await writeFile(path.join(root, name), bytes, {flag: 'wx'});};
   const image = await readFile(new URL('../../test/fixtures/images/wide.png', import.meta.url)), replacement = await readFile(new URL('../../test/fixtures/images/square.png', import.meta.url));
@@ -293,12 +297,14 @@ export async function generate({consumer, output, mode, candidate}) {
   await put('inspection/validation.json', json({validation, diagnostics})); await put('actions/routes.json', json(definitions));
   if (capability) await put('inspection/body-capability.json', json(capability));
   if (receipt) await put('inspection/candidate.json', json(receipt));
+  if (registryRuntime) await put('inspection/registry-runtime.json', json(registryRuntime));
   for (const route of Object.keys(definitions)) await put(`actions/${route}.result-template.json`, json(outcomeTemplate(route, bodyFixture)));
   for (let index = 0; index < source.slides.length; index++) await put(`previews/slide-${String(index + 1).padStart(2, '0')}.svg`, engine.render.toSvg(source, index + 1, options));
   const fontFiles = await Promise.all(fonts.fontFiles.map(async file => {const data = await readFile(file); return {file, bytes: data.length, sha256: hash(data)};}));
   const git = args => execFileSync('git', args, {cwd: repository, encoding: 'utf8', stdio: 'pipe'}).trim();
   const sourceFiles = ['scripts/keynote-qualification/fixtures.mjs', 'scripts/keynote-qualification/pack.mjs', 'scripts/keynote-qualification/cli.mjs', 'scripts/keynote-qualification/candidate-consumer.json', 'docs/keynote-qualification.md', 'test/keynote-qualification.mjs', 'test/fixtures/images/README.md', 'test/fixtures/images/wide.png', 'test/fixtures/images/square.png'];
-  const suite = {schemaVersion: 1, kind: 'keynote-qualification', fixture: bodyFixture ? 'body-17' : 'baseline-16', mode: mode ?? 'baseline', nativeAcceptance: false, registryAcceptance: false, runtime: {node: process.version, consumer: engine.consumer, packages: engine.packages}, source: {revision: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']) !== '', files: await Promise.all(sourceFiles.map(async file => ({path: file, sha256: hash(await readFile(path.join(repository, file)))})))}, exportOptions: {...options, fonts: 'one prepared office handle', catalogs: ['installed @openpresentation/gallery']}, fonts: {manifestSha256: hash(json(fonts.manifest)), files: fontFiles, policy: fixtureFontPolicy, previewFaces, nativeLatinTypefaces, nativePhysicalFace: 'unobserved; supervisor verifies in Keynote', installedByGenerator: false}, directions: Object.keys(outcomeTemplate('no-op').directions), files: await tree(root)};
+  sourceFiles.push('scripts/keynote-qualification/registry-runtime.mjs');
+  const suite = {schemaVersion: 1, kind: 'keynote-qualification', fixture: bodyFixture ? 'body-17' : 'baseline-16', mode: mode ?? 'baseline', nativeAcceptance: false, registryAcceptance: false, ...(registryRuntime ? {registryRuntime: {receiptSha256: registryRuntime.receiptSha256, scope: registryRuntime.claim}} : {}), runtime: {node: process.version, consumer: engine.consumer, packages: engine.packages}, source: {revision: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']) !== '', files: await Promise.all(sourceFiles.map(async file => ({path: file, sha256: hash(await readFile(path.join(repository, file)))})))}, exportOptions: {...options, fonts: 'one prepared office handle', catalogs: ['installed @openpresentation/gallery']}, fonts: {manifestSha256: hash(json(fonts.manifest)), files: fontFiles, policy: fixtureFontPolicy, previewFaces, nativeLatinTypefaces, nativePhysicalFace: 'unobserved; supervisor verifies in Keynote', installedByGenerator: false}, directions: Object.keys(outcomeTemplate('no-op').directions), files: await tree(root)};
   await put('suite.json', json(suite)); await verifySeal(root); return suite;
 }
 
