@@ -9,6 +9,9 @@ registering fonts, starting a worker, or calling Office:
 - `test/native-table-colors.ps1`
 - `test/native-font-selection.ps1`
 - `test/native-font-advances.ps1`
+- `test/native-metric.ps1`
+- `test/native-text.ps1`
+- `test/native-tab-control.ps1`
 
 Their historical bodies and existing evidence remain for attribution. They are
 not supported native acceptance routes. ENG-X03-001 tracks replacement: these
@@ -27,7 +30,7 @@ For their own documented scenarios, `docs/native-font-edit.md`,
 `docs/native-font-embed.md`, `docs/native-font-inventory.md`,
 `docs/native-picture-control.md` and `docs/native-picture-edit.md` describe
 separately bounded, owned-fixture controls. They are not replacements for chart,
-code, quote, table, font-selection or advance measurements.
+code, quote, table, font-selection advance, metric, text or original-tab measurements.
 
 Before any of those retired scenarios resumes, ENG-X03-001 requires a reviewed
 replacement with a fresh owned input, bounded worker, exact already-open identity
