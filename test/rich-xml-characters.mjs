@@ -6,6 +6,7 @@ const cases=value=>[
  ['body',{text:[{text:value,bold:true}]}],
  ['list',{items:[{text:[{text:value,bold:true}]}]}],
  ['table',{table:{columns:['A'],rows:[[[{text:value,bold:true}]]]}}],
+ ['plain-table',{table:{columns:['A'],rows:[[value]]}}],
 ];
 for(const invalid of ['\0','\u0001','\u000B','\uD800','\uDC00','\uFFFE','\uFFFF'])for(const [name,slide] of cases(`Before${invalid}After`)) {
  await assert.rejects(()=>toPptx({slides:[slide]}),error=>error.code==='invalid-text'&&error.details.path.startsWith('slides.0.')&&/UTF-16 offset/.test(error.message),`${name} rejects XML-invalid authored rich text`);

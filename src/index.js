@@ -2869,7 +2869,7 @@ function addTablePayload(slide, authoredTable, region, context, options, path, p
     const defaultText = cellStyle.color === undefined ? tableTextSchemeValue(fillValue, baseColor, context) : undefined;
     const alpha = value => value.length === 8 ? (1 - parseInt(value.slice(6), 16) / 255) * 100 : 0;
     const text = stringifyText(cell.value), style = cell.textStyle;
-    if (rich) assertXmlText(text, cell.path ?? path);
+    assertXmlText(text, cell.path ?? path);
     const fragments = rich ? fit.richLines.flatMap(line => line.fragments) : [];
     const runs = rich ? cell.value.flatMap((value, index) => {
       const run = typeof value === 'string' ? {text:value} : value;
