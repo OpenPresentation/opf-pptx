@@ -31,9 +31,14 @@ assert.equal(entries(deck).numbering, undefined, 'Character bullets never become
 // Exact reviewed post-style import; no typography fields are normalized away.
 // The companion inherited-style test asserts every current Body default and
 // the complete import fingerprint. c529 retains its pre-style fingerprint.
-assert.equal(hash(JSON.stringify({...deck, slides: deck.slides.slice(0, 16)})), '3d200b5d813053b878e0091e21876f842e74a72278d81b5b52a40c6a4b65da8f');
-assert.equal(hash(JSON.stringify(diagnostics)), '56a11e5a7201b9f8ab0a1d285fce7ecaaa4448422aa3364b3525d96f29660fe9');
-assert.equal(diagnostics.length, 20, 'Existing footer/crop/table adaptations remain explicit');
+assert.equal(hash(JSON.stringify({...deck, slides: deck.slides.slice(0, 16)})), '55a00618f3228b1379b5b6469d83fb35e65bb670f33c8bdb0f3e229a66773075');
+assert.equal(hash(JSON.stringify(diagnostics)), 'db2fa6bd5a00ab2921d77b514e1efb3331b005dd55d6978da374bee721541fc2');
+assert.equal(diagnostics.length, 21, 'All existing adaptations and the precise current K11 paint gap remain explicit');
+assert.deepEqual(diagnostics.filter(value => value.path === 'slides.10.charts.0.series.0.line.color'), [{
+  code: 'chart-option-adapted', option: 'series.0.line.color',
+  message: "Line series 'Demand' has explicit native solid paint that is not retained as per-series formatting in OPF; imported chart colors follow its design and semantic highlight.",
+  path: 'slides.10.charts.0.series.0.line.color',
+}]);
 const changed = (transform = value => value, edit = () => {}) => {
   const parts = {...original, [slide]: strToU8(xml.replace(body, transform(body)))}; edit(parts); return parts;
 };
@@ -93,4 +98,4 @@ await noList(changed(undefined, parts => {
   const value = strFromU8(parts[layout]), placeholder = value.match(/<p:sp>[\s\S]*?<\/p:sp>/g).find(shape => shape.includes('<p:ph type="body" idx="1"/>'));
   parts[layout] = strToU8(value.replace('</p:spTree>', placeholder + '</p:spTree>'));
 }));
-console.log('Retained Keynote master bullets: K17 semantic items/current styles, paragraph/shape/layout/master precedence, explicit cancellation, levels/numbers, edits/add/delete/clear, mixed diagnostics and missing/ambiguous bindings pass; reviewed other16 import and20 diagnostic fingerprints exact.');
+console.log('Retained Keynote master bullets: K17 semantic items/current styles, paragraph/shape/layout/master precedence, explicit cancellation, levels/numbers, edits/add/delete/clear, mixed diagnostics and missing/ambiguous bindings pass; reviewed other16 import and21 diagnostic fingerprints exact.');

@@ -25,7 +25,7 @@ async function read(parts = original) {
   return {deck, diagnostics};
 }
 const {deck, diagnostics} = await read();
-assert.equal(createHash('sha256').update(JSON.stringify(deck)).digest('hex'), 'dfe38a8e1e08cff4888f7aca5e9e4e728f995723d45b77efe4605f35b9ee6282', 'Exact reviewed whole import; no style normalization');
+assert.equal(createHash('sha256').update(JSON.stringify(deck)).digest('hex'), 'c6a3d6a414dab48c37e2b076ab5182dee00532aecedd7e7036b1f4906d05aa15', 'Exact reviewed whole import; no style normalization');
 for (const slide of [1,2,4,6,8,13,14,15,16]) {
   const block = deck.slides[slide].blocks[0], values = slide === 16 ? block.items : [block.text];
   for (const value of values) for (const run of Array.isArray(value) ? value : [value]) if (typeof run !== 'string') {

@@ -42,10 +42,18 @@ assert.ok(mutate(value => {value.fields = {};}).some(value => value.includes('dy
 const badNotes = structuredClone(native.slides[1].notesSemantics); badNotes.objects[1].paragraphs[0] = 'K02 wrong notes';
 assert.ok(compareNoopText(badNotes, baseline.slides[1].notesSemantics, 'K02 notes').some(value => value.includes('ordered authored text changed')), 'Wrong notes fail independently of generated notes-page fields');
 
-// Exercise actual import as well: current-content authority exposes, rather than hides, the footer adaptation.
+// Current imported footer semantics now supplement the unchanged archive word/field comparisons.
 const {fromPptx} = await import(resolver.resolve('@openpresentation/opf-pptx'));
 const imported = await fromPptx(await readFile(new URL('keynote-15.1.1-noop.pptx', directory)));
 const furniture = importedFurnitureFindings(imported, sourceDeck('data:image/png;base64,AA=='), baseline);
-assert.equal(furniture.length, 16, 'Current importer gap remains an explicit finding; no runtime fix or footer-word filtering is part of this change');
-assert.ok(furniture.every(value => value.includes('literal furniture appears in current imported slide content')));
-console.log('Keynote retained no-op: ordered words/notes and literal footer pass; slide fields survive without cached text; 16 notes-field removals and 16 current-import furniture gaps remain explicit. Word loss/reorder, wrong notes, duplicate/changed/unidentified footer and wrong/missing fields fail.');
+assert.deepEqual(furniture, [], 'The current native literal is furniture, without discarding authored content');
+assert.deepEqual(imported.design.footer, {left: {text: 'Keynote qualification'}, right: {text: '{{slide.number}}'}});
+const authored = sourceDeck('data:image/png;base64,AA==');
+assert.equal(imported.slides.length, 16);
+for (const [index, slide] of imported.slides.entries()) {
+  assert.equal(slide.title, authored.slides[index].title, 'Current ordered slide title remains intact');
+  assert.equal(slide.notes, authored.slides[index].notes, 'Current authored notes survive independently of removed generated fields');
+  const footer = slide.design?.footer ?? imported.design.footer;
+  assert.equal(footer.left.text, 'Keynote qualification'); assert.equal(footer.right.text, '{{slide.number}}');
+}
+console.log('Keynote retained no-op: ordered words/notes and literal footer pass; slide fields survive without cached text; all 16 notes-field removals remain explicit; current literal footer and live number recover as furniture with zero footer-as-body findings. Word loss/reorder, wrong notes, duplicate/changed/unidentified footer and wrong/missing fields fail.');
