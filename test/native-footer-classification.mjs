@@ -11,11 +11,25 @@ import {classifyNativeFooters} from '../dist/native-footer-classification.js';
 const directory = new URL('./fixtures/keynote-footer-classification/', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('manifest.json', directory)));
 const beforeBytes = await readFile(new URL('before-imports.json', directory));
-const before = JSON.parse(beforeBytes);
+// The isolated7f control remains immutable historical evidence.
+const integratedManifest = JSON.parse(await readFile(new URL('integrated-before-manifest.json', directory)));
+const integratedBytes = await readFile(new URL(integratedManifest.beforeImport.file, directory));
+const before = JSON.parse(integratedBytes);
 const hash = value => createHash('sha256').update(value).digest('hex');
 assert.equal(hash(beforeBytes), manifest.beforeImport.sha256);
 assert.equal(beforeBytes.length, manifest.beforeImport.bytes);
 assert.equal(manifest.beforeImport.runtimeRevision, '7f300b42166c55ee14f8f9432e7340ded26f5ee4');
+assert.equal(integratedManifest.kind, 'same-final-runtime-minus-classifier-import-control');
+assert.equal(integratedManifest.source.revision, '676d2d86ea7182a2fae6ad00214b58cf5383555a');
+assert.equal(integratedManifest.source.registryAcceptance, false); assert.equal(integratedManifest.source.nativeAcceptance, false);
+assert.deepEqual(integratedManifest.inputs, manifest.fixtures);
+assert.deepEqual(integratedManifest.historicalControl.beforeImport, manifest.beforeImport);
+assert.equal(hash(integratedBytes), integratedManifest.beforeImport.sha256);
+assert.equal(integratedBytes.length, integratedManifest.beforeImport.bytes);
+assert.equal(integratedManifest.ablation.module, 'dist/native-footer-classification.js');
+assert.equal(integratedManifest.ablation.otherRuntimeFilesExact, 68);
+assert.equal(integratedManifest.sourceRuntimeFiles.length, 69);
+
 const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false, trimValues: false});
 const options = {seed: 86, timestamp: '2026-10-15T12:00:00Z', zipDate: '2026-10-15T12:00:00Z'};
 const read = async bytes => {const issues = []; const document = await fromPptx(bytes, {onDiagnostic: issue => issues.push(issue)}); return {document, issues};};
@@ -36,9 +50,11 @@ for (const [index, fixture] of manifest.fixtures.entries()) {
     if (!slide.blocks.length) delete slide.blocks;
   }
   expected.design.footer.left = {text: 'Keynote qualification'};
-  assert.deepEqual(current.document, expected, 'All non-footer payloads remain exact against the clean 7f300b4 import');
-  assert.deepEqual(current.issues, before[index].issues, 'All nineteen unrelated diagnostics remain exact');
-  assert.equal(current.issues.length, 19);
+  assert.deepEqual(current.document, expected, 'Only literal-block removal and footer addition differ from the same-final-runtime diagnostic control');
+  assert.deepEqual(current.issues, before[index].issues, 'All twenty ordered diagnostics remain exact, including the K11 paint finding');
+  assert.equal(current.issues.length, 20);
+  assert.equal(hash(JSON.stringify(current.issues)), '35e19ae9237a0b08adea0c8c72accad2c12cd1492757f1c2657ddbc061db066f');
+  assert.deepEqual(current.issues.filter(value => value.path === 'slides.10.charts.0.series.0.line.color'), [integratedManifest.expectedK11Diagnostic]);
   assert.equal(current.document.slides.length, 16);
   assert.equal(hasLiteral(current.document), false);
   assert.equal(footer(current.document).right.text, '{{slide.number}}');
