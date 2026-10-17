@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {hash, inspectArchive, compareNoopText, nativeFindings, importedFurnitureFindings} from '../scripts/keynote-qualification/pack.mjs';
 import {sourceDeck} from '../scripts/keynote-qualification/fixtures.mjs';
 
@@ -43,7 +44,7 @@ const badNotes = structuredClone(native.slides[1].notesSemantics); badNotes.obje
 assert.ok(compareNoopText(badNotes, baseline.slides[1].notesSemantics, 'K02 notes').some(value => value.includes('ordered authored text changed')), 'Wrong notes fail independently of generated notes-page fields');
 
 // Current imported footer semantics now supplement the unchanged archive word/field comparisons.
-const {fromPptx} = await import(resolver.resolve('@openpresentation/opf-pptx'));
+const {fromPptx} = await import(pathToFileURL(resolver.resolve('@openpresentation/opf-pptx')).href);
 const imported = await fromPptx(await readFile(new URL('keynote-15.1.1-noop.pptx', directory)));
 const furniture = importedFurnitureFindings(imported, sourceDeck('data:image/png;base64,AA=='), baseline);
 assert.deepEqual(furniture, [], 'The current native literal is furniture, without discarding authored content');
