@@ -35,7 +35,8 @@ requireVerifierClosure({...reviewedVerifier.files});
 for (const file of Object.keys(reviewedVerifier.files)) assert.throws(() => requireVerifierClosure({...reviewedVerifier.files, [file]: '0'.repeat(64)}), /Verifier closure/);
 assert.throws(() => requireVerifierClosure({...reviewedVerifier.files, 'scripts/injected.mjs': '0'.repeat(64)}), /Verifier closure/);
 await assert.rejects(checkVerifierSource(root, 'b'.repeat(40)), /independently reviewed revision/);
-await assert.rejects(sealRegistryRuntime({consumer: root, 'verifier-source': root, 'verifier-revision': 'b'.repeat(40), publisher: 'a'.repeat(40), output: path.join(root, 'never-sealed')}), /independently reviewed revision/);
+await assert.rejects(sealRegistryRuntime({consumer: root, 'verifier-source': root, 'verifier-revision': 'b'.repeat(40), publisher: 'a'.repeat(40), output: path.join(root, 'never-sealed')}),
+  process.versions.node.split('.')[0] === '24' ? /independently reviewed revision/ : /Qualification requires Node24/);
 await assert.rejects(readFile(path.join(root, 'never-sealed/receipt.json')), /ENOENT/);
 const beforeOptions = process.env.NODE_OPTIONS; process.env.NODE_OPTIONS = '--import=injected.mjs';
 await assert.rejects(checkVerifierSource(root, reviewedVerifier.revision), /Injected Node/);
@@ -48,6 +49,17 @@ assert.throws(() => requireVerification({status: 'verified', ok: true}), /verifi
 for (const name of checkNames) assert.throws(() => requireVerification({ok: true, checks: checks.map(check => ({...check, ok: check.name !== name}))}), /verification failed/);
 assert.throws(() => requireVerification({ok: true, checks: [...checks, checks[0]]}), /verification failed/);
 
+// Qualification is Node 24 only: every production entrypoint (sealRegistryRuntime, generate) asserts it before anything else. The CI
+// engine-range legs (Node 22 and 26) run this file too, so there the entrypoints are checked to refuse the runtime, and the
+// archive/registry guard controls that follow, which run those entrypoints, are Node 24 controls.
+if (process.versions.node.split('.')[0] !== '24') {
+  await assert.rejects(sealRegistryRuntime({consumer: root, 'verifier-source': root, 'verifier-revision': 'b'.repeat(40), publisher: 'a'.repeat(40), output: path.join(root, 'never-sealed')}), /Qualification requires Node24/);
+  await assert.rejects(generate({consumer, mode: 'native', output: path.join(root, 'never-generated')}), /Qualification requires Node 24/);
+  await assert.rejects(readFile(path.join(root, 'never-sealed/receipt.json')), /ENOENT/);
+  console.log(`Keynote registry identity: pure guards pass on Node ${process.versions.node}; the entrypoint controls are Node 24 only and the entrypoints refuse this runtime.`);
+  await rm(root, {recursive: true, force: true});
+  process.exit(0);
+}
 const versions = {'@openpresentation/opf': '0.20.3', '@openpresentation/opf-render': '0.20.2', '@openpresentation/opf-pptx': '0.20.3', '@openpresentation/gallery': '3.0.0'};
 const peers = Object.fromEntries(Array.from({length: 44}, (_, index) => [`@expo-google-fonts/control-${index}`, '0.4.0']));
 const manifest = {name: 'offline-registry-guard', private: true, dependencies: {...versions, ...peers}}, lock = {lockfileVersion: 3, packages: {'': {dependencies: manifest.dependencies}}};
