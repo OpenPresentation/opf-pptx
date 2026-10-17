@@ -89,6 +89,15 @@ export interface VariableExampleUsedDiagnostic {
 
 export interface ToPptxOptions {
   /**
+   * How a footer or header text with words around `{{slide.number}}` (`{{slide.number}} / {{deck.slideCount}}`, `Page {{slide.number}}`)
+   * writes its number. "static" (default) writes the number as fixed text in an ordinary shape, so PowerPoint and Keynote both show
+   * `2 / 6`; the total is fixed either way (PowerPoint has no slide-count field). "live" keeps PowerPoint's slide-number field (in the
+   * Slide Number placeholder for the first footer one) with the words as fixed runs: Keynote replaces the whole paragraph that holds a
+   * slide-number field with the number alone, so it shows only `2`. A text that is only `{{slide.number}}` keeps its live field and
+   * placeholder in both modes. A fixed number does not follow slides moved or deleted in PowerPoint; the authored text returns on import (RR-91).
+   */
+  slideNumberFields?: "static" | "live";
+  /**
    * Prototype: "native" exports at most one supported paragraph or flat-bullet body per slide as one native body
    * placeholder with native wrapping and no autofit. It retains selected fonts, effective alignment and region anchor,
    * but native applications can choose different wraps and baselines from the measured preview. Unsupported groups,
