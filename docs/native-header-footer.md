@@ -21,7 +21,7 @@ speaker) are `{{ }}` variables inside the zone's `text` (FA-31): there are no pe
 | --- | --- | --- |
 | `footer.<zone>.text` without a `{{slide.number}}` (the first one, one accepted line) | **Footer placeholder** (`ftr`, layout idx 11) | The dialog's Footer text. |
 | `footer.<zone>.date` (the first one, one line) | **Date placeholder** (`dt`, idx 10) | `date: true` with an en-US pattern is a live `datetime1`-`datetime7` field ("Update automatically"); a fixed or literal date, or a pattern with no field type, is fixed text ("Fixed"). |
-| `footer.<zone>.text` with a `{{slide.number}}` (the first one, one line) | **Slide Number placeholder** (`sldNum`, idx 12) | Each substituted number is a live `slidenum` field; the words around it (`Page `, ` of 12`) and a `{{deck.slideCount}}` or `{{slide.section}}` value are fixed runs. |
+| `footer.<zone>.text` that is only `{{slide.number}}` (the first one, one line) | **Slide Number placeholder** (`sldNum`, idx 12) | The substituted number is a live `slidenum` field. With words around it (`Page `, ` of 12`) the part is an ordinary tagged shape with the number as fixed text by default ([Slide number with words around it](#slide-number-with-words-around-it-rr-91)); `slideNumberFields: 'live'` keeps the placeholder with a live field and fixed runs. |
 | every header part (text, socials, date, image) | ordinary tagged shapes, on the slide master or a layout when repeated (RR-72) | PowerPoint slides have no header placeholder (`hdr` exists on notes and handouts only). A header `{{slide.number}}` is still a live field inside its shape, which stays on each slide. |
 | footer socials, image (a logo reference included) | ordinary tagged shapes, on the slide master or a layout when repeated (RR-72) | No native object. |
 | a second footer text, date or text with a slide number in another zone | ordinary tagged shapes | One placeholder per type per slide; the second keeps its live fields. |
@@ -35,20 +35,26 @@ The footer manifest marks such a part with `ph` (`dt`, `ftr` or `sldNum`). A sli
 
 ## Slide number with words around it (RR-91)
 
-`{{deck.slideCount}}` is filled in at export and PowerPoint has no slide-count field, so `{{slide.number}} / {{deck.slideCount}}`
-is a live number followed by the fixed total (` / 6`). The total stays static in every mode: it does not follow slides added or
-removed in PowerPoint.
+A footer or header text with words around `{{slide.number}}` (`{{slide.number}} / {{deck.slideCount}}`, `Page {{slide.number}}`)
+exports its number as **fixed text** by default: one run in an ordinary tagged shape (`2 / 6`), no field and no Slide Number
+placeholder (`p:hf sldNum="0"` unless another part is a bare number). That is correct in PowerPoint and Keynote at export time.
 
-Keynote (Keynote Creator Studio 15.1.1, checked 2026-10-17) has no inline slide-number field: it replaces the **whole paragraph** that holds
-a `slidenum` field with the number, in the Slide Number placeholder and in an ordinary text box alike, so the footer shows only
-`2`. A literal run before the field (`Page `) or after it is dropped the same way. Text in a separate paragraph or a separate
-shape is kept. Moving the part from the placeholder to a plain text box therefore does not help.
+**Why.** Keynote (Keynote Creator Studio 15.1.1, checked 2026-10-17) has no inline slide-number field: it replaces the whole
+paragraph that holds a `slidenum` field with the number, in the Slide Number placeholder and in an ordinary text box alike, so a
+live `{{slide.number}} / 6` showed only `2`. A literal run before the field (`Page `) or after it is dropped the same way; text in a
+separate paragraph or shape is kept. Moving the part from the placeholder to a plain text box therefore does not help. The total
+is fixed in every mode (PowerPoint has no slide-count field), so `N / total` could never be fully live anyway.
 
-`toPptx(deck, {slideNumberWithText: 'static'})` writes such a part's number as fixed text in an ordinary tagged shape (no field, no
-Slide Number placeholder, `p:hf sldNum="0"` unless another part is a bare number), so Keynote shows `2 / 6`. The default,
-`'field'`, keeps the live field and the placeholder as before. A text that is only the number (`{{slide.number}}`) keeps its field
-and placeholder in both modes, and the authored `{{slide.number}}` text returns on import either way (the furniture manifest stores
-the template). The cost of `'static'` is that the number does not follow slides reordered in PowerPoint; re-export from OPF to refresh it.
+**Live number in both apps:** use a bare `{{slide.number}}` (the text is only the number). It keeps its live `slidenum` field in
+the Slide Number placeholder, which both apps show and update.
+
+**PowerPoint-only targets:** `toPptx(deck, {slideNumberFields: 'live'})` keeps the previous output for a number with words: the
+live field with the words as fixed runs in the Slide Number placeholder (the first footer one). Keynote shows only the digit of such
+a footer.
+
+The cost of the default: a fixed number does not follow slides reordered, added or deleted in PowerPoint; re-export from OPF to
+refresh it. The authored `{{slide.number}} / {{deck.slideCount}}` returns on import either way (the furniture manifest stores
+the template; a fixed-number export and a live one re-import to the same text).
 
 ## Row layout (RR-71)
 

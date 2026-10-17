@@ -35,7 +35,7 @@ export const isNativePlaceholderType = value => Object.hasOwn(NATIVE_PLACEHOLDER
 /**
  * The placeholder type a core footer part maps to: a date is `dt`; a zone `text` with a slide-number field
  * (`{{slide.number}}`) is `sldNum`, its words around the field fixed runs; any other zone `text` is `ftr`.
- * With `staticNumbers` (`slideNumberWithText: 'static'`, RR-91) a number with words around it is written as fixed text in an
+ * With `staticNumbers` (`slideNumberFields: 'static'`, the default, RR-91) a number with words around it is written as fixed text in an
  * ordinary shape, so it has no placeholder: Keynote shows only the number of a slide-number placeholder or field.
  */
 export function nativePlaceholderForPart(part, {staticNumbers = false} = {}) {

@@ -224,8 +224,8 @@ export async function toPptx(input, options = {}) {
   if (options.imageFormat !== undefined && !['compatible', 'preserve'].includes(options.imageFormat)) {
     throw new OPFPptxError('invalid-image-format', 'imageFormat must be compatible or preserve.', {path: 'options.imageFormat'});
   }
-  if (options.slideNumberWithText !== undefined && !['field', 'static'].includes(options.slideNumberWithText)) {
-    throw new OPFPptxError('invalid-slide-number-option', "slideNumberWithText must be 'field' or 'static'.", {path: 'options.slideNumberWithText'});
+  if (options.slideNumberFields !== undefined && !['static', 'live'].includes(options.slideNumberFields)) {
+    throw new OPFPptxError('invalid-slide-number-option', "slideNumberFields must be 'static' or 'live'.", {path: 'options.slideNumberFields'});
   }
   if (options.provenance !== undefined && !['full', 'references-only', false].includes(options.provenance)) {
     throw new OPFPptxError('invalid-provenance-option', "provenance must be 'full', 'references-only' or false.", {path: 'options.provenance'});
@@ -288,7 +288,7 @@ export async function toPptx(input, options = {}) {
   context.furnitureParts = [];
   // RR-81: the 0.19 template each slide uses (its native slide layout) and the objects bound to a region placeholder.
   context.templateSlides = [];
-  context.staticSlideNumbers = options.slideNumberWithText === 'static';
+  context.staticSlideNumbers = options.slideNumberFields !== 'live';
   context.automaticSlides = [];
   context.placeholderBindings = new Map();
   context.hostDate = options.date;
@@ -3096,7 +3096,7 @@ async function addFurniture(slide,presentation,source,layout,context,options,sli
       // en-US field type is written as its laid-out text.
       const fields=[];
       for(const field of furniturePartFields(part)){
-        // RR-91 (slideNumberWithText: 'static'): a number with words around it is fixed text; Keynote drops the words next to a live number.
+        // RR-91 (slideNumberFields, default 'static'): a number with words around it is fixed text; Keynote drops the words next to a live number.
         if(field.type==='slideNumber'&&context.staticSlideNumbers&&!isBareSlideNumber(part))continue;
         const nativeType=nativeFieldType(field);
         if(nativeType)fields.push({...field,nativeType});
