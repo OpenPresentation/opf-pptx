@@ -33,6 +33,23 @@ Each native shape is the same shape the exporter wrote before (same name `OPF fu
 The footer manifest marks such a part with `ph` (`dt`, `ftr` or `sldNum`). A slide whose `design.footer` is `false`
 (or has no such part) has no placeholder of that type, which the dialog shows as unchecked.
 
+## Slide number with words around it (RR-91)
+
+`{{deck.slideCount}}` is filled in at export and PowerPoint has no slide-count field, so `{{slide.number}} / {{deck.slideCount}}`
+is a live number followed by the fixed total (` / 6`). The total stays static in every mode: it does not follow slides added or
+removed in PowerPoint.
+
+Keynote (Keynote Creator Studio 15.1.1, checked 2026-10-17) has no inline slide-number field: it replaces the **whole paragraph** that holds
+a `slidenum` field with the number, in the Slide Number placeholder and in an ordinary text box alike, so the footer shows only
+`2`. A literal run before the field (`Page `) or after it is dropped the same way. Text in a separate paragraph or a separate
+shape is kept. Moving the part from the placeholder to a plain text box therefore does not help.
+
+`toPptx(deck, {slideNumberWithText: 'static'})` writes such a part's number as fixed text in an ordinary tagged shape (no field, no
+Slide Number placeholder, `p:hf sldNum="0"` unless another part is a bare number), so Keynote shows `2 / 6`. The default,
+`'field'`, keeps the live field and the placeholder as before. A text that is only the number (`{{slide.number}}`) keeps its field
+and placeholder in both modes, and the authored `{{slide.number}}` text returns on import either way (the furniture manifest stores
+the template). The cost of `'static'` is that the number does not follow slides reordered in PowerPoint; re-export from OPF to refresh it.
+
 ## Row layout (RR-71)
 
 Core lays the parts of a zone out side by side (image, text, socials, date), each at its natural width, aligned to the zone's edge and
