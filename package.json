@@ -110,6 +110,6 @@
     }
   },
   "opf": {
-    "requiresUnreleasedCore": "0.21.0"
+    "requiresUnreleasedCore": "0.22.0"
   }
 }
