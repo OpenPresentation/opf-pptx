@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
 import {XMLParser} from 'fast-xml-parser';
 import {toPptx} from '../dist/index.js';
+import {colorHex,themeColorsOf,clrMapOf} from './helpers/scheme-colors.mjs';
 import {composeSlide, layoutTable} from '@openpresentation/opf/composition';
 
 const parser = new XMLParser({ignoreAttributes:false, attributeNamePrefix:'', parseTagValue:false});
@@ -17,11 +18,13 @@ for(const [fill,headerColor,bodyColor,explicit] of [
 ]){
   const style={fill,...(explicit?{color:explicit}:{})};
   const input={design:{background:'#FFFFFF',colorScheme:{id:'cool-horizon',dark1:'#000000'}},slides:[{table:{columns:[{value:'Header',style},{value:['Inherited',{text:'Explicit',color:'#FF0000'}],style}],rows:[[{value:'Body',style},{value:['BodyInherited',{text:'BodyExplicit',color:'#FF0000'}],style}]]}}]};
-  const original=structuredClone(input),bytes=await toPptx(input),xml=new TextDecoder().decode(unzipSync(bytes)['ppt/slides/slide1.xml']);
+  // RR-96: a text colour that is a scheme colour of the slide (black dark1, white light1 here) is written as schemeClr; read what it stands for.
+  const original=structuredClone(input),bytes=await toPptx(input),parts=unzipSync(bytes),xml=new TextDecoder().decode(parts['ppt/slides/slide1.xml']);
+  const theme=themeColorsOf(new TextDecoder().decode(parts['ppt/theme/theme1.xml'])),clrMap=clrMapOf(new TextDecoder().decode(parts['ppt/slideMasters/slideMaster1.xml']));
   const runs=find(parser.parse(xml),'a:r');
   for(const [text,color] of [['Header',headerColor],['Inherited',headerColor],['Body',bodyColor],['BodyInherited',bodyColor],['Explicit','FF0000'],['BodyExplicit','FF0000']]){
     const run=runs.find(run=>run['a:t']===text);assert.ok(run,text);
-    assert.equal(run['a:rPr']['a:solidFill']['a:srgbClr'].val,color,`${fill} ${text}`);
+    assert.equal(colorHex(run['a:rPr']['a:solidFill'],theme,clrMap),color,`${fill} ${text}`);
   }
   assert.deepEqual(input,original);
 }
