@@ -52,7 +52,7 @@ import { prepareSvg, svgDataUriBytes, svgRasterScale, svgBlipRelationship, attac
 import { chartPaletteSchemes, applyChartSchemeColors } from './chart-scheme-colors.js';
 import { rasterMetadata, pictureTransform, normalizeImageOrientation } from './image-geometry.js';
 import {
-  catalogRecords, clrMapAttributes, normalizeColorVariant, chartPaletteForFill, chartSeriesPalette, chartTextSize as coreChartTextSize, codeHighlightBands, codeHighlightColors, codeHighlightLines, codeSyntaxPaletteForRoles, codeLineNumbers, codeLineRuns, codeSyntaxPaletteForScheme, composeSlide,
+  catalogRecords, clrMapAttributes, normalizeColorVariant, chartPaletteForFill, chartSeriesPalette, chartTextSize as coreChartTextSize, codeHighlightBands, codeHighlightColors, codeHighlightLines, codeSyntaxPaletteForRoles, readableSchemeColor, codeLineNumbers, codeLineRuns, codeSyntaxPaletteForScheme, composeSlide,
   ENGINE_DEFAULT_FONT_SCHEME, defaultSlideBackground, fitImage, fitText, layoutTable, layoutWatermark, metricTrendMark, resolveCanvasDimensions, resolveColorRoles, resolveFontFamilies,
   resolveChartColors, resolveReference, resolveScriptFonts, resolveTextStyle, textColorForFill, textWidthMeasurer, timelineMarkerShapes, timelineTextColor, tokenizeCode
 } from "@openpresentation/opf/composition";
@@ -2950,6 +2950,7 @@ function addChartPayload(slide, chart, region, context, options = {}, path = "ch
     dataLabelColor: markLabelColor,
     dataLabelFontSize: textSize / 100,
     showValue: false,
+    ...(circular ? {dataBorder: {color: normalizeHex(neutrals?.outline?.hex ?? `#${context.colors.background}`), pt: 0.75}} : {}),
     valGridLine: { color: gridColor, size: 1 },
     catAxisLineColor: axisLineColor,
     valAxisLineColor: axisLineColor,
@@ -3045,7 +3046,8 @@ function addTablePayload(slide, authoredTable, region, context, options, path, p
     // FF-24c: engine chrome resolves from scheme roles (header accent1, body surface), so it follows the deck theme like a named fill.
     const fillReference = cellStyle.fill ?? (header ? 'accent1' : 'surface');
     const fillValue = schemeColorValue(fillReference, baseFill, context);
-    const inheritedText = textColorForFill(`#${baseFill}`, header ? "#FFFFFF" : `#${context.colors.text}`);
+    // RR-96: header text is the role (bg1 or tx1) that reads better on the fill, as the preview chooses it (core readableSchemeColor).
+    const inheritedText = header && context.roles ? readableSchemeColor(`#${baseFill}`, context.roles).hex : textColorForFill(`#${baseFill}`, header ? "#FFFFFF" : `#${context.colors.text}`);
     const baseColor = exportColor(cellStyle.color ?? inheritedText.replace(/^#/, ""), context, inheritedText.replace(/^#/, ""));
     // Default cell text follows the theme only with a theme-referenced fill: paired slot on a light or dark fill, light1/dark1 on an accent fill.
     const defaultText = cellStyle.color === undefined ? tableTextSchemeValue(fillValue, baseColor, context) : undefined;
@@ -3537,7 +3539,7 @@ function addMediaPayload(slide, presentation, value, region, path, context, opti
   }
   slide.addShape("rect", {x: region.x, y: region.y, w: region.w, h: region.h, fill: {color: context.colors.surface}, line: {color: context.colors.border, width: 0.75}, hyperlink, objectName: names.frame});
   slide.addShape("ellipse", {x: icon.x / 96, y: icon.y / 96, w: 72 / 96, h: 72 / 96, fill: {color: context.colors.accent}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.badge});
-  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: "FFFFFF"}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.play});
+  slide.addShape("triangle", {x: (icon.x + 28) / 96, y: (icon.y + 22) / 96, w: 28 / 96, h: 28 / 96, rotate: 90, fill: {color: context.roles ? normalizeHex(readableSchemeColor(`#${context.colors.accent}`, context.roles).hex) : "FFFFFF"}, line: {transparency: 100}, hyperlink: hyperlink && {url: source}, objectName: names.play});
   addMeasuredPayloadText(slide, mediaCaption(value), {...box, y: icon.y + 72 + 20, height: 50}, context, options,
     {path, fontSize: 18, fontFamily: context.fonts.body, fontWeight: 600, align: "center", color: context.colors.mutedText, objectName: `OPF media ${path} caption`, media: true, keepEmpty: true, hyperlink});
 }
