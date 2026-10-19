@@ -126,7 +126,8 @@ for (const record of records.colorSchemes) {
       assert.ok(edgeColors(cell).every(color => color.kind === 'scheme' && color.val === 'tx1' && color.lumMod !== undefined), `${where} neutral scheme borders`);
       assert.deepEqual(edgeColors(cell).map(color => resolve(color, theme)), Array(4).fill(resolveColorRoles(record, {variant: {background: slot ?? 'dark2'}}).border.slice(1)), 'structural borders are the scheme-derived neutral (tx1 over bg1 of the slide variant)');
       if (r > 0) assert.equal(cell.color.val, 'tx1', `${where} body text is the text role, which the clrMap pairs with the surface`);
-      else assert.ok([theme.lt1, theme.dk1].includes(resolve(cell.color, theme)), `${where} header text is light1 or dark1`);
+      // RR-96: header text is bg1 or tx1, whichever reads better on the accent (core readableSchemeColor), so it follows a variant.
+      else { assert.ok(['bg1', 'tx1'].includes(cell.color.val), `${where} header text is bg1 or tx1`); assert.ok([theme.lt1, theme.dk1, theme.lt2, theme.dk2].includes(resolve(cell.color, theme)), `${where} header text is a light or dark slot`); }
     }
   }
 }

@@ -10,10 +10,11 @@ const array = value => value === undefined ? [] : Array.isArray(value) ? value :
 const find = (value,key) => !value || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(item => find(item,key)) : Object.entries(value).flatMap(([name,child]) => name === key ? array(child) : find(child,key));
 const fill = '#12345680', border = {color:'#aabbcc80', width:2, dash:'dot'};
 
+// RR-96: header text is the role (bg1 or tx1) that reads better on the fill, as the preview draws it (core readableSchemeColor): on #767676 black wins.
 // Check actual native run colors rather than merely calling the shared chooser.
 for(const [fill,headerColor,bodyColor,explicit] of [
   ['#F8FAFC','000000','000000'],['#0F172A','FFFFFF','FFFFFF'],
-  ['#777777','000000','000000'],['#767676','FFFFFF','000000'],
+  ['#777777','000000','000000'],['#767676','000000','000000'],
   ['#FFFFFF80','FFFFFF','000000'],['#F8FAFC','FFFFFF','FFFFFF','#FFFFFF'],
 ]){
   const style={fill,...(explicit?{color:explicit}:{})};
